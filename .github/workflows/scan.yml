@@ -1,0 +1,32 @@
+name: Scan Polymarket Wallets
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Scanner
+        run: node scanner/scan.js
+
+      - name: Commit Results
+        run: |
+          git config user.name "Polymarket Scanner Bot"
+          git config user.email "scanner@polymarket-signals.local"
+          git add data/
+          SCAN_COUNT=$(node -e "const fs = require('fs'); const s = JSON.parse(fs.readFileSync('data/state.json','utf8')); console.log(s.scanCount);")
+          git diff --cached --quiet || git commit -m "Scan #${SCAN_COUNT}: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push

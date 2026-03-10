@@ -1,0 +1,13 @@
+[build]
+  # Only publish the frontend folder — data lives in GitHub, fetched via raw CDN
+  publish = "frontend"
+
+  # Skip rebuild if only data/ files changed (scanner commits)
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- frontend/"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Cache-Control = "public, max-age=300"
