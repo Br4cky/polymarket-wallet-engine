@@ -462,6 +462,71 @@ button {
 }
 
 /* ============================================================================
+   Time Filter Bar
+   ============================================================================ */
+.time-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 24px;
+}
+
+.filter-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-weight: 500;
+  margin-right: 4px;
+}
+
+.time-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.time-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.time-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.filter-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 8px;
+}
+
+.filter-checkbox {
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.filter-checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* ============================================================================
    Detail Panels
    ============================================================================ */
 .detail-panel {

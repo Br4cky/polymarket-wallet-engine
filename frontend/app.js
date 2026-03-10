@@ -18,6 +18,9 @@ let currentTab = 'dashboard';
 let sortState = {};
 let detailExpandedRows = {};
 let chartInstances = {};
+let currentTimeRange = 'all';
+let activeWalletsOnly = false;
+let walletsData = null; // Full wallets.json with per-position data
 
 /* ============================================================================
    Utility Functions
@@ -59,8 +62,67 @@ function truncAddr(addr) {
   return addr.slice(0, 6) + '...' + addr.slice(-4);
 }
 
-function polymarketUrl(marketId) {
-  return `https://polymarket.com/market/${marketId}`;
+function polymarketUrl(slug) {
+  if (!slug) return '#';
+  return `https://polymarket.com/event/${slug}`;
+}
+
+function relativeTime(isoStr) {
+  if (!isoStr) return '-';
+  const ms = Date.now() - new Date(isoStr).getTime();
+  const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+  if (days === 0) return 'Today';
+  if (days === 1) return '1d ago';
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return new Date(isoStr).toLocaleDateString();
+}
+
+function getTimeCutoff(range) {
+  if (range === 'all') return 0;
+  const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+  return Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function filterPositionsByTime(positions, range) {
+  if (range === 'all') return positions;
+  const cutoff = getTimeCutoff(range);
+  return positions.filter(p => {
+    const ts = p.firstSeenTimestamp ? new Date(p.firstSeenTimestamp).getTime() : 0;
+    return ts >= cutoff;
+  });
+}
+
+function recomputeStats(positions) {
+  let wins = 0, losses = 0, winSum = 0, lossSum = 0, totalPnl = 0;
+  let totalVolume = 0, openCount = 0;
+  const uniqueTokens = new Set();
+
+  for (const pos of positions) {
+    totalPnl += pos.pnl || 0;
+    totalVolume += pos.totalBought || 0;
+    if (pos.tokenId) uniqueTokens.add(pos.tokenId);
+    if ((pos.amount || 0) > 0.01) openCount++;
+    if ((pos.totalBought || 0) > 0.01) {
+      if ((pos.pnl || 0) > 0) { wins++; winSum += pos.pnl; }
+      else if ((pos.pnl || 0) < 0) { losses++; lossSum += -pos.pnl; }
+    }
+  }
+
+  const resolved = wins + losses;
+  const wr = resolved > 0 ? wins / resolved : 0;
+  const avgW = wins > 0 ? winSum / wins : 0;
+  const avgL = losses > 0 ? lossSum / losses : 0;
+  const efficiency = totalVolume > 0 ? totalPnl / totalVolume : 0;
+  const edgeRatio = avgL > 0 ? avgW / avgL : (avgW > 0 ? 10 : 0);
+
+  return {
+    wins, losses, resolved, wr, avgW, avgL, totalPnl, totalVolume,
+    uniqueTokens: uniqueTokens.size,
+    estimatedMarkets: Math.max(1, Math.ceil(uniqueTokens.size / 2)),
+    efficiency, edgeRatio, openCount,
+  };
 }
 
 function openPolymarketProfile(address) {
@@ -366,18 +428,35 @@ function destroyChart(id) {
 function renderDashboard() {
   if (!data.analytics) return;
 
-  const summary = data.analytics.summary || {};
-  const leaderboard = data.analytics.leaderboard || [];
+  let leaderboard = data.analytics.leaderboard || [];
 
-  // Metric cards — scanner uses lowercase "totalPnl" not "totalPnL"
-  document.getElementById('metric-wallets').textContent = (summary.totalWallets || 0).toLocaleString();
-  document.getElementById('metric-avg-score').textContent = (summary.avgScore || 0).toFixed(1);
-  document.getElementById('metric-pnl').textContent = fmtDollars(summary.totalPnl || summary.totalPnL || 0);
-  document.getElementById('metric-win-rate').textContent = ((summary.avgWinRate || 0) * 100).toFixed(1) + '%';
+  // Apply active-only filter (last 30 days)
+  if (activeWalletsOnly) {
+    const cutoff30 = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    leaderboard = leaderboard.filter(w => {
+      const ts = w.lastActiveTimestamp ? new Date(w.lastActiveTimestamp).getTime() : 0;
+      return ts >= cutoff30;
+    });
+  }
 
-  // Leaderboard table — scanner nests stats under w.stats {}
-  const leaderboardData = (leaderboard || []).slice(0, 50).map((w, idx) => {
-    const s = w.stats || {};
+  // If time filtering + wallets data available, recompute stats from filtered positions
+  const isFiltered = currentTimeRange !== 'all';
+  const walletPositions = walletsData?.wallets || {};
+
+  // Build leaderboard with potentially filtered stats
+  const leaderboardData = leaderboard.slice(0, 50).map((w, idx) => {
+    let s = w.stats || {};
+
+    if (isFiltered && walletPositions[w.address]) {
+      const allPos = walletPositions[w.address].positions || [];
+      const filtered = filterPositionsByTime(allPos, currentTimeRange);
+      if (filtered.length > 0) {
+        s = recomputeStats(filtered);
+      } else {
+        s = { totalPnl: 0, wr: 0, estimatedMarkets: 0, resolved: 0, efficiency: 0, edgeRatio: 0, avgW: 0, avgL: 0, wins: 0, losses: 0, totalVolume: 0, openCount: 0 };
+      }
+    }
+
     return {
       rank: idx + 1,
       score: w.score || 0,
@@ -394,8 +473,19 @@ function renderDashboard() {
       losses: s.losses || 0,
       volume: s.totalVolume || 0,
       openCount: s.openCount || 0,
+      lastActive: w.lastActiveTimestamp || w.stats?.lastActiveTimestamp || null,
     };
   });
+
+  // Update metric cards (from filtered leaderboard)
+  const totalPnl = leaderboardData.reduce((s, w) => s + w.totalPnl, 0);
+  const avgScore = leaderboardData.length > 0 ? leaderboardData.reduce((s, w) => s + w.score, 0) / leaderboardData.length : 0;
+  const avgWinRate = leaderboardData.length > 0 ? leaderboardData.reduce((s, w) => s + w.winRate, 0) / leaderboardData.length : 0;
+
+  document.getElementById('metric-wallets').textContent = leaderboardData.length.toLocaleString();
+  document.getElementById('metric-avg-score').textContent = avgScore.toFixed(1);
+  document.getElementById('metric-pnl').textContent = fmtDollars(totalPnl);
+  document.getElementById('metric-win-rate').textContent = (avgWinRate * 100).toFixed(1) + '%';
 
   const leaderboardColumns = [
     { field: 'rank', render: v => String(v) },
@@ -405,11 +495,12 @@ function renderDashboard() {
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
     { field: 'markets', render: v => String(v) },
     { field: 'resolved', render: v => String(v) },
-    { field: 'efficiency', render: v => ((v || 0) * 100).toFixed(2) + '%' }
+    { field: 'efficiency', render: v => ((v || 0) * 100).toFixed(2) + '%' },
+    { field: 'lastActive', render: v => `<span style="color: var(--text-dim); font-size: 12px;">${relativeTime(v)}</span>` }
   ];
 
   createSortableTable('leaderboard-table', leaderboardColumns, leaderboardData, (row) => {
-    const wallet = leaderboard[row.rank - 1] || row;
+    const wallet = leaderboard.find(w => w.address === row.address) || row;
     showLeaderboardDetail(wallet);
   });
 
@@ -611,6 +702,7 @@ function renderConsensus() {
     const as = m.avgScore || m.avgHolderScore || 0;
     return {
       title: m.marketTitle || m.title || 'Unknown',
+      slug: m.slug || m.tokenId || '',
       marketId: m.tokenId || m.marketId || '',
       walletCount: wc,
       avgScore: as,
@@ -628,7 +720,7 @@ function renderConsensus() {
   }));
 
   const consensusColumns = [
-    { field: 'title', render: v => `<a href="javascript:void(0)" style="color: var(--accent-light);">${v}</a>` },
+    { field: 'title', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` },
     { field: 'walletCount', render: v => {
       const pct = (v / totalWallets * 100).toFixed(0);
       return `
@@ -656,7 +748,7 @@ function renderConsensus() {
 function showConsensusDetail(market) {
   const holders = market.holders.map((h, idx) => `
     <div class="detail-list-item">
-      <div class="detail-list-item-label">${idx + 1}. ${truncAddr(h.address)}</div>
+      <div class="detail-list-item-label">${idx + 1}. <span class="address-link" onclick="openPolymarketProfile('${h.address}')">${truncAddr(h.address)}</span></div>
       <div class="detail-list-item-value">
         <span class="badge ${scoreClass(h.score)}">${h.score.toFixed(1)}</span>
         ${fmtDollars(h.pnl || 0)}
@@ -668,7 +760,7 @@ function showConsensusDetail(market) {
     <div class="detail-grid">
       <div class="detail-item">
         <div class="detail-item-label">Market Title</div>
-        <div class="detail-item-value" style="font-size: 14px;">${market.title}</div>
+        <div class="detail-item-value" style="font-size: 14px;">${market.slug ? `<a href="${polymarketUrl(market.slug)}" target="_blank" style="color: var(--accent-light);">${market.title}</a>` : market.title}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Consensus Wallets</div>
@@ -716,6 +808,7 @@ function renderPortfolio() {
 
   const portfolioData = active.map(m => ({
     title: m.marketTitle || m.title || 'Unknown',
+    slug: m.slug || m.tokenId || '',
     holdingCount: m.holderCount || m.holders?.length || 0,
     totalShares: m.totalShares || 0,
     avgEntryPrice: m.holders?.length ? m.holders.reduce((s, h) => s + (h.entryPrice || 0), 0) / m.holders.length : 0,
@@ -724,7 +817,7 @@ function renderPortfolio() {
   }));
 
   const portfolioColumns = [
-    { field: 'title', render: v => `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'title', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` },
     { field: 'holdingCount', render: v => String(v) },
     { field: 'totalShares', render: v => fmt(v, 0) },
     { field: 'avgEntryPrice', render: v => '$' + v.toFixed(2) },
@@ -739,7 +832,7 @@ function renderPortfolio() {
 function showPortfolioDetail(market) {
   const holders = market.holders.map((h, idx) => `
     <div class="detail-list-item">
-      <div class="detail-list-item-label">${idx + 1}. ${truncAddr(h.address)}</div>
+      <div class="detail-list-item-label">${idx + 1}. <span class="address-link" onclick="openPolymarketProfile('${h.address}')">${truncAddr(h.address)}</span></div>
       <div class="detail-list-item-value">${fmt(h.shares || 0, 0)} shares @ $${(h.entryPrice || 0).toFixed(2)}</div>
     </div>
   `).join('');
@@ -800,13 +893,14 @@ function renderPatterns() {
   // Winning markets table
   const winningMarkets = (patterns.topWinningMarkets || []).map(m => ({
     title: m.title || 'Unknown',
+    slug: m.slug || '',
     winRate: m.winRate || 0,
     avgPnl: m.avgPnl || 0,
     positionCount: m.totalTrades || m.positionCount || 0
   }));
 
   const patternsColumns = [
-    { field: 'title', render: v => `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'title', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
     { field: 'avgPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
     { field: 'positionCount', render: v => String(v) }
@@ -903,6 +997,7 @@ function renderSignals() {
   // Biggest wins table
   const winsData = biggestWins.slice(0, 50).map(w => ({
     marketTitle: w.marketTitle || 'Unknown',
+    slug: w.slug || '',
     wallet: w.address || w.wallet || '',
     pnl: w.pnl || 0,
     roi: w.roi || 0,
@@ -910,7 +1005,7 @@ function renderSignals() {
   }));
 
   const winsColumns = [
-    { field: 'marketTitle', render: v => `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
     { field: 'wallet', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
     { field: 'pnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
     { field: 'roi', render: v => `<span class="${pnlClass(v)}">${(v * 100).toFixed(1)}%</span>` },
@@ -941,12 +1036,13 @@ function renderSignals() {
   // Emerging consensus table
   const emergingData = emergingConsensus.map(m => ({
     marketTitle: m.marketTitle || m.title || 'Unknown',
+    slug: m.slug || '',
     walletCount: m.walletCount || m.wallets?.length || 0,
     avgScore: m.avgScore || m.avgHolderScore || 0
   }));
 
   const emergingColumns = [
-    { field: 'marketTitle', render: v => `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
     { field: 'walletCount', render: v => String(v) },
     { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` }
   ];
@@ -1356,6 +1452,12 @@ async function init() {
   data = await loadData();
   updateStatusBar();
 
+  // Pre-load wallets.json for time filtering (has per-position data)
+  try {
+    const walletsResp = await fetch(DATA_BASE + 'wallets.json');
+    if (walletsResp.ok) walletsData = await walletsResp.json();
+  } catch { /* ok — time filtering just won't recompute stats */ }
+
   // Attach tab listeners
   document.querySelectorAll('.tab').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1363,6 +1465,25 @@ async function init() {
       switchTab(tabName);
     });
   });
+
+  // Time filter buttons
+  document.querySelectorAll('.time-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      currentTimeRange = this.dataset.range;
+      if (currentTab === 'dashboard') renderDashboard();
+    });
+  });
+
+  // Active wallets only checkbox
+  const activeOnlyEl = document.getElementById('active-only');
+  if (activeOnlyEl) {
+    activeOnlyEl.addEventListener('change', function() {
+      activeWalletsOnly = this.checked;
+      if (currentTab === 'dashboard') renderDashboard();
+    });
+  }
 
   // Render initial dashboard
   if (data.analytics) {

@@ -303,6 +303,24 @@ function analyzePositions(positions) {
   // Edge ratio: average win / average loss (same as original screener)
   const edgeRatio = avgL > 0 ? avgW / avgL : (avgW > 0 ? 10 : 0);
 
+  // Activity rate metrics — count unique days positions were first seen
+  const uniqueDays = new Set();
+  let earliestTs = null;
+  let latestTs = null;
+  for (const pos of positions) {
+    if (pos.firstSeenTimestamp) {
+      const day = pos.firstSeenTimestamp.slice(0, 10); // YYYY-MM-DD
+      uniqueDays.add(day);
+      if (!earliestTs || pos.firstSeenTimestamp < earliestTs) earliestTs = pos.firstSeenTimestamp;
+      if (!latestTs || pos.firstSeenTimestamp > latestTs) latestTs = pos.firstSeenTimestamp;
+    }
+  }
+  const tradingDays = uniqueDays.size;
+  const weeksTracked = earliestTs && latestTs
+    ? Math.max(1, (new Date(latestTs) - new Date(earliestTs)) / (7 * 24 * 60 * 60 * 1000))
+    : 1;
+  const positionsPerWeek = +(positions.length / weeksTracked).toFixed(1);
+
   return {
     wins,
     losses,
@@ -318,16 +336,20 @@ function analyzePositions(positions) {
     edgeRatio,
     openCount,
     maxScanIndex,
+    tradingDays,
+    positionsPerWeek,
   };
 }
 
 /**
  * Compute a composite score from 0-100
  * Weights: WR (30) + Markets (20) + Efficiency (20) + Edge (15) + Sample size (15)
+ * Then applies a recency multiplier based on how recently the wallet was active.
  * @param {object} stats - Statistics from analyzePositions
+ * @param {string} [lastActiveTimestamp] - ISO timestamp of last activity
  * @returns {number} Score 0-100
  */
-function computeScore(stats) {
+function computeScore(stats, lastActiveTimestamp) {
   const { resolved, wr } = stats;
   const sampleFactor = resolved > 0 ? Math.min(1, Math.sqrt(resolved) / 10) : 0;
 
@@ -344,7 +366,19 @@ function computeScore(stats) {
   // Sample size (15 pts): min(1, resolved/200) * 15
   const sampleScore = Math.min(1, resolved / 200) * 15;
 
-  return wrScore + marketScore + efficiencyScore + edgeScore + sampleScore;
+  let rawScore = wrScore + marketScore + efficiencyScore + edgeScore + sampleScore;
+
+  // Recency multiplier — penalise stale wallets
+  let recencyMultiplier = 1.0;
+  if (lastActiveTimestamp) {
+    const daysSince = (Date.now() - new Date(lastActiveTimestamp).getTime()) / (1000 * 60 * 60 * 24);
+    if (daysSince > 90) recencyMultiplier = 0.5;
+    else if (daysSince > 30) recencyMultiplier = 0.75;
+    else if (daysSince > 7) recencyMultiplier = 0.9;
+    stats.recencyMultiplier = recencyMultiplier;
+  }
+
+  return rawScore * recencyMultiplier;
 }
 
 // ============================================================================

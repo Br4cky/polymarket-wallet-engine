@@ -120,6 +120,18 @@ async function runScan() {
     console.log(`  Loaded ${Object.keys(wallets).length} existing wallets`);
   }
 
+  // Build scanIndex → timestamp map from trendline for backfilling
+  const analyticsFile = path.join(DATA_DIR, 'analytics.json');
+  const existingAnalytics = loadJSON(analyticsFile) || {};
+  const scanTimestampMap = {};
+  for (const entry of (existingAnalytics.trendline || [])) {
+    if (entry.scanIndex && entry.timestamp) {
+      scanTimestampMap[entry.scanIndex] = entry.timestamp;
+    }
+  }
+  scanTimestampMap[state.scanCount] = state.lastRun; // Current scan
+  console.log(`  Timestamp map: ${Object.keys(scanTimestampMap).length} scans mapped`);
+
   let cursor = state.lastId || '';
   let fetched = 0;
   let useNested = false;
@@ -173,16 +185,19 @@ async function runScan() {
         totalBought: boughtField ? parseFloat(item[boughtField] || 0) / USDC_DIVISOR : 0,
         amount: amountField ? parseFloat(item[amountField] || 0) / USDC_DIVISOR : 0,
         scanIndex: state.scanCount,
+        firstSeenTimestamp: state.lastRun, // stamp new positions with current scan time
       };
 
       if (!wallets[uid]) {
         wallets[uid] = { positions: [], firstSeen: state.scanCount, lastSeen: state.scanCount };
       }
 
-      // Dedupe by uid
-      const existing = wallets[uid].positions.findIndex(p => p.uid === pos.uid);
-      if (existing >= 0) {
-        wallets[uid].positions[existing] = pos;
+      // Dedupe by uid — preserve original firstSeenTimestamp on updates
+      const existingIdx = wallets[uid].positions.findIndex(p => p.uid === pos.uid);
+      if (existingIdx >= 0) {
+        const origTimestamp = wallets[uid].positions[existingIdx].firstSeenTimestamp;
+        pos.firstSeenTimestamp = origTimestamp || scanTimestampMap[wallets[uid].positions[existingIdx].scanIndex] || pos.firstSeenTimestamp;
+        wallets[uid].positions[existingIdx] = pos;
       } else {
         wallets[uid].positions.push(pos);
       }
@@ -216,12 +231,28 @@ async function runScan() {
 
   for (const [address, wallet] of Object.entries(wallets)) {
     const stats = analyzePositions(wallet.positions || []);
-    const score = computeScore(stats);
+
+    // Compute lastActiveTimestamp from positions or scan map
+    let lastActiveTs = null;
+    for (const p of (wallet.positions || [])) {
+      const ts = p.firstSeenTimestamp || scanTimestampMap[p.scanIndex];
+      if (ts && (!lastActiveTs || ts > lastActiveTs)) lastActiveTs = ts;
+    }
+    if (!lastActiveTs) lastActiveTs = scanTimestampMap[wallet.lastSeen] || state.lastRun;
+
+    wallet.lastActiveTimestamp = lastActiveTs;
+    stats.lastActiveTimestamp = lastActiveTs;
+
+    // Compute days since active for recency scoring
+    const daysSinceActive = (Date.now() - new Date(lastActiveTs).getTime()) / (1000 * 60 * 60 * 24);
+    stats.daysSinceActive = Math.round(daysSinceActive);
+
+    const score = computeScore(stats, lastActiveTs);
     wallet.stats = stats;
     wallet.score = score;
 
     if (stats.totalPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1) {
-      scoredWallets.push({ address, score, stats });
+      scoredWallets.push({ address, score, stats, lastActiveTimestamp: lastActiveTs });
     }
   }
 
@@ -298,6 +329,7 @@ async function runScan() {
     address: w.address,
     score: +w.score.toFixed(2),
     stats: w.stats,
+    lastActiveTimestamp: w.lastActiveTimestamp || null,
   }));
 
   // ===== Step 8: Save Everything =====
@@ -313,7 +345,6 @@ async function runScan() {
   console.log(`  ✓ markets.json (${Object.keys(marketLookup).length} markets)`);
 
   // Analytics
-  const analyticsFile = path.join(DATA_DIR, 'analytics.json');
   let analytics = loadJSON(analyticsFile) || { trendline: [] };
 
   analytics.lastUpdated = new Date().toISOString();

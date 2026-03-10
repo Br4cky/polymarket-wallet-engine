@@ -36,6 +36,17 @@
         <p class="subtitle">Overview of tracked wallets and market activity</p>
       </div>
 
+      <!-- Time Filter Bar -->
+      <div class="time-filter-bar">
+        <span class="filter-label">Time range:</span>
+        <button class="time-btn active" data-range="all">All Time</button>
+        <button class="time-btn" data-range="7d">7 Days</button>
+        <button class="time-btn" data-range="30d">30 Days</button>
+        <button class="time-btn" data-range="90d">90 Days</button>
+        <span class="filter-divider"></span>
+        <label class="filter-checkbox"><input type="checkbox" id="active-only"> Active wallets only</label>
+      </div>
+
       <!-- Metric Cards -->
       <div class="metrics-grid">
         <div class="metric-card">
@@ -91,10 +102,11 @@
                 <th data-field="markets" class="sortable">Markets</th>
                 <th data-field="resolved" class="sortable">Resolved</th>
                 <th data-field="efficiency" class="sortable">Efficiency</th>
+                <th data-field="lastActive" class="sortable">Last Active</th>
               </tr>
             </thead>
             <tbody id="leaderboard-tbody">
-              <tr><td colspan="8" class="empty-state">Loading wallets...</td></tr>
+              <tr><td colspan="9" class="empty-state">Loading wallets...</td></tr>
             </tbody>
           </table>
         </div>
