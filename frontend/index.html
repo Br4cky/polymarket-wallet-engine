@@ -276,6 +276,66 @@
         <p class="subtitle">Recent Wins & Signal Opportunities</p>
       </div>
 
+      <!-- Estate Performance Summary -->
+      <div class="section">
+        <h2>Estate Performance</h2>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-label">Resolved Today</div>
+            <div class="metric-value" id="metric-resolved-today">-</div>
+            <div class="metric-sub" id="metric-wr-today">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Resolved This Week</div>
+            <div class="metric-value" id="metric-resolved-week">-</div>
+            <div class="metric-sub" id="metric-wr-week">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Resolved This Month</div>
+            <div class="metric-value" id="metric-resolved-month">-</div>
+            <div class="metric-sub" id="metric-wr-month">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Resolved This Quarter</div>
+            <div class="metric-value" id="metric-resolved-quarter">-</div>
+            <div class="metric-sub" id="metric-wr-quarter">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">All Time Resolved</div>
+            <div class="metric-value" id="metric-resolved-all">-</div>
+            <div class="metric-sub" id="metric-wr-all">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">All Time PnL</div>
+            <div class="metric-value" id="metric-resolved-pnl">-</div>
+            <div class="metric-sub" id="metric-avg-win-loss">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resolved Positions Table -->
+      <div class="section">
+        <h2>Recent Resolved Positions</h2>
+        <div class="table-wrapper">
+          <table id="resolved-table" class="data-table sortable">
+            <thead>
+              <tr>
+                <th data-field="marketTitle">Market</th>
+                <th data-field="address">Wallet</th>
+                <th data-field="pnl" class="sortable">PnL</th>
+                <th data-field="roi" class="sortable">ROI</th>
+                <th data-field="totalBought" class="sortable">Position Size</th>
+                <th data-field="walletScore" class="sortable">Wallet Score</th>
+                <th data-field="timestamp">When</th>
+              </tr>
+            </thead>
+            <tbody id="resolved-tbody">
+              <tr><td colspan="7" class="empty-state">Loading resolved positions...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- Biggest Recent Wins -->
       <div class="section">
         <h2>Biggest Recent Wins</h2>

@@ -990,6 +990,62 @@ function renderTopMarketsChart(patterns) {
 function renderSignals() {
   if (!data.analytics) return;
 
+  // === Estate Performance Summary ===
+  const rp = data.analytics.resolvedPositions || {};
+  const periods = rp.periodStats || {};
+
+  function setPeriodMetrics(period, idSuffix) {
+    const s = periods[period] || {};
+    const el = document.getElementById('metric-resolved-' + idSuffix);
+    const wrEl = document.getElementById('metric-wr-' + idSuffix);
+    if (el) el.textContent = (s.total || 0).toLocaleString();
+    if (wrEl) {
+      const wr = ((s.winRate || 0) * 100).toFixed(1);
+      const pnl = s.totalPnl || 0;
+      wrEl.innerHTML = `<span style="color: ${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtDollars(pnl)}</span> &middot; ${wr}% WR (${s.wins || 0}W/${s.losses || 0}L)`;
+    }
+  }
+
+  setPeriodMetrics('today', 'today');
+  setPeriodMetrics('week', 'week');
+  setPeriodMetrics('month', 'month');
+  setPeriodMetrics('quarter', 'quarter');
+  setPeriodMetrics('allTime', 'all');
+
+  const allTime = periods.allTime || {};
+  const pnlEl = document.getElementById('metric-resolved-pnl');
+  if (pnlEl) {
+    const pnl = allTime.totalPnl || 0;
+    pnlEl.innerHTML = `<span style="color: ${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtDollars(pnl)}</span>`;
+  }
+  const avgEl = document.getElementById('metric-avg-win-loss');
+  if (avgEl) avgEl.textContent = `Avg Win: ${fmtDollars(allTime.avgWin || 0)} / Avg Loss: ${fmtDollars(allTime.avgLoss || 0)}`;
+
+  // === Resolved Positions Table ===
+  const resolvedData = (rp.positions || []).map(p => ({
+    marketTitle: p.marketTitle || 'Unknown',
+    slug: p.slug || '',
+    address: p.address || '',
+    pnl: p.pnl || 0,
+    roi: p.roi || 0,
+    totalBought: p.totalBought || 0,
+    walletScore: p.walletScore || 0,
+    timestamp: p.timestamp || null,
+  }));
+
+  const resolvedColumns = [
+    { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
+    { field: 'pnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'roi', render: v => `<span class="${pnlClass(v)}">${(v * 100).toFixed(1)}%</span>` },
+    { field: 'totalBought', render: v => fmtDollars(v) },
+    { field: 'walletScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
+    { field: 'timestamp', render: v => relativeTime(v) },
+  ];
+
+  createSortableTable('resolved-table', resolvedColumns, resolvedData);
+
+  // === Existing sections ===
   const biggestWins = data.analytics.biggestWins || [];
   const hotWallets = data.analytics.hotWallets || [];
   const emergingConsensus = data.analytics.consensus?.filter(m => m.isEmerging) || [];

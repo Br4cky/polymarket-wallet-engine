@@ -18,6 +18,7 @@ import {
   computeWinPatterns,
   computeActivePositions,
   findBiggestWins,
+  computeResolvedPositions,
   loadJSON,
   saveJSON,
 } from './lib.js';
@@ -315,14 +316,15 @@ async function runScan() {
   const walletMap = new Map(Object.entries(wallets));
   const marketMap = new Map(Object.entries(marketLookup));
 
-  let consensus = [], winPatterns = {}, activePositions = [], biggestWins = [];
+  let consensus = [], winPatterns = {}, activePositions = [], biggestWins = [], resolvedPositions = {};
 
   try { consensus = computeConsensus(walletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
   try { winPatterns = computeWinPatterns(walletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
   try { activePositions = computeActivePositions(walletMap, marketMap); } catch (e) { console.error(`  Active positions error: ${e.message}`); }
   try { biggestWins = findBiggestWins(walletMap, marketMap, 50); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
+  try { resolvedPositions = computeResolvedPositions(walletMap, marketMap, scanTimestampMap); } catch (e) { console.error(`  Resolved positions error: ${e.message}`); }
 
-  console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}\n`);
+  console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}, Resolved: ${resolvedPositions.positions?.length || 0}\n`);
 
   // ===== Step 7: Build Leaderboard =====
   const leaderboard = topWallets.map((w, i) => ({
@@ -361,6 +363,7 @@ async function runScan() {
   analytics.activePositions = activePositions.slice(0, 50);
   analytics.winPatterns = winPatterns;
   analytics.biggestWins = biggestWins;
+  analytics.resolvedPositions = resolvedPositions;
 
   if (!Array.isArray(analytics.trendline)) analytics.trendline = [];
   analytics.trendline.push({ scanIndex: state.scanCount, timestamp: analytics.lastUpdated, avgScore, topScore, walletCount: topAddresses.size, totalPnl: analytics.summary.totalPnl });

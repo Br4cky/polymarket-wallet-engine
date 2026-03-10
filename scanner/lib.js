@@ -732,6 +732,100 @@ function findBiggestWins(walletData, marketLookup, topN = 50) {
  * @param {string} filepath - Path to JSON file
  * @returns {any} Parsed JSON or null
  */
+/**
+ * Compute resolved positions dataset for the signals tab.
+ * Builds a list of all resolved positions (closed, non-zero PnL) with
+ * per-period stats (today, 7d, 30d, 90d, all-time).
+ * @param {Map} walletData - Map of address → {positions, score, stats}
+ * @param {Map} marketLookup - Map of tokenId → {title, slug, ...}
+ * @param {Object} scanTimestampMap - Map of scanIndex → ISO timestamp
+ * @returns {Object} { positions: [...], periodStats: {...} }
+ */
+function computeResolvedPositions(walletData, marketLookup, scanTimestampMap) {
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  const cutoffs = {
+    today: now - 1 * DAY,
+    week: now - 7 * DAY,
+    month: now - 30 * DAY,
+    quarter: now - 90 * DAY,
+  };
+
+  const allResolved = [];
+
+  for (const [address, wallet] of walletData) {
+    if (!wallet.positions) continue;
+    const walletScore = wallet.score || 0;
+
+    for (const pos of wallet.positions) {
+      // Only resolved positions: has non-trivial PnL and not holding shares
+      if (Math.abs(pos.pnl || 0) < 0.01) continue;
+      if ((pos.amount || 0) > 0.01) continue; // still open
+
+      // Get timestamp — prefer firstSeenTimestamp, fall back to scanIndex map
+      const ts = pos.firstSeenTimestamp || scanTimestampMap?.[pos.scanIndex] || null;
+      const tsMs = ts ? new Date(ts).getTime() : null;
+
+      const marketInfo = marketLookup.get(pos.tokenId) || {};
+
+      allResolved.push({
+        address,
+        walletScore: +walletScore.toFixed(1),
+        marketTitle: marketInfo.title || `Market ${(pos.tokenId || '').slice(0, 8)}...`,
+        slug: marketInfo.slug || '',
+        tokenId: pos.tokenId,
+        pnl: +(pos.pnl || 0).toFixed(2),
+        totalBought: +(pos.totalBought || 0).toFixed(2),
+        roi: pos.totalBought > 0.01 ? +((pos.pnl / pos.totalBought)).toFixed(4) : 0,
+        timestamp: ts,
+        timestampMs: tsMs,
+      });
+    }
+  }
+
+  // Sort by PnL descending (biggest wins first)
+  allResolved.sort((a, b) => b.pnl - a.pnl);
+
+  // Compute period stats
+  function periodStats(positions) {
+    let wins = 0, losses = 0, totalPnl = 0, winPnl = 0, lossPnl = 0;
+    for (const p of positions) {
+      totalPnl += p.pnl;
+      if (p.pnl > 0) { wins++; winPnl += p.pnl; }
+      else { losses++; lossPnl += Math.abs(p.pnl); }
+    }
+    const total = wins + losses;
+    return {
+      total,
+      wins,
+      losses,
+      winRate: total > 0 ? +(wins / total).toFixed(4) : 0,
+      totalPnl: +totalPnl.toFixed(2),
+      avgWin: wins > 0 ? +(winPnl / wins).toFixed(2) : 0,
+      avgLoss: losses > 0 ? +(lossPnl / losses).toFixed(2) : 0,
+    };
+  }
+
+  // Filter by period based on timestamp
+  const withTs = allResolved.filter(p => p.timestampMs);
+  const periods = {
+    today: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.today)),
+    week: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.week)),
+    month: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.month)),
+    quarter: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.quarter)),
+    allTime: periodStats(allResolved),
+  };
+
+  return {
+    // Top 100 resolved positions for the table
+    positions: allResolved.slice(0, 100).map(p => {
+      const { timestampMs, ...rest } = p;
+      return rest;
+    }),
+    periodStats: periods,
+  };
+}
+
 function loadJSON(filepath) {
   try {
     const data = fs.readFileSync(filepath, 'utf8');
@@ -771,6 +865,7 @@ export {
   computeWinPatterns,
   computeActivePositions,
   findBiggestWins,
+  computeResolvedPositions,
   loadJSON,
   saveJSON,
 };
