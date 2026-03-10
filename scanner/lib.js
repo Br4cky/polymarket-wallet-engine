@@ -528,12 +528,17 @@ function computeWinPatterns(walletData, marketLookup) {
   let overallTrades = 0;
   let overallPnl = 0;
 
-  // Analyze all positions
+  // Analyze all resolved positions (skip open/unresolved ones with ~$0 PnL)
   for (const [address, wallet] of walletData) {
     if (!wallet.positions) continue;
 
     for (const pos of wallet.positions) {
       const { pnl, tokenId, totalBought } = pos;
+
+      // Skip unresolved positions — only count positions with meaningful PnL
+      if (Math.abs(pnl) < 0.01 && (totalBought || 0) < 0.01) continue;
+      // Also skip open positions (still holding shares)
+      if ((pos.amount || 0) > 0.01 && Math.abs(pnl) < 0.01) continue;
 
       overallTrades++;
       overallPnl += pnl;

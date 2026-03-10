@@ -33,6 +33,7 @@ const DATA_DIR = path.resolve(__dirname, '../data');
 const MAX_POSITIONS = 200000;
 const MIN_PNL = 1000;
 const MIN_POSITIONS_STAGE1 = 20;
+const MIN_WIN_RATE = 0.50;  // 50% minimum win rate to qualify
 const MAX_WALLETS = 2000;
 const USDC_DIVISOR = 1e6;
 const BATCH_SIZE = 1000;
@@ -251,7 +252,7 @@ async function runScan() {
     wallet.stats = stats;
     wallet.score = score;
 
-    if (stats.totalPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1) {
+    if (stats.totalPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE) {
       scoredWallets.push({ address, score, stats, lastActiveTimestamp: lastActiveTs });
     }
   }
@@ -259,7 +260,7 @@ async function runScan() {
   scoredWallets.sort((a, b) => b.score - a.score);
   const topWallets = scoredWallets.slice(0, MAX_WALLETS);
 
-  console.log(`  ${scoredWallets.length} wallets pass filters (PnL >= $${MIN_PNL}, positions >= ${MIN_POSITIONS_STAGE1})`);
+  console.log(`  ${scoredWallets.length} wallets pass filters (PnL >= $${MIN_PNL}, positions >= ${MIN_POSITIONS_STAGE1}, WR >= ${(MIN_WIN_RATE*100).toFixed(0)}%)`);
   console.log(`  Keeping top ${topWallets.length}`);
 
   // Build map of top wallets, prune the rest to keep file size manageable
@@ -324,7 +325,7 @@ async function runScan() {
   console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}\n`);
 
   // ===== Step 7: Build Leaderboard =====
-  const leaderboard = topWallets.slice(0, 50).map((w, i) => ({
+  const leaderboard = topWallets.map((w, i) => ({
     rank: i + 1,
     address: w.address,
     score: +w.score.toFixed(2),
