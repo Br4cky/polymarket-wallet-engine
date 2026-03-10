@@ -1,47 +1,3185 @@
 {
-  "lastUpdated": "2026-03-10T11:44:39.784Z",
-  "scanCount": 1,
+  "lastUpdated": "2026-03-10T11:57:48.248Z",
+  "scanCount": 2,
   "summary": {
-    "totalWallets": 0,
-    "avgScore": 0,
-    "totalPnl": 0,
-    "avgWinRate": 0,
-    "topScore": 0
+    "totalWallets": 66,
+    "avgScore": 66.1833527889199,
+    "topScore": 97.48768472906404,
+    "totalPnl": 2214805.2097489997,
+    "avgWinRate": 0.7961266370720375
   },
-  "leaderboard": [],
-  "consensus": [],
-  "activePositions": [],
+  "leaderboard": [
+    {
+      "rank": 1,
+      "address": "0x00113e75c6b045f3d21103008b908c047e3374f0",
+      "score": 97.49,
+      "stats": {
+        "wins": 186,
+        "losses": 17,
+        "resolved": 203,
+        "wr": 0.916256157635468,
+        "avgW": 7.802453016129035,
+        "avgL": 1.5907072352941172,
+        "totalPnl": 1424.2142380000007,
+        "totalVolume": 8844.482077000002,
+        "uniqueTokens": 568,
+        "estimatedMarkets": 284,
+        "efficiency": 0.16102856284865535,
+        "edgeRatio": 4.905021391121279,
+        "openCount": 202,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 2,
+      "address": "0x00201e126e707671acced682404faaf548d0e241",
+      "score": 89.63,
+      "stats": {
+        "wins": 124,
+        "losses": 36,
+        "resolved": 160,
+        "wr": 0.775,
+        "avgW": 70.45080472580645,
+        "avgL": 24.324084333333335,
+        "totalPnl": 7860.232749999999,
+        "totalVolume": 64754.156661,
+        "uniqueTokens": 273,
+        "estimatedMarkets": 137,
+        "efficiency": 0.12138576356031897,
+        "edgeRatio": 2.8963394370928817,
+        "openCount": 95,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 3,
+      "address": "0x0040d18e48c3b8581e1f9f0a8e6ff635d4e816dc",
+      "score": 89.53,
+      "stats": {
+        "wins": 335,
+        "losses": 4,
+        "resolved": 339,
+        "wr": 0.9882005899705014,
+        "avgW": 13.001226367164184,
+        "avgL": 9.89194825,
+        "totalPnl": 4315.843040000001,
+        "totalVolume": 17964.046295,
+        "uniqueTokens": 941,
+        "estimatedMarkets": 471,
+        "efficiency": 0.24024893774634978,
+        "edgeRatio": 1.3143241390455296,
+        "openCount": 272,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 4,
+      "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+      "score": 89.03,
+      "stats": {
+        "wins": 388,
+        "losses": 15,
+        "resolved": 403,
+        "wr": 0.9627791563275434,
+        "avgW": 8.67745789948452,
+        "avgL": 6.389656799999999,
+        "totalPnl": 3271.008812999993,
+        "totalVolume": 16053.80757500002,
+        "uniqueTokens": 1762,
+        "estimatedMarkets": 881,
+        "efficiency": 0.2037528354391023,
+        "edgeRatio": 1.3580475714258269,
+        "openCount": 978,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 5,
+      "address": "0x0035dd7c67948e65403211b46980546f159c464b",
+      "score": 86.85,
+      "stats": {
+        "wins": 76,
+        "losses": 0,
+        "resolved": 76,
+        "wr": 1,
+        "avgW": 373.6966998289474,
+        "avgL": 0,
+        "totalPnl": 28400.949187000002,
+        "totalVolume": 112971.124626,
+        "uniqueTokens": 177,
+        "estimatedMarkets": 89,
+        "efficiency": 0.2514000748511943,
+        "edgeRatio": 10,
+        "openCount": 25,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 6,
+      "address": "0x00289fbe31ee35f833ddf62114ade9d2233dfdc6",
+      "score": 84.38,
+      "stats": {
+        "wins": 80,
+        "losses": 35,
+        "resolved": 115,
+        "wr": 0.6956521739130435,
+        "avgW": 49.27422305,
+        "avgL": 16.527150742857145,
+        "totalPnl": 3363.487568,
+        "totalVolume": 28880.175229999997,
+        "uniqueTokens": 245,
+        "estimatedMarkets": 123,
+        "efficiency": 0.1164635443245543,
+        "edgeRatio": 2.9814106385697356,
+        "openCount": 70,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 7,
+      "address": "0x00514a9b6fbfc052e58523b93f385e4332f8ce79",
+      "score": 82.24,
+      "stats": {
+        "wins": 233,
+        "losses": 74,
+        "resolved": 307,
+        "wr": 0.758957654723127,
+        "avgW": 46.359716884120196,
+        "avgL": 37.2190144054054,
+        "totalPnl": 8047.606967999996,
+        "totalVolume": 49087.24736699997,
+        "uniqueTokens": 622,
+        "estimatedMarkets": 311,
+        "efficiency": 0.16394496329835323,
+        "edgeRatio": 1.2455922765484964,
+        "openCount": 156,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 8,
+      "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+      "score": 81.02,
+      "stats": {
+        "wins": 288,
+        "losses": 44,
+        "resolved": 332,
+        "wr": 0.8674698795180723,
+        "avgW": 8.381761611111115,
+        "avgL": 16.781288386363634,
+        "totalPnl": 1675.5706549999993,
+        "totalVolume": 14908.399812,
+        "uniqueTokens": 721,
+        "estimatedMarkets": 361,
+        "efficiency": 0.11239104639864211,
+        "edgeRatio": 0.4994706853332,
+        "openCount": 57,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 9,
+      "address": "0x00307d870f141fb11cc3428a7ed7ef9ee64604e9",
+      "score": 80.96,
+      "stats": {
+        "wins": 118,
+        "losses": 13,
+        "resolved": 131,
+        "wr": 0.9007633587786259,
+        "avgW": 12.121102737288135,
+        "avgL": 10.221299846153848,
+        "totalPnl": 1297.413225,
+        "totalVolume": 11324.088792999995,
+        "uniqueTokens": 210,
+        "estimatedMarkets": 105,
+        "efficiency": 0.11457109253699937,
+        "edgeRatio": 1.1858670540664318,
+        "openCount": 77,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 10,
+      "address": "0x00000000d99c8241806dc09c7600fac7f35100a4",
+      "score": 79.96,
+      "stats": {
+        "wins": 283,
+        "losses": 3,
+        "resolved": 286,
+        "wr": 0.9895104895104895,
+        "avgW": 12.737750985865718,
+        "avgL": 3.5744786666666664,
+        "totalPnl": 3594.0600929999982,
+        "totalVolume": 2595128.331306,
+        "uniqueTokens": 420,
+        "estimatedMarkets": 210,
+        "efficiency": 0.0013849257663459307,
+        "edgeRatio": 3.5635269290176357,
+        "openCount": 0,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 11,
+      "address": "0x000000000e1d81f0d862ea7fb8c1755f2e7a23f3",
+      "score": 77.53,
+      "stats": {
+        "wins": 166,
+        "losses": 29,
+        "resolved": 195,
+        "wr": 0.8512820512820513,
+        "avgW": 87.70363867469877,
+        "avgL": 24.5871164137931,
+        "totalPnl": 13845.77764399999,
+        "totalVolume": 1169750.0553200003,
+        "uniqueTokens": 240,
+        "estimatedMarkets": 120,
+        "efficiency": 0.011836526599019737,
+        "edgeRatio": 3.5670567137144227,
+        "openCount": 9,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 12,
+      "address": "0x002128a7a0781fe63baa5cd4e5793700e4eede5b",
+      "score": 76.36,
+      "stats": {
+        "wins": 43,
+        "losses": 14,
+        "resolved": 57,
+        "wr": 0.7543859649122807,
+        "avgW": 175.76299065116277,
+        "avgL": 28.770362071428572,
+        "totalPnl": 7155.023528999998,
+        "totalVolume": 21979.877077000005,
+        "uniqueTokens": 109,
+        "estimatedMarkets": 55,
+        "efficiency": 0.32552609388735376,
+        "edgeRatio": 6.10916853304778,
+        "openCount": 0,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 13,
+      "address": "0x0006af12cd4dacc450836a0e1ec6ce47365d8c63",
+      "score": 75.9,
+      "stats": {
+        "wins": 468,
+        "losses": 96,
+        "resolved": 564,
+        "wr": 0.8297872340425532,
+        "avgW": 326.9475878846154,
+        "avgL": 376.44467440625004,
+        "totalPnl": 116872.78238700001,
+        "totalVolume": 1693896.730504999,
+        "uniqueTokens": 1059,
+        "estimatedMarkets": 530,
+        "efficiency": 0.06899640354825935,
+        "edgeRatio": 0.8685143132926392,
+        "openCount": 26,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 14,
+      "address": "0x00204edb7266a87fc4b4619262f3bc45d2ed1b6d",
+      "score": 75.37,
+      "stats": {
+        "wins": 35,
+        "losses": 0,
+        "resolved": 35,
+        "wr": 1,
+        "avgW": 118.49856894285713,
+        "avgL": 0,
+        "totalPnl": 4147.4499129999995,
+        "totalVolume": 19501.990166,
+        "uniqueTokens": 106,
+        "estimatedMarkets": 53,
+        "efficiency": 0.2126680342722515,
+        "edgeRatio": 10,
+        "openCount": 36,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 15,
+      "address": "0x001ccc5c642fe5bd7e129f09e8c2cd513aba5e56",
+      "score": 73.97,
+      "stats": {
+        "wins": 32,
+        "losses": 0,
+        "resolved": 32,
+        "wr": 1,
+        "avgW": 423.1875,
+        "avgL": 0,
+        "totalPnl": 13542,
+        "totalVolume": 54954,
+        "uniqueTokens": 98,
+        "estimatedMarkets": 49,
+        "efficiency": 0.24642428212686976,
+        "edgeRatio": 10,
+        "openCount": 34,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 16,
+      "address": "0x005197a477ffe8ce01c189d31c4538867d96a4d2",
+      "score": 73.21,
+      "stats": {
+        "wins": 575,
+        "losses": 196,
+        "resolved": 771,
+        "wr": 0.7457846952010376,
+        "avgW": 5.931023768695647,
+        "avgL": 11.319191244897956,
+        "totalPnl": 1191.777182999999,
+        "totalVolume": 15190.371175000026,
+        "uniqueTokens": 1749,
+        "estimatedMarkets": 875,
+        "efficiency": 0.07845609361813352,
+        "edgeRatio": 0.5239794646432018,
+        "openCount": 229,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 17,
+      "address": "0x0013a61e46aab90f84e41ac5b881cd4c1c7dca56",
+      "score": 72.71,
+      "stats": {
+        "wins": 33,
+        "losses": 0,
+        "resolved": 33,
+        "wr": 1,
+        "avgW": 86.10909090909091,
+        "avgL": 0,
+        "totalPnl": 2841.6,
+        "totalVolume": 10985,
+        "uniqueTokens": 90,
+        "estimatedMarkets": 45,
+        "efficiency": 0.25868001820664543,
+        "edgeRatio": 10,
+        "openCount": 24,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 18,
+      "address": "0x0019c9341929e397eae82fcc5ab6ce11c2fc92a4",
+      "score": 72.47,
+      "stats": {
+        "wins": 36,
+        "losses": 9,
+        "resolved": 45,
+        "wr": 0.8,
+        "avgW": 208.87648975000002,
+        "avgL": 43.65777777777778,
+        "totalPnl": 7126.633631,
+        "totalVolume": 44408.22548500001,
+        "uniqueTokens": 90,
+        "estimatedMarkets": 45,
+        "efficiency": 0.16048003614571807,
+        "edgeRatio": 4.7844049876565204,
+        "openCount": 0,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 19,
+      "address": "0x003beebc7241d3855fc7a6ac8bd4285cadd2fc58",
+      "score": 71.97,
+      "stats": {
+        "wins": 39,
+        "losses": 12,
+        "resolved": 51,
+        "wr": 0.7647058823529411,
+        "avgW": 58.73119594871795,
+        "avgL": 23.87307975,
+        "totalPnl": 2004.0396849999997,
+        "totalVolume": 12893.787105000003,
+        "uniqueTokens": 103,
+        "estimatedMarkets": 52,
+        "efficiency": 0.15542677017079531,
+        "edgeRatio": 2.460143247697983,
+        "openCount": 48,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 20,
+      "address": "0x00430d6bdabfbfd282a3585863eecc4fd2d75158",
+      "score": 70.82,
+      "stats": {
+        "wins": 73,
+        "losses": 3,
+        "resolved": 76,
+        "wr": 0.9605263157894737,
+        "avgW": 78.9694980958904,
+        "avgL": 586.014466,
+        "totalPnl": 4006.729963,
+        "totalVolume": 24353.885285000004,
+        "uniqueTokens": 186,
+        "estimatedMarkets": 93,
+        "efficiency": 0.1645211807525355,
+        "edgeRatio": 0.13475690904853943,
+        "openCount": 46,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 21,
+      "address": "0x004e6c5e759297ab5eab6abf058cfd99af02c650",
+      "score": 70.74,
+      "stats": {
+        "wins": 175,
+        "losses": 122,
+        "resolved": 297,
+        "wr": 0.5892255892255892,
+        "avgW": 174.91632265714287,
+        "avgL": 153.32742992622957,
+        "totalPnl": 11904.410013999994,
+        "totalVolume": 167435.87898399984,
+        "uniqueTokens": 445,
+        "estimatedMarkets": 223,
+        "efficiency": 0.07109832185452664,
+        "edgeRatio": 1.1408025474717758,
+        "openCount": 147,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 22,
+      "address": "0x001fd227d0d2ea4b7316c6c0319310097bc924a0",
+      "score": 70.5,
+      "stats": {
+        "wins": 482,
+        "losses": 14,
+        "resolved": 496,
+        "wr": 0.9717741935483871,
+        "avgW": 67.65727459751028,
+        "avgL": 1107.1421305714284,
+        "totalPnl": 17110.816527999992,
+        "totalVolume": 538862.6356010006,
+        "uniqueTokens": 993,
+        "estimatedMarkets": 497,
+        "efficiency": 0.031753577623573906,
+        "edgeRatio": 0.06110983651447749,
+        "openCount": 1,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 23,
+      "address": "0x0039af0d5d2bf6bd8aa01c683ce15f799dbd3576",
+      "score": 70.13,
+      "stats": {
+        "wins": 29,
+        "losses": 0,
+        "resolved": 29,
+        "wr": 1,
+        "avgW": 88.51724137931035,
+        "avgL": 0,
+        "totalPnl": 2567,
+        "totalVolume": 10614,
+        "uniqueTokens": 83,
+        "estimatedMarkets": 42,
+        "efficiency": 0.2418503862822687,
+        "edgeRatio": 10,
+        "openCount": 25,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 24,
+      "address": "0x003492c33af5282a4aa2eebe722a9e53d65c491e",
+      "score": 69.33,
+      "stats": {
+        "wins": 29,
+        "losses": 0,
+        "resolved": 29,
+        "wr": 1,
+        "avgW": 192.26997620689656,
+        "avgL": 0,
+        "totalPnl": 5575.82931,
+        "totalVolume": 26461.605874,
+        "uniqueTokens": 80,
+        "estimatedMarkets": 40,
+        "efficiency": 0.21071394293112658,
+        "edgeRatio": 10,
+        "openCount": 22,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 25,
+      "address": "0x000000008c1300ed52d5c67077c48390a8004108",
+      "score": 69.09,
+      "stats": {
+        "wins": 83,
+        "losses": 3,
+        "resolved": 86,
+        "wr": 0.9651162790697675,
+        "avgW": 13.28451175903614,
+        "avgL": 2.817057666666667,
+        "totalPnl": 1094.1633029999998,
+        "totalVolume": 278555.51829099987,
+        "uniqueTokens": 138,
+        "estimatedMarkets": 69,
+        "efficiency": 0.003927990045621553,
+        "edgeRatio": 4.715740084495776,
+        "openCount": 0,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 26,
+      "address": "0x0042acfc7b4a08726665ed8cd081d7b6e33be62f",
+      "score": 69.01,
+      "stats": {
+        "wins": 104,
+        "losses": 68,
+        "resolved": 172,
+        "wr": 0.6046511627906976,
+        "avgW": 42.77296626923077,
+        "avgL": 18.541600294117654,
+        "totalPnl": 3187.5596719999985,
+        "totalVolume": 89373.07941,
+        "uniqueTokens": 222,
+        "estimatedMarkets": 111,
+        "efficiency": 0.03566576974904303,
+        "edgeRatio": 2.30686486553162,
+        "openCount": 29,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 27,
+      "address": "0x0000000060b3a5229b09b16c8fc55e35d166deaa",
+      "score": 68.44,
+      "stats": {
+        "wins": 513,
+        "losses": 56,
+        "resolved": 569,
+        "wr": 0.9015817223198594,
+        "avgW": 49.99555644444441,
+        "avgL": 232.83334442857134,
+        "totalPnl": 12609.05316800001,
+        "totalVolume": 394495.68358300003,
+        "uniqueTokens": 1077,
+        "estimatedMarkets": 539,
+        "efficiency": 0.03196246167633194,
+        "edgeRatio": 0.21472678909949713,
+        "openCount": 44,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 28,
+      "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+      "score": 67.2,
+      "stats": {
+        "wins": 216,
+        "losses": 408,
+        "resolved": 624,
+        "wr": 0.34615384615384615,
+        "avgW": 32.730104092592605,
+        "avgL": 1.7472682843137235,
+        "totalPnl": 6356.817024000006,
+        "totalVolume": 186510.00854799978,
+        "uniqueTokens": 4117,
+        "estimatedMarkets": 2059,
+        "efficiency": 0.034082980712340866,
+        "edgeRatio": 18.73215715435941,
+        "openCount": 3301,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 29,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "score": 67.16,
+      "stats": {
+        "wins": 894,
+        "losses": 146,
+        "resolved": 1040,
+        "wr": 0.8596153846153847,
+        "avgW": 2635.15822666555,
+        "avgL": 5069.152518089042,
+        "totalPnl": 1615735.1869980008,
+        "totalVolume": 51702230.58116591,
+        "uniqueTokens": 1963,
+        "estimatedMarkets": 982,
+        "efficiency": 0.031250782970794706,
+        "edgeRatio": 0.5198419690988004,
+        "openCount": 120,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 30,
+      "address": "0x0030c006de315db5af8a7014498f8f660b708198",
+      "score": 67.08,
+      "stats": {
+        "wins": 28,
+        "losses": 10,
+        "resolved": 38,
+        "wr": 0.7368421052631579,
+        "avgW": 279.69724875,
+        "avgL": 6.3729946,
+        "totalPnl": 7767.793019,
+        "totalVolume": 17486.348508000003,
+        "uniqueTokens": 78,
+        "estimatedMarkets": 39,
+        "efficiency": 0.4442204165979098,
+        "edgeRatio": 43.88788415888506,
+        "openCount": 1,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 31,
+      "address": "0x002b70d391d6d441dd1857797af04788919e25a3",
+      "score": 66.7,
+      "stats": {
+        "wins": 24,
+        "losses": 0,
+        "resolved": 24,
+        "wr": 1,
+        "avgW": 133.89583333333334,
+        "avgL": 0,
+        "totalPnl": 3213.5,
+        "totalVolume": 11730,
+        "uniqueTokens": 75,
+        "estimatedMarkets": 38,
+        "efficiency": 0.27395566922421144,
+        "edgeRatio": 10,
+        "openCount": 27,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 32,
+      "address": "0x003b7e00602d439be66e1d6058d1bf81fad07f34",
+      "score": 65.93,
+      "stats": {
+        "wins": 29,
+        "losses": 6,
+        "resolved": 35,
+        "wr": 0.8285714285714286,
+        "avgW": 355.99948703448274,
+        "avgL": 17.233343333333334,
+        "totalPnl": 10220.585063999997,
+        "totalVolume": 46579.36392900001,
+        "uniqueTokens": 68,
+        "estimatedMarkets": 34,
+        "efficiency": 0.21942302775063718,
+        "edgeRatio": 20.657598479216514,
+        "openCount": 2,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 33,
+      "address": "0x001aa7e8fa104b784f8c5fb94a402377a1cc24b0",
+      "score": 65.82,
+      "stats": {
+        "wins": 28,
+        "losses": 7,
+        "resolved": 35,
+        "wr": 0.8,
+        "avgW": 524.6273594642856,
+        "avgL": 28.72663857142857,
+        "totalPnl": 14488.479594999999,
+        "totalVolume": 41053.82402200001,
+        "uniqueTokens": 69,
+        "estimatedMarkets": 35,
+        "efficiency": 0.3529142519643452,
+        "edgeRatio": 18.26274794246475,
+        "openCount": 4,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 34,
+      "address": "0x0044c20cde2f37e271d7e0816c21913053e8cb2c",
+      "score": 65.6,
+      "stats": {
+        "wins": 1519,
+        "losses": 1099,
+        "resolved": 2618,
+        "wr": 0.5802139037433155,
+        "avgW": 2.407319747860436,
+        "avgL": 0.9680296296633295,
+        "totalPnl": 2592.854134000003,
+        "totalVolume": 406654.2331169999,
+        "uniqueTokens": 3087,
+        "estimatedMarkets": 1544,
+        "efficiency": 0.0063760657650746835,
+        "edgeRatio": 2.486824446373275,
+        "openCount": 1243,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 35,
+      "address": "0x000000001d4b0cf0eefd45007af4370800a6b6a7",
+      "score": 65.23,
+      "stats": {
+        "wins": 216,
+        "losses": 4,
+        "resolved": 220,
+        "wr": 0.9818181818181818,
+        "avgW": 23.050418425925926,
+        "avgL": 405.20932724999994,
+        "totalPnl": 3358.0530709999985,
+        "totalVolume": 867277.9245899998,
+        "uniqueTokens": 332,
+        "estimatedMarkets": 166,
+        "efficiency": 0.003871945746327507,
+        "edgeRatio": 0.05688521185422918,
+        "openCount": 0,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 36,
+      "address": "0x001c7d71930f0667928dd289f1fd5752cfe5aa10",
+      "score": 64.93,
+      "stats": {
+        "wins": 29,
+        "losses": 0,
+        "resolved": 29,
+        "wr": 1,
+        "avgW": 63.94062327586205,
+        "avgL": 0,
+        "totalPnl": 1854.2780749999995,
+        "totalVolume": 17030.451883999995,
+        "uniqueTokens": 57,
+        "estimatedMarkets": 29,
+        "efficiency": 0.10888014526156423,
+        "edgeRatio": 10,
+        "openCount": 3,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 37,
+      "address": "0x00000000d7c172140cb70015f000f9223b79cb2a",
+      "score": 64.66,
+      "stats": {
+        "wins": 226,
+        "losses": 6,
+        "resolved": 232,
+        "wr": 0.9741379310344828,
+        "avgW": 12.562792663716825,
+        "avgL": 26.097324333333333,
+        "totalPnl": 2682.6071960000027,
+        "totalVolume": 1227478.8194559996,
+        "uniqueTokens": 357,
+        "estimatedMarkets": 179,
+        "efficiency": 0.002185461087783897,
+        "edgeRatio": 0.4813824016307582,
+        "openCount": 1,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 38,
+      "address": "0x00497937c03436c8b1c033123d282688c7976034",
+      "score": 64.24,
+      "stats": {
+        "wins": 328,
+        "losses": 142,
+        "resolved": 470,
+        "wr": 0.6978723404255319,
+        "avgW": 43.4913216615854,
+        "avgL": 63.22629987323944,
+        "totalPnl": 5287.018922999996,
+        "totalVolume": 147353.82964499996,
+        "uniqueTokens": 835,
+        "estimatedMarkets": 418,
+        "efficiency": 0.035879752400988216,
+        "edgeRatio": 0.6878675764480902,
+        "openCount": 26,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 39,
+      "address": "0x0012fdbc568eac386baeb465f5f8a867341fcdb5",
+      "score": 64.17,
+      "stats": {
+        "wins": 247,
+        "losses": 9,
+        "resolved": 256,
+        "wr": 0.96484375,
+        "avgW": 5.030758688259107,
+        "avgL": 10.549740222222223,
+        "totalPnl": 1147.6497339999994,
+        "totalVolume": 1041006.455474,
+        "uniqueTokens": 500,
+        "estimatedMarkets": 250,
+        "efficiency": 0.0011024424757072632,
+        "edgeRatio": 0.47686090674177906,
+        "openCount": 10,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 40,
+      "address": "0x000d76e3e1d30a7c403d8440d7f3f50697667f1a",
+      "score": 64.04,
+      "stats": {
+        "wins": 27,
+        "losses": 3,
+        "resolved": 30,
+        "wr": 0.9,
+        "avgW": 610.339448111111,
+        "avgL": 82.365329,
+        "totalPnl": 16232.069112,
+        "totalVolume": 39494.376016,
+        "uniqueTokens": 59,
+        "estimatedMarkets": 30,
+        "efficiency": 0.41099697601056023,
+        "edgeRatio": 7.410150065825767,
+        "openCount": 0,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 41,
+      "address": "0x000000004575e3d0490e00f7009fcd6e43db5618",
+      "score": 63.53,
+      "stats": {
+        "wins": 217,
+        "losses": 16,
+        "resolved": 233,
+        "wr": 0.9313304721030042,
+        "avgW": 50.77842300460827,
+        "avgL": 457.37703031250004,
+        "totalPnl": 3700.8853069999977,
+        "totalVolume": 1249904.5936609996,
+        "uniqueTokens": 337,
+        "estimatedMarkets": 169,
+        "efficiency": 0.002960934239116618,
+        "edgeRatio": 0.11102092942864714,
+        "openCount": 1,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 42,
+      "address": "0x001f611e47396321281228b5860ee79253148701",
+      "score": 63.42,
+      "stats": {
+        "wins": 363,
+        "losses": 96,
+        "resolved": 459,
+        "wr": 0.7908496732026143,
+        "avgW": 53.06953667493112,
+        "avgL": 97.30847378125003,
+        "totalPnl": 9922.628330000001,
+        "totalVolume": 448619.4984029999,
+        "uniqueTokens": 744,
+        "estimatedMarkets": 372,
+        "efficiency": 0.022118138790941256,
+        "edgeRatio": 0.5453742578907539,
+        "openCount": 9,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 43,
+      "address": "0x0000000065986a99dd171fbb77ab72feb900b2ac",
+      "score": 62.45,
+      "stats": {
+        "wins": 402,
+        "losses": 50,
+        "resolved": 452,
+        "wr": 0.8893805309734514,
+        "avgW": 56.25155292786066,
+        "avgL": 216.37600812,
+        "totalPnl": 11794.323871,
+        "totalVolume": 3081867.446565998,
+        "uniqueTokens": 599,
+        "estimatedMarkets": 300,
+        "efficiency": 0.0038270055657786146,
+        "edgeRatio": 0.2599713037346733,
+        "openCount": 3,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 44,
+      "address": "0x0000004aeba5281a38f203ebb935e255e4b463b8",
+      "score": 62.37,
+      "stats": {
+        "wins": 110,
+        "losses": 52,
+        "resolved": 162,
+        "wr": 0.6790123456790124,
+        "avgW": 34.645800645454536,
+        "avgL": 20.586128557692305,
+        "totalPnl": 2740.559386,
+        "totalVolume": 199425.72130899996,
+        "uniqueTokens": 181,
+        "estimatedMarkets": 91,
+        "efficiency": 0.013742256354954551,
+        "edgeRatio": 1.682968244775127,
+        "openCount": 40,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 45,
+      "address": "0x0044dcc4969abcbffeb64ae28c965dfe606c9ed5",
+      "score": 62.32,
+      "stats": {
+        "wins": 22,
+        "losses": 0,
+        "resolved": 22,
+        "wr": 1,
+        "avgW": 1109.7506872272727,
+        "avgL": 0,
+        "totalPnl": 24414.515119,
+        "totalVolume": 75383.015115,
+        "uniqueTokens": 57,
+        "estimatedMarkets": 29,
+        "efficiency": 0.3238728920799283,
+        "edgeRatio": 10,
+        "openCount": 13,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 46,
+      "address": "0x00484735be281ed5dcbc557e4c5109bf1e0a9a4c",
+      "score": 61.85,
+      "stats": {
+        "wins": 63,
+        "losses": 160,
+        "resolved": 223,
+        "wr": 0.2825112107623318,
+        "avgW": 23.55170780952381,
+        "avgL": 1.24686729375,
+        "totalPnl": 1284.2588249999997,
+        "totalVolume": 76197.59737500001,
+        "uniqueTokens": 1172,
+        "estimatedMarkets": 586,
+        "efficiency": 0.016854321779722643,
+        "edgeRatio": 18.888704457626094,
+        "openCount": 852,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 47,
+      "address": "0x0026ca70e996c6119f9a47a425245d227dcbaef7",
+      "score": 61.6,
+      "stats": {
+        "wins": 364,
+        "losses": 61,
+        "resolved": 425,
+        "wr": 0.8564705882352941,
+        "avgW": 156.93935400549455,
+        "avgL": 736.2775059508195,
+        "totalPnl": 12212.996995000007,
+        "totalVolume": 2689634.1337150014,
+        "uniqueTokens": 813,
+        "estimatedMarkets": 407,
+        "efficiency": 0.004540765170217058,
+        "edgeRatio": 0.21315244963626184,
+        "openCount": 41,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 48,
+      "address": "0x000335e87e828296af7c59678792487128b3dccc",
+      "score": 60.87,
+      "stats": {
+        "wins": 20,
+        "losses": 1,
+        "resolved": 21,
+        "wr": 0.9523809523809523,
+        "avgW": 157.7805,
+        "avgL": 1.35,
+        "totalPnl": 3154.2599999999998,
+        "totalVolume": 12952,
+        "uniqueTokens": 55,
+        "estimatedMarkets": 28,
+        "efficiency": 0.24353458925262506,
+        "edgeRatio": 116.87444444444444,
+        "openCount": 15,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 49,
+      "address": "0x000000001e00480500ba5440c8047878ff19f5d7",
+      "score": 59.81,
+      "stats": {
+        "wins": 137,
+        "losses": 9,
+        "resolved": 146,
+        "wr": 0.9383561643835616,
+        "avgW": 28.600772678832122,
+        "avgL": 233.8040867777778,
+        "totalPnl": 1814.0690759999986,
+        "totalVolume": 508260.17205600016,
+        "uniqueTokens": 223,
+        "estimatedMarkets": 112,
+        "efficiency": 0.0035691741665725566,
+        "edgeRatio": 0.12232794162411757,
+        "openCount": 1,
+        "maxScanIndex": 2
+      }
+    },
+    {
+      "rank": 50,
+      "address": "0x002dcd37b0b8fa8db98236e599fe1b90d6272561",
+      "score": 59.8,
+      "stats": {
+        "wins": 805,
+        "losses": 517,
+        "resolved": 1322,
+        "wr": 0.6089258698940998,
+        "avgW": 114.26238227329203,
+        "avgL": 108.36559050676973,
+        "totalPnl": 35956.207437999954,
+        "totalVolume": 2241659.412949,
+        "uniqueTokens": 2061,
+        "estimatedMarkets": 1031,
+        "efficiency": 0.016039995741680493,
+        "edgeRatio": 1.054415721253823,
+        "openCount": 59,
+        "maxScanIndex": 2
+      }
+    }
+  ],
+  "consensus": [
+    {
+      "marketTitle": "Market 101443205557953769944584140209356208074985603773882357999963509274129845972413",
+      "slug": "101443205557953769944584140209356208074985603773882357999963509274129845972413",
+      "tokenId": "101443205557953769944584140209356208074985603773882357999963509274129845972413",
+      "walletCount": 4,
+      "wallets": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "score": 58.10589483905602,
+          "pnl": 0
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "score": 67.1576699472133,
+          "pnl": 0
+        },
+        {
+          "address": "0x0026ca70e996c6119f9a47a425245d227dcbaef7",
+          "score": 61.60227068110223,
+          "pnl": 0
+        },
+        {
+          "address": "0x002dcd37b0b8fa8db98236e599fe1b90d6272561",
+          "score": 59.802269572682036,
+          "pnl": 243.999692
+        }
+      ],
+      "avgScore": 61.667026260013394,
+      "avgPnl": 60.999923,
+      "conviction": 246.66810504005358
+    },
+    {
+      "marketTitle": "Market 66582886139826077296219995916576410842420903995365655215797599108871910258215",
+      "slug": "66582886139826077296219995916576410842420903995365655215797599108871910258215",
+      "tokenId": "66582886139826077296219995916576410842420903995365655215797599108871910258215",
+      "walletCount": 3,
+      "wallets": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "score": 67.20121152708356,
+          "pnl": 0
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "score": 81.02409638554217,
+          "pnl": 0
+        },
+        {
+          "address": "0x004ea5d3961dc198c688232b94d13062a0e290f8",
+          "score": 57.19975913492313,
+          "pnl": 0
+        }
+      ],
+      "avgScore": 68.47502234918295,
+      "avgPnl": 0,
+      "conviction": 205.42506704754885
+    },
+    {
+      "marketTitle": "Market 102559817034631022221500208641784929295731053857601013029449249654006364919935",
+      "slug": "102559817034631022221500208641784929295731053857601013029449249654006364919935",
+      "tokenId": "102559817034631022221500208641784929295731053857601013029449249654006364919935",
+      "walletCount": 3,
+      "wallets": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "score": 58.10589483905602,
+          "pnl": 0
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "score": 67.1576699472133,
+          "pnl": 0
+        },
+        {
+          "address": "0x001c7d71930f0667928dd289f1fd5752cfe5aa10",
+          "score": 64.93049442140351,
+          "pnl": 0
+        }
+      ],
+      "avgScore": 63.398019735890934,
+      "avgPnl": 0,
+      "conviction": 190.1940592076728
+    },
+    {
+      "marketTitle": "Market 7252132964674298685625517441194494999720351412355112077356645283437385285330",
+      "slug": "7252132964674298685625517441194494999720351412355112077356645283437385285330",
+      "tokenId": "7252132964674298685625517441194494999720351412355112077356645283437385285330",
+      "walletCount": 3,
+      "wallets": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "score": 58.10589483905602,
+          "pnl": 0
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "score": 67.1576699472133,
+          "pnl": 0
+        },
+        {
+          "address": "0x0026ca70e996c6119f9a47a425245d227dcbaef7",
+          "score": 61.60227068110223,
+          "pnl": 0
+        }
+      ],
+      "avgScore": 62.28861182245718,
+      "avgPnl": 0,
+      "conviction": 186.86583546737154
+    },
+    {
+      "marketTitle": "Market 86620530406157559149607427304423476709238424342859385697887050586116236047982",
+      "slug": "86620530406157559149607427304423476709238424342859385697887050586116236047982",
+      "tokenId": "86620530406157559149607427304423476709238424342859385697887050586116236047982",
+      "walletCount": 3,
+      "wallets": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "score": 58.10589483905602,
+          "pnl": 0
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "score": 67.1576699472133,
+          "pnl": 0
+        },
+        {
+          "address": "0x002dcd37b0b8fa8db98236e599fe1b90d6272561",
+          "score": 59.802269572682036,
+          "pnl": 0
+        }
+      ],
+      "avgScore": 61.688611452983785,
+      "avgPnl": 0,
+      "conviction": 185.06583435895135
+    },
+    {
+      "marketTitle": "Market 82991837887127223585838300135823820957946688171642633953055760547186260528157",
+      "slug": "82991837887127223585838300135823820957946688171642633953055760547186260528157",
+      "tokenId": "82991837887127223585838300135823820957946688171642633953055760547186260528157",
+      "walletCount": 3,
+      "wallets": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "score": 58.10589483905602,
+          "pnl": 0
+        },
+        {
+          "address": "0x001f611e47396321281228b5860ee79253148701",
+          "score": 63.421363501611204,
+          "pnl": 98.1442
+        },
+        {
+          "address": "0x0026ca70e996c6119f9a47a425245d227dcbaef7",
+          "score": 61.60227068110223,
+          "pnl": 0
+        }
+      ],
+      "avgScore": 61.04317634058982,
+      "avgPnl": 32.714733333333335,
+      "conviction": 183.12952902176946
+    },
+    {
+      "marketTitle": "Market 11259214629259962188961658360673801608680858594287954976598964541495296876564",
+      "slug": "11259214629259962188961658360673801608680858594287954976598964541495296876564",
+      "tokenId": "11259214629259962188961658360673801608680858594287954976598964541495296876564",
+      "walletCount": 3,
+      "wallets": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "score": 58.10589483905602,
+          "pnl": 0
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "score": 67.1576699472133,
+          "pnl": 3713.377154
+        },
+        {
+          "address": "0x00425c692a667981118f679ef68fdc775257321e",
+          "score": 55.28971904938495,
+          "pnl": 991.687688
+        }
+      ],
+      "avgScore": 60.18442794521809,
+      "avgPnl": 1568.3549473333333,
+      "conviction": 180.55328383565427
+    }
+  ],
+  "activePositions": [
+    {
+      "marketTitle": "Market 101443205557953769944584140209356208074985603773882357999963509274129845972413",
+      "slug": "101443205557953769944584140209356208074985603773882357999963509274129845972413",
+      "tokenId": "101443205557953769944584140209356208074985603773882357999963509274129845972413",
+      "holderCount": 4,
+      "totalShares": 247128.142903,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 65599.89006,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 176428.251353,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        },
+        {
+          "address": "0x0026ca70e996c6119f9a47a425245d227dcbaef7",
+          "shares": 100,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 61.60227068110223
+        },
+        {
+          "address": "0x002dcd37b0b8fa8db98236e599fe1b90d6272561",
+          "shares": 5000.00149,
+          "entryPrice": 1.7999990804002743,
+          "currentPnl": 243.999692,
+          "walletScore": 59.802269572682036
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 102559817034631022221500208641784929295731053857601013029449249654006364919935",
+      "slug": "102559817034631022221500208641784929295731053857601013029449249654006364919935",
+      "tokenId": "102559817034631022221500208641784929295731053857601013029449249654006364919935",
+      "holderCount": 3,
+      "totalShares": 98662.764686,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 26318.580597,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 72199.604089,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        },
+        {
+          "address": "0x001c7d71930f0667928dd289f1fd5752cfe5aa10",
+          "shares": 144.58,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 64.93049442140351
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 11259214629259962188961658360673801608680858594287954976598964541495296876564",
+      "slug": "11259214629259962188961658360673801608680858594287954976598964541495296876564",
+      "tokenId": "11259214629259962188961658360673801608680858594287954976598964541495296876564",
+      "holderCount": 3,
+      "totalShares": 118148.474095,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 4433.327832,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 113616.011975,
+          "entryPrice": 1.2809211767970086,
+          "currentPnl": 3713.377154,
+          "walletScore": 67.1576699472133
+        },
+        {
+          "address": "0x00425c692a667981118f679ef68fdc775257321e",
+          "shares": 99.134288,
+          "entryPrice": 202.54363129132477,
+          "currentPnl": 991.687688,
+          "walletScore": 55.28971904938495
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 7252132964674298685625517441194494999720351412355112077356645283437385285330",
+      "slug": "7252132964674298685625517441194494999720351412355112077356645283437385285330",
+      "tokenId": "7252132964674298685625517441194494999720351412355112077356645283437385285330",
+      "holderCount": 3,
+      "totalShares": 56238.800574999994,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 1600,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 41749.670575,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        },
+        {
+          "address": "0x0026ca70e996c6119f9a47a425245d227dcbaef7",
+          "shares": 12889.13,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 61.60227068110223
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 82991837887127223585838300135823820957946688171642633953055760547186260528157",
+      "slug": "82991837887127223585838300135823820957946688171642633953055760547186260528157",
+      "tokenId": "82991837887127223585838300135823820957946688171642633953055760547186260528157",
+      "holderCount": 3,
+      "totalShares": 9790.67586,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 4999.99586,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x001f611e47396321281228b5860ee79253148701",
+          "shares": 600,
+          "entryPrice": 2.6666666666666665,
+          "currentPnl": 98.1442,
+          "walletScore": 63.421363501611204
+        },
+        {
+          "address": "0x0026ca70e996c6119f9a47a425245d227dcbaef7",
+          "shares": 4190.68,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 61.60227068110223
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 86620530406157559149607427304423476709238424342859385697887050586116236047982",
+      "slug": "86620530406157559149607427304423476709238424342859385697887050586116236047982",
+      "tokenId": "86620530406157559149607427304423476709238424342859385697887050586116236047982",
+      "holderCount": 3,
+      "totalShares": 175768.925609,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 28036.351008,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 142646.064601,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        },
+        {
+          "address": "0x002dcd37b0b8fa8db98236e599fe1b90d6272561",
+          "shares": 5086.51,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 59.802269572682036
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 66582886139826077296219995916576410842420903995365655215797599108871910258215",
+      "slug": "66582886139826077296219995916576410842420903995365655215797599108871910258215",
+      "tokenId": "66582886139826077296219995916576410842420903995365655215797599108871910258215",
+      "holderCount": 3,
+      "totalShares": 172.423203,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 24.994633,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 76,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        },
+        {
+          "address": "0x004ea5d3961dc198c688232b94d13062a0e290f8",
+          "shares": 71.42857,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 57.19975913492313
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 43438271770521865468974299115465686442180348481374292090500162167816051716479",
+      "slug": "43438271770521865468974299115465686442180348481374292090500162167816051716479",
+      "tokenId": "43438271770521865468974299115465686442180348481374292090500162167816051716479",
+      "holderCount": 2,
+      "totalShares": 11580.53195,
+      "holders": [
+        {
+          "address": "0x0000000060b3a5229b09b16c8fc55e35d166deaa",
+          "shares": 600,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 68.43994400486218
+        },
+        {
+          "address": "0x0006af12cd4dacc450836a0e1ec6ce47365d8c63",
+          "shares": 10980.53195,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 75.90398361068429
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 71651293142532703851734934342454379070670257223427070026970997450110455593335",
+      "slug": "71651293142532703851734934342454379070670257223427070026970997450110455593335",
+      "tokenId": "71651293142532703851734934342454379070670257223427070026970997450110455593335",
+      "holderCount": 2,
+      "totalShares": 344.615382,
+      "holders": [
+        {
+          "address": "0x000335e87e828296af7c59678792487128b3dccc",
+          "shares": 340,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 60.86807341415955
+        },
+        {
+          "address": "0x00113e75c6b045f3d21103008b908c047e3374f0",
+          "shares": 4.615382,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 97.48768472906404
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 46553455570564517989191023458705371521436514261892866503067981558938998232024",
+      "slug": "46553455570564517989191023458705371521436514261892866503067981558938998232024",
+      "tokenId": "46553455570564517989191023458705371521436514261892866503067981558938998232024",
+      "holderCount": 2,
+      "totalShares": 1338.681317,
+      "holders": [
+        {
+          "address": "0x00050eccb3f3db86232a3a4185881efc2cf2900b",
+          "shares": 461.538461,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 38.054339168741876
+        },
+        {
+          "address": "0x00085583a8bed6e0fef83387c0f9a3753f00efa9",
+          "shares": 877.142856,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 52.21596051929121
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 102362402562184187787816856878265638363725458980865354828767645251387540168603",
+      "slug": "102362402562184187787816856878265638363725458980865354828767645251387540168603",
+      "tokenId": "102362402562184187787816856878265638363725458980865354828767645251387540168603",
+      "holderCount": 2,
+      "totalShares": 110.591129,
+      "holders": [
+        {
+          "address": "0x00085583a8bed6e0fef83387c0f9a3753f00efa9",
+          "shares": 103.448273,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 52.21596051929121
+        },
+        {
+          "address": "0x00307d870f141fb11cc3428a7ed7ef9ee64604e9",
+          "shares": 7.142856,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 80.96310308775737
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 14793609061774012318755418128997240420901961440229138466682192794558490666550",
+      "slug": "14793609061774012318755418128997240420901961440229138466682192794558490666550",
+      "tokenId": "14793609061774012318755418128997240420901961440229138466682192794558490666550",
+      "holderCount": 2,
+      "totalShares": 21537.328376999998,
+      "holders": [
+        {
+          "address": "0x00085583a8bed6e0fef83387c0f9a3753f00efa9",
+          "shares": 23.6,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 52.21596051929121
+        },
+        {
+          "address": "0x00425c692a667981118f679ef68fdc775257321e",
+          "shares": 21513.728377,
+          "entryPrice": 2.374583847429041,
+          "currentPnl": -301.964983,
+          "walletScore": 55.28971904938495
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 42750054381142639205639663180818682570869285140532640407891991570656047928885",
+      "slug": "42750054381142639205639663180818682570869285140532640407891991570656047928885",
+      "tokenId": "42750054381142639205639663180818682570869285140532640407891991570656047928885",
+      "holderCount": 2,
+      "totalShares": 7433.821577,
+      "holders": [
+        {
+          "address": "0x00085583a8bed6e0fef83387c0f9a3753f00efa9",
+          "shares": 536.341577,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 52.21596051929121
+        },
+        {
+          "address": "0x00425c692a667981118f679ef68fdc775257321e",
+          "shares": 6897.48,
+          "entryPrice": 3.7598978177537306,
+          "currentPnl": 3997.6314,
+          "walletScore": 55.28971904938495
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 45384651537373960665605066318330086764816901476264060880498387434805925753491",
+      "slug": "45384651537373960665605066318330086764816901476264060880498387434805925753491",
+      "tokenId": "45384651537373960665605066318330086764816901476264060880498387434805925753491",
+      "holderCount": 2,
+      "totalShares": 64743.45419,
+      "holders": [
+        {
+          "address": "0x00085583a8bed6e0fef83387c0f9a3753f00efa9",
+          "shares": 1428.57,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 52.21596051929121
+        },
+        {
+          "address": "0x00425c692a667981118f679ef68fdc775257321e",
+          "shares": 63314.88419,
+          "entryPrice": 1.0269903360301795,
+          "currentPnl": -15.923437,
+          "walletScore": 55.28971904938495
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 91854361764177873054486429089586012606708455561263243090075763069273235240033",
+      "slug": "91854361764177873054486429089586012606708455561263243090075763069273235240033",
+      "tokenId": "91854361764177873054486429089586012606708455561263243090075763069273235240033",
+      "holderCount": 2,
+      "totalShares": 66.000768,
+      "holders": [
+        {
+          "address": "0x00085583a8bed6e0fef83387c0f9a3753f00efa9",
+          "shares": 38.730768,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 52.21596051929121
+        },
+        {
+          "address": "0x0044c20cde2f37e271d7e0816c21913053e8cb2c",
+          "shares": 27.27,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 65.60257694355406
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 12238337804021350373072513606997115174826680613156170611182546081135779794915",
+      "slug": "12238337804021350373072513606997115174826680613156170611182546081135779794915",
+      "tokenId": "12238337804021350373072513606997115174826680613156170611182546081135779794915",
+      "holderCount": 2,
+      "totalShares": 17779.256264,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 1177.597378,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 16601.658886,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 40991569910035339801106758886116116797153552686816207808631735946475512954440",
+      "slug": "40991569910035339801106758886116116797153552686816207808631735946475512954440",
+      "tokenId": "40991569910035339801106758886116116797153552686816207808631735946475512954440",
+      "holderCount": 2,
+      "totalShares": 7676.864443,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 434.824443,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 7242.04,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 46164907936242139637843201081534331609249762090068497516101182356882690560565",
+      "slug": "46164907936242139637843201081534331609249762090068497516101182356882690560565",
+      "tokenId": "46164907936242139637843201081534331609249762090068497516101182356882690560565",
+      "holderCount": 2,
+      "totalShares": 2522.98,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 1000,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 1522.98,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 51273396751548994017117054764897754414228591289652072971120018616721173971444",
+      "slug": "51273396751548994017117054764897754414228591289652072971120018616721173971444",
+      "tokenId": "51273396751548994017117054764897754414228591289652072971120018616721173971444",
+      "holderCount": 2,
+      "totalShares": 91837.026136,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 3019.988785,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 88817.037351,
+          "entryPrice": 1.3648564043398046,
+          "currentPnl": 4927.651268,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 57216272564529548464686463691236811991956032201293786790337952253964682584376",
+      "slug": "57216272564529548464686463691236811991956032201293786790337952253964682584376",
+      "tokenId": "57216272564529548464686463691236811991956032201293786790337952253964682584376",
+      "holderCount": 2,
+      "totalShares": 2207.771946,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 207.771946,
+          "entryPrice": 302.73460654789267,
+          "currentPnl": 2279.475715,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x002dcd37b0b8fa8db98236e599fe1b90d6272561",
+          "shares": 2000,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 59.802269572682036
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 61773551912970765850972082891767290963621794684211595190980535356389923327737",
+      "slug": "61773551912970765850972082891767290963621794684211595190980535356389923327737",
+      "tokenId": "61773551912970765850972082891767290963621794684211595190980535356389923327737",
+      "holderCount": 2,
+      "totalShares": 15250.184163,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 3999.954163,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 11250.23,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 66581786403328670900354976753624410175196577607177076834389236263921375429170",
+      "slug": "66581786403328670900354976753624410175196577607177076834389236263921375429170",
+      "tokenId": "66581786403328670900354976753624410175196577607177076834389236263921375429170",
+      "holderCount": 2,
+      "totalShares": 11564.171378000001,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 1449.991378,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 10114.18,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 83247781037352156539108067944461291821683755894607244160607042790356561625563",
+      "slug": "83247781037352156539108067944461291821683755894607244160607042790356561625563",
+      "tokenId": "83247781037352156539108067944461291821683755894607244160607042790356561625563",
+      "holderCount": 2,
+      "totalShares": 57489.49809,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 15537.811816,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 41951.686274,
+          "entryPrice": 1.9702844775807593,
+          "currentPnl": 1785.468588,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 92325249719485031139867422012514654102580961954747753469470405147070256604118",
+      "slug": "92325249719485031139867422012514654102580961954747753469470405147070256604118",
+      "tokenId": "92325249719485031139867422012514654102580961954747753469470405147070256604118",
+      "holderCount": 2,
+      "totalShares": 25430.169333,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 1500,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 23930.169333,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 991058507577562112181763376352893869331335088202201825151749526141647910191",
+      "slug": "991058507577562112181763376352893869331335088202201825151749526141647910191",
+      "tokenId": "991058507577562112181763376352893869331335088202201825151749526141647910191",
+      "holderCount": 2,
+      "totalShares": 97529.621333,
+      "holders": [
+        {
+          "address": "0x00090e8b4fa8f88dc9c1740e460dd0f670021d43",
+          "shares": 1499.939988,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 58.10589483905602
+        },
+        {
+          "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+          "shares": 96029.681345,
+          "entryPrice": 1.0068937019339017,
+          "currentPnl": 27.778494,
+          "walletScore": 67.1576699472133
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 100047677678403800571657614200224285227096596483584141273958338151851391060864",
+      "slug": "100047677678403800571657614200224285227096596483584141273958338151851391060864",
+      "tokenId": "100047677678403800571657614200224285227096596483584141273958338151851391060864",
+      "holderCount": 2,
+      "totalShares": 46.28,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x005197a477ffe8ce01c189d31c4538867d96a4d2",
+          "shares": 21.28,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 73.20863636751704
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 10115579646656418207025812950216123698864707794486737391705578332887777706567",
+      "slug": "10115579646656418207025812950216123698864707794486737391705578332887777706567",
+      "tokenId": "10115579646656418207025812950216123698864707794486737391705578332887777706567",
+      "holderCount": 2,
+      "totalShares": 33,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+          "shares": 8,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 89.03166011838125
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 102667295530741497826191897424890319347473707503735950766158858631091897379582",
+      "slug": "102667295530741497826191897424890319347473707503735950766158858631091897379582",
+      "tokenId": "102667295530741497826191897424890319347473707503735950766158858631091897379582",
+      "holderCount": 2,
+      "totalShares": 33,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+          "shares": 8,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 89.03166011838125
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 105490034074893263459885806212719684997791857984700817289519495998048146677449",
+      "slug": "105490034074893263459885806212719684997791857984700817289519495998048146677449",
+      "tokenId": "105490034074893263459885806212719684997791857984700817289519495998048146677449",
+      "holderCount": 2,
+      "totalShares": 65.99666500000001,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 40.996665,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 105605103482613237652135085856873031030093557417202820522415259575885766012867",
+      "slug": "105605103482613237652135085856873031030093557417202820522415259575885766012867",
+      "tokenId": "105605103482613237652135085856873031030093557417202820522415259575885766012867",
+      "holderCount": 2,
+      "totalShares": 33,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+          "shares": 8,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 89.03166011838125
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 105718340476693241210402365814185888478584761262314502574348519508293656814030",
+      "slug": "105718340476693241210402365814185888478584761262314502574348519508293656814030",
+      "tokenId": "105718340476693241210402365814185888478584761262314502574348519508293656814030",
+      "holderCount": 2,
+      "totalShares": 74,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 49,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 106078235487409093138234366986401564250556062040027732469817049120965536058792",
+      "slug": "106078235487409093138234366986401564250556062040027732469817049120965536058792",
+      "tokenId": "106078235487409093138234366986401564250556062040027732469817049120965536058792",
+      "holderCount": 2,
+      "totalShares": 33,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+          "shares": 8,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 89.03166011838125
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 108132881082789961403468162906458394692320147011113857414691714535264520571815",
+      "slug": "108132881082789961403468162906458394692320147011113857414691714535264520571815",
+      "tokenId": "108132881082789961403468162906458394692320147011113857414691714535264520571815",
+      "holderCount": 2,
+      "totalShares": 68,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 43,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 114240309387813298697194061132855548081139495307060934409108089931076559369461",
+      "slug": "114240309387813298697194061132855548081139495307060934409108089931076559369461",
+      "tokenId": "114240309387813298697194061132855548081139495307060934409108089931076559369461",
+      "holderCount": 2,
+      "totalShares": 58.993808,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 33.993808,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 114708580787670955907337828289703271745652509794208783438075532770897905695135",
+      "slug": "114708580787670955907337828289703271745652509794208783438075532770897905695135",
+      "tokenId": "114708580787670955907337828289703271745652509794208783438075532770897905695135",
+      "holderCount": 2,
+      "totalShares": 33,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+          "shares": 8,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 89.03166011838125
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 115429034637988966359275725190774179049999486287227292899365807782229641210073",
+      "slug": "115429034637988966359275725190774179049999486287227292899365807782229641210073",
+      "tokenId": "115429034637988966359275725190774179049999486287227292899365807782229641210073",
+      "holderCount": 2,
+      "totalShares": 52.99999,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 27.99999,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 11838916892507059938754383147655628074189654377581401167250606072224023651649",
+      "slug": "11838916892507059938754383147655628074189654377581401167250606072224023651649",
+      "tokenId": "11838916892507059938754383147655628074189654377581401167250606072224023651649",
+      "holderCount": 2,
+      "totalShares": 33,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+          "shares": 8,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 89.03166011838125
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 12795924713256305676265534825489037584018079431379787969221764421400871518791",
+      "slug": "12795924713256305676265534825489037584018079431379787969221764421400871518791",
+      "tokenId": "12795924713256305676265534825489037584018079431379787969221764421400871518791",
+      "holderCount": 2,
+      "totalShares": 68.994025,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 24.99736,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 43.996665,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 13399969535507908868344193176891464959433890972382169490027567130423043031434",
+      "slug": "13399969535507908868344193176891464959433890972382169490027567130423043031434",
+      "tokenId": "13399969535507908868344193176891464959433890972382169490027567130423043031434",
+      "holderCount": 2,
+      "totalShares": 80.76271,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004e6c5e759297ab5eab6abf058cfd99af02c650",
+          "shares": 55.76271,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 70.74124733250366
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 13728082186499714217855147903545342446796425366211852985494489064379508910250",
+      "slug": "13728082186499714217855147903545342446796425366211852985494489064379508910250",
+      "tokenId": "13728082186499714217855147903545342446796425366211852985494489064379508910250",
+      "holderCount": 2,
+      "totalShares": 66.999937,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 41.999937,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 15032567952843547268756009478144284329265766889285265291403174511150627655846",
+      "slug": "15032567952843547268756009478144284329265766889285265291403174511150627655846",
+      "tokenId": "15032567952843547268756009478144284329265766889285265291403174511150627655846",
+      "holderCount": 2,
+      "totalShares": 70.752579,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004ea5d3961dc198c688232b94d13062a0e290f8",
+          "shares": 45.752579,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 57.19975913492313
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 15686061521087042630434630564878032413062665136567453636519972077948448736927",
+      "slug": "15686061521087042630434630564878032413062665136567453636519972077948448736927",
+      "tokenId": "15686061521087042630434630564878032413062665136567453636519972077948448736927",
+      "holderCount": 2,
+      "totalShares": 38.999947,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 13.999947,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 16084214849014353882962385810323853983967923141371095937571862950499973968197",
+      "slug": "16084214849014353882962385810323853983967923141371095937571862950499973968197",
+      "tokenId": "16084214849014353882962385810323853983967923141371095937571862950499973968197",
+      "holderCount": 2,
+      "totalShares": 67.98666399999999,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 42.986664,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 16103786393026043910490533500189532406905827625020172214414914151810365377797",
+      "slug": "16103786393026043910490533500189532406905827625020172214414914151810365377797",
+      "tokenId": "16103786393026043910490533500189532406905827625020172214414914151810365377797",
+      "holderCount": 2,
+      "totalShares": 68.992766,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 24.992766,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 44,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 19317408138845740524064340360108971462469429439814124927417221802348196389228",
+      "slug": "19317408138845740524064340360108971462469429439814124927417221802348196389228",
+      "tokenId": "19317408138845740524064340360108971462469429439814124927417221802348196389228",
+      "holderCount": 2,
+      "totalShares": 32.994456,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 24.99709,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x003ebf27b2b7556b39f2be73d1002dac36e64071",
+          "shares": 7.997366,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 89.03166011838125
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 19675879456431051669533196097300558619078998789453429600881386370186656858603",
+      "slug": "19675879456431051669533196097300558619078998789453429600881386370186656858603",
+      "tokenId": "19675879456431051669533196097300558619078998789453429600881386370186656858603",
+      "holderCount": 2,
+      "totalShares": 47.230000000000004,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x005197a477ffe8ce01c189d31c4538867d96a4d2",
+          "shares": 22.23,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 73.20863636751704
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 2092931436502484386364951939681326233781716072893306277821391061551446742965",
+      "slug": "2092931436502484386364951939681326233781716072893306277821391061551446742965",
+      "tokenId": "2092931436502484386364951939681326233781716072893306277821391061551446742965",
+      "holderCount": 2,
+      "totalShares": 80,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004759cb29f4649e6aa2dd0b8dc1bafed8da0784",
+          "shares": 55,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 81.02409638554217
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 22791275153556507263779552607101294034260147861169008291806992683794843695801",
+      "slug": "22791275153556507263779552607101294034260147861169008291806992683794843695801",
+      "tokenId": "22791275153556507263779552607101294034260147861169008291806992683794843695801",
+      "holderCount": 2,
+      "totalShares": 196.41967,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 24.9911,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004ea5d3961dc198c688232b94d13062a0e290f8",
+          "shares": 171.42857,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 57.19975913492313
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 23044149846574480475620701280198692544730394636774955569488570780527312810430",
+      "slug": "23044149846574480475620701280198692544730394636774955569488570780527312810430",
+      "tokenId": "23044149846574480475620701280198692544730394636774955569488570780527312810430",
+      "holderCount": 2,
+      "totalShares": 37.66,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 25,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x005197a477ffe8ce01c189d31c4538867d96a4d2",
+          "shares": 12.66,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 73.20863636751704
+        }
+      ]
+    },
+    {
+      "marketTitle": "Market 23105342706264241853658183615985217591945680291555704456774097382580263671004",
+      "slug": "23105342706264241853658183615985217591945680291555704456774097382580263671004",
+      "tokenId": "23105342706264241853658183615985217591945680291555704456774097382580263671004",
+      "holderCount": 2,
+      "totalShares": 80,
+      "holders": [
+        {
+          "address": "0x000bd91eb9b8792662551fdf181a636c59c14c32",
+          "shares": 50,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 67.20121152708356
+        },
+        {
+          "address": "0x004ea5d3961dc198c688232b94d13062a0e290f8",
+          "shares": 30,
+          "entryPrice": 1,
+          "currentPnl": 0,
+          "walletScore": 57.19975913492313
+        }
+      ]
+    }
+  ],
   "winPatterns": {
-    "topWinningMarkets": [],
+    "topWinningMarkets": [
+      {
+        "title": "Market 100813271759592911692943812971788515424446476914527031468517613483290407974910",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 0.091425,
+        "avgPnl": 0.091425
+      },
+      {
+        "title": "Market 100979500063580953692895535905547993246668930809793165285740438424287876121656",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 18.627684,
+        "avgPnl": 18.627684
+      },
+      {
+        "title": "Market 101966325459232354268913709366073696064269284155735308081311337616498356369562",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 4.799894,
+        "avgPnl": 4.799894
+      },
+      {
+        "title": "Market 102594629489258226197339610988750527783574513998126077134218035330985187450953",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 23.627884,
+        "avgPnl": 23.627884
+      },
+      {
+        "title": "Market 10311847192888757787392503130789809053910194816483616990964333013656931811915",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 31.248598,
+        "avgPnl": 31.248598
+      },
+      {
+        "title": "Market 104177217268778573684008694688738459934181362898579270503479984009415318183090",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 7.927924,
+        "avgPnl": 7.927924
+      },
+      {
+        "title": "Market 104738238453513099415473790664515813102445932881302841072910122694590221476357",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 70.940671,
+        "avgPnl": 70.940671
+      },
+      {
+        "title": "Market 104870220230276324918223445826173454513078380013217432221673953815255224269739",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 17.133912,
+        "avgPnl": 17.133912
+      },
+      {
+        "title": "Market 105259932843300506106455393455643260173090303164199410699622125197969235979068",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 1.374439,
+        "avgPnl": 1.374439
+      },
+      {
+        "title": "Market 106447790230543940734654808929111996531600320168874763850620774353970606688827",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 75.45186,
+        "avgPnl": 75.45186
+      },
+      {
+        "title": "Market 106679733806373244544554628091492101829130179910151774566334577192094802363492",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 169.975134,
+        "avgPnl": 169.975134
+      },
+      {
+        "title": "Market 107085744205020362677822600890566067285728238285649009761668789761794444491364",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 8.59949,
+        "avgPnl": 8.59949
+      },
+      {
+        "title": "Market 107748973240819140578953230098748914732680894123710462260935425399062623165056",
+        "winRate": 1,
+        "totalTrades": 2,
+        "totalPnl": 6.592913,
+        "avgPnl": 3.2964565
+      },
+      {
+        "title": "Market 107782589336953847652423522134005987663143946825976156280758020344958041796913",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 188.66627,
+        "avgPnl": 188.66627
+      },
+      {
+        "title": "Market 10820100057251391064714555343919811805960748206060180535441240841857970313941",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 127.036869,
+        "avgPnl": 127.036869
+      },
+      {
+        "title": "Market 108294439310798605588591093333952105762812897670431868692542752974627478588027",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 192.176121,
+        "avgPnl": 192.176121
+      },
+      {
+        "title": "Market 108352612060979549909188100361759230664590855095217569456584531206318249733304",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 23.874136,
+        "avgPnl": 23.874136
+      },
+      {
+        "title": "Market 108658113069898749792841249504060301714942982668942320700663498911167936077397",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 6.877098,
+        "avgPnl": 6.877098
+      },
+      {
+        "title": "Market 109792869567106812755462673124538946454688239946820561937143390747091859998023",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 2.359188,
+        "avgPnl": 2.359188
+      },
+      {
+        "title": "Market 110296604149892635259045039633179056344344844974779470690400769563127817426677",
+        "winRate": 1,
+        "totalTrades": 1,
+        "totalPnl": 3.032085,
+        "avgPnl": 3.032085
+      }
+    ],
     "sizeBuckets": {
       "small": {
-        "count": 0,
-        "wins": 0,
-        "totalPnl": 0,
-        "avgPnl": 0
+        "count": 24386,
+        "wins": 5911,
+        "totalPnl": 24490.525141000344,
+        "avgPnl": 1.0042862765931413
       },
       "medium": {
-        "count": 0,
-        "wins": 0,
-        "totalPnl": 0,
-        "avgPnl": 0
+        "count": 6906,
+        "wins": 3803,
+        "totalPnl": 99814.67558200016,
+        "avgPnl": 14.45332690153492
       },
       "large": {
-        "count": 0,
-        "wins": 0,
-        "totalPnl": 0,
-        "avgPnl": 0
+        "count": 4957,
+        "wins": 3721,
+        "totalPnl": 2090500.0090260073,
+        "avgPnl": 421.72685273875476
       }
     },
     "overallStats": {
-      "totalTrades": 0,
-      "totalWins": 0,
-      "winRate": 0,
-      "totalPnl": 0,
-      "avgPnl": 0
+      "totalTrades": 36249,
+      "totalWins": 13435,
+      "winRate": 0.3706309139562471,
+      "totalPnl": 2214805.209749034,
+      "avgPnl": 61.09976026232542
     }
   },
-  "biggestWins": [],
+  "biggestWins": [
+    {
+      "rank": 1,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 69063071740089984229647680607505897672493231430839272047761298094661798644548",
+      "slug": "69063071740089984229647680607505897672493231430839272047761298094661798644548",
+      "tokenId": "69063071740089984229647680607505897672493231430839272047761298094661798644548",
+      "pnl": 53110.781813,
+      "totalBought": 647618.074384,
+      "roi": 8.200941868943017
+    },
+    {
+      "rank": 2,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 61307174745343826105381155328818841321097085669107501488931143161146416325701",
+      "slug": "61307174745343826105381155328818841321097085669107501488931143161146416325701",
+      "tokenId": "61307174745343826105381155328818841321097085669107501488931143161146416325701",
+      "pnl": 49053.357591,
+      "totalBought": 724751.526841,
+      "roi": 6.7682999999752465
+    },
+    {
+      "rank": 3,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 16153056706189318157070250559831316138628940527593149886651035951057595008821",
+      "slug": "16153056706189318157070250559831316138628940527593149886651035951057595008821",
+      "tokenId": "16153056706189318157070250559831316138628940527593149886651035951057595008821",
+      "pnl": 47644.479108,
+      "totalBought": 191030.888926,
+      "roi": 24.940719993433174
+    },
+    {
+      "rank": 4,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 103074846952659555203136280159144707438311771841831295577819182690870662076232",
+      "slug": "103074846952659555203136280159144707438311771841831295577819182690870662076232",
+      "tokenId": "103074846952659555203136280159144707438311771841831295577819182690870662076232",
+      "pnl": 47548.417943,
+      "totalBought": 311907.44105,
+      "roi": 15.244399999863356
+    },
+    {
+      "rank": 5,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 104418202650000003466724307383826189852812346194106831978945737070954365347089",
+      "slug": "104418202650000003466724307383826189852812346194106831978945737070954365347089",
+      "tokenId": "104418202650000003466724307383826189852812346194106831978945737070954365347089",
+      "pnl": 46679.95438,
+      "totalBought": 728793.529847,
+      "roi": 6.405099999968414
+    },
+    {
+      "rank": 6,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 34379581789895528560281218239759280237277305372978794324822777438824410172683",
+      "slug": "34379581789895528560281218239759280237277305372978794324822777438824410172683",
+      "tokenId": "34379581789895528560281218239759280237277305372978794324822777438824410172683",
+      "pnl": 40166.467949,
+      "totalBought": 1455554.912966,
+      "roi": 2.7595295506338786
+    },
+    {
+      "rank": 7,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 79677612226873909610081217802307527236651011826119229039973799353141298472061",
+      "slug": "79677612226873909610081217802307527236651011826119229039973799353141298472061",
+      "tokenId": "79677612226873909610081217802307527236651011826119229039973799353141298472061",
+      "pnl": 36410.341867,
+      "totalBought": 289469.652851,
+      "roi": 12.578293271295577
+    },
+    {
+      "rank": 8,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 33945469250963963541781051637999677727672635213493648594066577298999471399137",
+      "slug": "33945469250963963541781051637999677727672635213493648594066577298999471399137",
+      "tokenId": "33945469250963963541781051637999677727672635213493648594066577298999471399137",
+      "pnl": 35485.846756,
+      "totalBought": 247276.827496,
+      "roi": 14.350655949180691
+    },
+    {
+      "rank": 9,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 93461831585981361375689392604723410879333396901845804953583336558947477629285",
+      "slug": "93461831585981361375689392604723410879333396901845804953583336558947477629285",
+      "tokenId": "93461831585981361375689392604723410879333396901845804953583336558947477629285",
+      "pnl": 32995.239358,
+      "totalBought": 519092.818193,
+      "roi": 6.356327462371534
+    },
+    {
+      "rank": 10,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 29677413448356631423250052573262008356913370083986817030510370064664558041792",
+      "slug": "29677413448356631423250052573262008356913370083986817030510370064664558041792",
+      "tokenId": "29677413448356631423250052573262008356913370083986817030510370064664558041792",
+      "pnl": 31622.958449,
+      "totalBought": 228558.944546,
+      "roi": 13.835799999783221
+    },
+    {
+      "rank": 11,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 7997695352317515524525062962990406756331391485123047293096327700752767906309",
+      "slug": "7997695352317515524525062962990406756331391485123047293096327700752767906309",
+      "tokenId": "7997695352317515524525062962990406756331391485123047293096327700752767906309",
+      "pnl": 30614.449739,
+      "totalBought": 372231.317272,
+      "roi": 8.22457657871628
+    },
+    {
+      "rank": 12,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 49141352436757065418114809516232490332122476179609203010413349562076686911869",
+      "slug": "49141352436757065418114809516232490332122476179609203010413349562076686911869",
+      "tokenId": "49141352436757065418114809516232490332122476179609203010413349562076686911869",
+      "pnl": 30507.086237,
+      "totalBought": 166343.317516,
+      "roi": 18.33983275827454
+    },
+    {
+      "rank": 13,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 557149893577824223387740663828120572195409127574902734254512226734855221907",
+      "slug": "557149893577824223387740663828120572195409127574902734254512226734855221907",
+      "tokenId": "557149893577824223387740663828120572195409127574902734254512226734855221907",
+      "pnl": 29743.001648,
+      "totalBought": 297656.602354,
+      "roi": 9.992387675186507
+    },
+    {
+      "rank": 14,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 15260030474401637547988724347750124574588252581599474544130642926166584463581",
+      "slug": "15260030474401637547988724347750124574588252581599474544130642926166584463581",
+      "tokenId": "15260030474401637547988724347750124574588252581599474544130642926166584463581",
+      "pnl": 28548.333821,
+      "totalBought": 349799.1,
+      "roi": 8.161351421716066
+    },
+    {
+      "rank": 15,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 24635636911615866092589652362670811323984202357282728474473612545495782013438",
+      "slug": "24635636911615866092589652362670811323984202357282728474473612545495782013438",
+      "tokenId": "24635636911615866092589652362670811323984202357282728474473612545495782013438",
+      "pnl": 28405.630705,
+      "totalBought": 1812181.747217,
+      "roi": 1.5674824420135032
+    },
+    {
+      "rank": 16,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 53279921463912303011183231786053847969513342357500913433354375476610025018036",
+      "slug": "53279921463912303011183231786053847969513342357500913433354375476610025018036",
+      "tokenId": "53279921463912303011183231786053847969513342357500913433354375476610025018036",
+      "pnl": 27250.786075,
+      "totalBought": 157803.932252,
+      "roi": 17.26876237246276
+    },
+    {
+      "rank": 17,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 86857783363775257860227917708309268561005168570896999677788731255030014967896",
+      "slug": "86857783363775257860227917708309268561005168570896999677788731255030014967896",
+      "tokenId": "86857783363775257860227917708309268561005168570896999677788731255030014967896",
+      "pnl": 26328.982038,
+      "totalBought": 316678.842502,
+      "roi": 8.314095703388748
+    },
+    {
+      "rank": 18,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 56617380368231272752303032158990379611408722286203982585043747716967752426762",
+      "slug": "56617380368231272752303032158990379611408722286203982585043747716967752426762",
+      "tokenId": "56617380368231272752303032158990379611408722286203982585043747716967752426762",
+      "pnl": 25877.815576,
+      "totalBought": 205722.885467,
+      "roi": 12.578967827160417
+    },
+    {
+      "rank": 19,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 89673141009044147901917689987047183883380611408444303276960326909945269925434",
+      "slug": "89673141009044147901917689987047183883380611408444303276960326909945269925434",
+      "tokenId": "89673141009044147901917689987047183883380611408444303276960326909945269925434",
+      "pnl": 24266.08347,
+      "totalBought": 308454.092672,
+      "roi": 7.866999999835879
+    },
+    {
+      "rank": 20,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 34808728998940652154385832086463951364715856988216743701483182107829097480471",
+      "slug": "34808728998940652154385832086463951364715856988216743701483182107829097480471",
+      "tokenId": "34808728998940652154385832086463951364715856988216743701483182107829097480471",
+      "pnl": 22927.539094,
+      "totalBought": 410623.853716,
+      "roi": 5.583586751357457
+    },
+    {
+      "rank": 21,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 7780745447308118846657530641252971575724733371841809012263136232028260764382",
+      "slug": "7780745447308118846657530641252971575724733371841809012263136232028260764382",
+      "tokenId": "7780745447308118846657530641252971575724733371841809012263136232028260764382",
+      "pnl": 22515.461783,
+      "totalBought": 284735.526827,
+      "roi": 7.907499999703224
+    },
+    {
+      "rank": 22,
+      "address": "0x00425c692a667981118f679ef68fdc775257321e",
+      "walletScore": 55.28971904938495,
+      "marketTitle": "Market 39317885422026394259056328144566743331998444273202427934141325790266108570112",
+      "slug": "39317885422026394259056328144566743331998444273202427934141325790266108570112",
+      "tokenId": "39317885422026394259056328144566743331998444273202427934141325790266108570112",
+      "pnl": 22060.510972,
+      "totalBought": 139944.58214,
+      "roi": 15.763747788342924
+    },
+    {
+      "rank": 23,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 109538169780508263466563830743331590968144744651153621966246459989685513705667",
+      "slug": "109538169780508263466563830743331590968144744651153621966246459989685513705667",
+      "tokenId": "109538169780508263466563830743331590968144744651153621966246459989685513705667",
+      "pnl": 21538.026817,
+      "totalBought": 659586.239759,
+      "roi": 3.265384496933953
+    },
+    {
+      "rank": 24,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 19812585879331622314103695351802615630346821314867063165821813038681777947488",
+      "slug": "19812585879331622314103695351802615630346821314867063165821813038681777947488",
+      "tokenId": "19812585879331622314103695351802615630346821314867063165821813038681777947488",
+      "pnl": 21026.620239,
+      "totalBought": 196810.283324,
+      "roi": 10.683699999752967
+    },
+    {
+      "rank": 25,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 69715483604574035664323555574854926964185728566627119427052441683088977167457",
+      "slug": "69715483604574035664323555574854926964185728566627119427052441683088977167457",
+      "tokenId": "69715483604574035664323555574854926964185728566627119427052441683088977167457",
+      "pnl": 20969.48777,
+      "totalBought": 205265.430655,
+      "roi": 10.215791184656164
+    },
+    {
+      "rank": 26,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 96193798040496715516293082969404520275498018188356694872059277499697568843053",
+      "slug": "96193798040496715516293082969404520275498018188356694872059277499697568843053",
+      "tokenId": "96193798040496715516293082969404520275498018188356694872059277499697568843053",
+      "pnl": 19305.348983,
+      "totalBought": 106955.434564,
+      "roi": 18.04989999965646
+    },
+    {
+      "rank": 27,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 107620050212712513675299846331099853137159171971544241094716732742903873029778",
+      "slug": "107620050212712513675299846331099853137159171971544241094716732742903873029778",
+      "tokenId": "107620050212712513675299846331099853137159171971544241094716732742903873029778",
+      "pnl": 19296.414796,
+      "totalBought": 162917.308722,
+      "roi": 11.84429999941084
+    },
+    {
+      "rank": 28,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 19339103346236041083747148574620254216168165151337375810887863955521343395841",
+      "slug": "19339103346236041083747148574620254216168165151337375810887863955521343395841",
+      "tokenId": "19339103346236041083747148574620254216168165151337375810887863955521343395841",
+      "pnl": 19165.365688,
+      "totalBought": 362038.443131,
+      "roi": 5.293737737421771
+    },
+    {
+      "rank": 29,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 23056089932958374419797522644901592808991002026498053086166940911059008923379",
+      "slug": "23056089932958374419797522644901592808991002026498053086166940911059008923379",
+      "tokenId": "23056089932958374419797522644901592808991002026498053086166940911059008923379",
+      "pnl": 18408.787566,
+      "totalBought": 161072.26038,
+      "roi": 11.428899999646234
+    },
+    {
+      "rank": 30,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 74387253965248062408790655376997458947727940927346197081424539600760059876682",
+      "slug": "74387253965248062408790655376997458947727940927346197081424539600760059876682",
+      "tokenId": "74387253965248062408790655376997458947727940927346197081424539600760059876682",
+      "pnl": 17882.381599,
+      "totalBought": 176930.56,
+      "roi": 10.107005595302473
+    },
+    {
+      "rank": 31,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 27523375682021765390588187766633015068126055655405967473976256668819938305564",
+      "slug": "27523375682021765390588187766633015068126055655405967473976256668819938305564",
+      "tokenId": "27523375682021765390588187766633015068126055655405967473976256668819938305564",
+      "pnl": 16587.796514,
+      "totalBought": 129375.86,
+      "roi": 12.821399999969083
+    },
+    {
+      "rank": 32,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 11011989236331164054844679338128881575446679057930991995271488699513863012857",
+      "slug": "11011989236331164054844679338128881575446679057930991995271488699513863012857",
+      "tokenId": "11011989236331164054844679338128881575446679057930991995271488699513863012857",
+      "pnl": 16569.361168,
+      "totalBought": 398368.70517,
+      "roi": 4.159302915355559
+    },
+    {
+      "rank": 33,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 32529863558788470022431759869254132455003412332939346616344514335248802832428",
+      "slug": "32529863558788470022431759869254132455003412332939346616344514335248802832428",
+      "tokenId": "32529863558788470022431759869254132455003412332939346616344514335248802832428",
+      "pnl": 16349.558051,
+      "totalBought": 218285.154219,
+      "roi": 7.48999999999858
+    },
+    {
+      "rank": 34,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 106153378961102532315642223211322829491902773315904192835321056658787574388535",
+      "slug": "106153378961102532315642223211322829491902773315904192835321056658787574388535",
+      "tokenId": "106153378961102532315642223211322829491902773315904192835321056658787574388535",
+      "pnl": 16342.31088,
+      "totalBought": 302506.541292,
+      "roi": 5.40229999992803
+    },
+    {
+      "rank": 35,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 41158123627243409797280482436177040010605365778006722266467179035594283771722",
+      "slug": "41158123627243409797280482436177040010605365778006722266467179035594283771722",
+      "tokenId": "41158123627243409797280482436177040010605365778006722266467179035594283771722",
+      "pnl": 16233.087289,
+      "totalBought": 100763.562921,
+      "roi": 16.11007671664703
+    },
+    {
+      "rank": 36,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 77930679793727058638656816115384202767512466987846494286804832534411540547965",
+      "slug": "77930679793727058638656816115384202767512466987846494286804832534411540547965",
+      "tokenId": "77930679793727058638656816115384202767512466987846494286804832534411540547965",
+      "pnl": 15097.90018,
+      "totalBought": 142958.552897,
+      "roi": 10.56103316244245
+    },
+    {
+      "rank": 37,
+      "address": "0x0020580cf1b2616111751167dfd3c2fbf9500d22",
+      "walletScore": 51.242711860797755,
+      "marketTitle": "Market 80466862227762400456474037114326989569691448086113369690204721936360568404468",
+      "slug": "80466862227762400456474037114326989569691448086113369690204721936360568404468",
+      "tokenId": "80466862227762400456474037114326989569691448086113369690204721936360568404468",
+      "pnl": 14928.110155,
+      "totalBought": 84697.920551,
+      "roi": 17.625120024063857
+    },
+    {
+      "rank": 38,
+      "address": "0x0006af12cd4dacc450836a0e1ec6ce47365d8c63",
+      "walletScore": 75.90398361068429,
+      "marketTitle": "Market 49013910459735097236249075719991194593353449204636717316991510388673087907109",
+      "slug": "49013910459735097236249075719991194593353449204636717316991510388673087907109",
+      "tokenId": "49013910459735097236249075719991194593353449204636717316991510388673087907109",
+      "pnl": 14799.22461,
+      "totalBought": 16695.066248,
+      "roi": 88.6442999995456
+    },
+    {
+      "rank": 39,
+      "address": "0x001aa7e8fa104b784f8c5fb94a402377a1cc24b0",
+      "walletScore": 65.82359147943907,
+      "marketTitle": "Market 30953465395375834024981775034826025702153391768871720818399007262067081607487",
+      "slug": "30953465395375834024981775034826025702153391768871720818399007262067081607487",
+      "tokenId": "30953465395375834024981775034826025702153391768871720818399007262067081607487",
+      "pnl": 14220.036421,
+      "totalBought": 24517.261903,
+      "roi": 58.00009999999225
+    },
+    {
+      "rank": 40,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 5953584781535367766045801242949910683997802329500168178802133908024483675381",
+      "slug": "5953584781535367766045801242949910683997802329500168178802133908024483675381",
+      "tokenId": "5953584781535367766045801242949910683997802329500168178802133908024483675381",
+      "pnl": 13934.304574,
+      "totalBought": 72029.038577,
+      "roi": 19.34539853548655
+    },
+    {
+      "rank": 41,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 22954390469393761478435587094271162660864811978634802609696033004592606875337",
+      "slug": "22954390469393761478435587094271162660864811978634802609696033004592606875337",
+      "tokenId": "22954390469393761478435587094271162660864811978634802609696033004592606875337",
+      "pnl": 13872.424617,
+      "totalBought": 236001.847834,
+      "roi": 5.8780999997752765
+    },
+    {
+      "rank": 42,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 34731657770883441140875001518098751138877095477683682718012432921110142479972",
+      "slug": "34731657770883441140875001518098751138877095477683682718012432921110142479972",
+      "tokenId": "34731657770883441140875001518098751138877095477683682718012432921110142479972",
+      "pnl": 13845.076289,
+      "totalBought": 115019.164095,
+      "roi": 12.03719084374902
+    },
+    {
+      "rank": 43,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 16754375222233973989954094649431109282368408854808102040230156977754673841406",
+      "slug": "16754375222233973989954094649431109282368408854808102040230156977754673841406",
+      "tokenId": "16754375222233973989954094649431109282368408854808102040230156977754673841406",
+      "pnl": 13403.759483,
+      "totalBought": 46808.310908,
+      "roi": 28.63542653642126
+    },
+    {
+      "rank": 44,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 111044120330506545374339538561933613840201121135052734182450884790834576658350",
+      "slug": "111044120330506545374339538561933613840201121135052734182450884790834576658350",
+      "tokenId": "111044120330506545374339538561933613840201121135052734182450884790834576658350",
+      "pnl": 13367.680268,
+      "totalBought": 48985.061064,
+      "roi": 27.28929999808482
+    },
+    {
+      "rank": 45,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 97631444429136963410558776454705646247419477447963422218240880878426855760467",
+      "slug": "97631444429136963410558776454705646247419477447963422218240880878426855760467",
+      "tokenId": "97631444429136963410558776454705646247419477447963422218240880878426855760467",
+      "pnl": 13302.634006,
+      "totalBought": 149992.518059,
+      "roi": 8.86886504616675
+    },
+    {
+      "rank": 46,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 107871556080406103665029740738143572273133644015273359659942266346671062091117",
+      "slug": "107871556080406103665029740738143572273133644015273359659942266346671062091117",
+      "tokenId": "107871556080406103665029740738143572273133644015273359659942266346671062091117",
+      "pnl": 12879.110231,
+      "totalBought": 83676.532366,
+      "roi": 15.391543921379233
+    },
+    {
+      "rank": 47,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 9822233666301127728103541815385031407428927768156219251949562594688955490431",
+      "slug": "9822233666301127728103541815385031407428927768156219251949562594688955490431",
+      "tokenId": "9822233666301127728103541815385031407428927768156219251949562594688955490431",
+      "pnl": 12871.308041,
+      "totalBought": 74036.007876,
+      "roi": 17.385199999651043
+    },
+    {
+      "rank": 48,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 100763353049509038675039414111335733366131950388294806667001314747853619809640",
+      "slug": "100763353049509038675039414111335733366131950388294806667001314747853619809640",
+      "tokenId": "100763353049509038675039414111335733366131950388294806667001314747853619809640",
+      "pnl": 12828.997121,
+      "totalBought": 260964.139985,
+      "roi": 4.915999999746096
+    },
+    {
+      "rank": 49,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 43483546933201794859952803214957364970167169609145371949135979861595189647397",
+      "slug": "43483546933201794859952803214957364970167169609145371949135979861595189647397",
+      "tokenId": "43483546933201794859952803214957364970167169609145371949135979861595189647397",
+      "pnl": 12732.690947,
+      "totalBought": 207409.872856,
+      "roi": 6.13890301925985
+    },
+    {
+      "rank": 50,
+      "address": "0x000d257d2dc7616feaef4ae0f14600fdf50a758e",
+      "walletScore": 67.1576699472133,
+      "marketTitle": "Market 76643504232063200802060773779828726415087044269171506931668031354693251545396",
+      "slug": "76643504232063200802060773779828726415087044269171506931668031354693251545396",
+      "tokenId": "76643504232063200802060773779828726415087044269171506931668031354693251545396",
+      "pnl": 12731.143896,
+      "totalBought": 75884.25,
+      "roi": 16.77705702566738
+    }
+  ],
   "trendline": [
     {
       "scanIndex": 1,
@@ -50,6 +3188,14 @@
       "topScore": 0,
       "walletCount": 0,
       "totalPnl": 0
+    },
+    {
+      "scanIndex": 2,
+      "timestamp": "2026-03-10T11:57:48.248Z",
+      "avgScore": 66.1833527889199,
+      "topScore": 97.48768472906404,
+      "walletCount": 66,
+      "totalPnl": 2214805.2097489997
     }
   ]
 }
