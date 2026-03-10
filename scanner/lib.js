@@ -526,7 +526,7 @@ async function resolveMarkets(tokenIds) {
   const lookup = new Map();
   const idsSet = new Set(tokenIds); // for fast has() checks
   const ids = Array.from(tokenIds);
-  const CONCURRENCY = 5; // parallel requests
+  const CONCURRENCY = 15; // parallel requests
   let queried = 0;
   let errors = 0;
 
@@ -600,7 +600,7 @@ async function resolveMarkets(tokenIds) {
     }
 
     // Small delay between batches to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => setTimeout(resolve, 20));
   }
 
   return lookup;
