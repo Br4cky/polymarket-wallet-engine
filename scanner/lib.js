@@ -394,15 +394,16 @@ async function resolveMarkets(tokenIds) {
   if (tokenIds.size === 0) return new Map();
 
   const lookup = new Map();
-  const batchSize = 100;
+  const batchSize = 20; // Gamma API has URL length limits, keep batches small
   const ids = Array.from(tokenIds);
 
   for (let i = 0; i < ids.length; i += batchSize) {
     const batch = ids.slice(i, i + batchSize);
-    const tokenIdQuery = batch.map((id) => `"${id}"`).join(',');
 
     try {
-      const url = `${GAMMA_MARKETS}?limit=100&offset=${i}`;
+      // Query Gamma API by clob_token_ids to find markets matching our token IDs
+      const tokenIdsParam = batch.join(',');
+      const url = `${GAMMA_MARKETS}?clob_token_ids=${encodeURIComponent(tokenIdsParam)}&limit=100`;
       const response = await fetch(url);
 
       if (!response.ok) {
@@ -414,26 +415,46 @@ async function resolveMarkets(tokenIds) {
 
       if (Array.isArray(markets)) {
         for (const market of markets) {
+          // Build the full event slug: event_slug/market_slug for proper linking
+          const eventSlug = market.events?.[0]?.slug || '';
+          const marketSlug = market.slug || '';
+          const fullSlug = eventSlug && marketSlug ? `${eventSlug}/${marketSlug}` : eventSlug || marketSlug;
+
           if (market.tokens && Array.isArray(market.tokens)) {
             for (const token of market.tokens) {
               if (batch.includes(token.token_id)) {
                 lookup.set(token.token_id, {
-                  title: market.title,
-                  slug: market.slug,
-                  category: market.category,
-                  image: market.image,
+                  title: market.title || market.question || `Market ${token.token_id.slice(0, 8)}...`,
+                  slug: fullSlug,
+                  category: market.category || '',
+                  image: market.image || '',
+                });
+              }
+            }
+          }
+          // Also try clobTokenIds field format
+          if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
+            for (const tid of market.clobTokenIds) {
+              if (batch.includes(tid) && !lookup.has(tid)) {
+                lookup.set(tid, {
+                  title: market.title || market.question || `Market ${tid.slice(0, 8)}...`,
+                  slug: fullSlug,
+                  category: market.category || '',
+                  image: market.image || '',
                 });
               }
             }
           }
         }
       }
+
+      console.log(`    Gamma batch ${Math.floor(i / batchSize) + 1}: resolved ${lookup.size} markets so far`);
     } catch (err) {
       console.error(`Error fetching markets batch:`, err.message);
     }
 
     // Add delay to avoid rate limiting
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
   return lookup;

@@ -126,7 +126,7 @@ function recomputeStats(positions) {
 }
 
 function openPolymarketProfile(address) {
-  window.open(`https://polymarket.com/user/${address}`, '_blank');
+  window.open(`https://polymarket.com/profile/${address}`, '_blank');
 }
 
 /* ============================================================================
