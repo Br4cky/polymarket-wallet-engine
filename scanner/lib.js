@@ -526,62 +526,85 @@ async function resolveMarkets(tokenIds) {
   const lookup = new Map();
   const idsSet = new Set(tokenIds); // for fast has() checks
   const ids = Array.from(tokenIds);
-  const CONCURRENCY = 15; // parallel requests
+  const CONCURRENCY = 5; // parallel requests — conservative to avoid 429s
   let queried = 0;
   let errors = 0;
+  let delay = 100; // adaptive delay in ms — increases on 429, decreases on success
 
   /**
-   * Fetch a single token from Gamma API
+   * Fetch a single token from Gamma API with retry on 429
    */
   async function fetchOne(tokenId) {
-    // Skip if already resolved (e.g. sibling token from a previous market response)
     if (lookup.has(tokenId)) return;
 
-    try {
-      const url = `${GAMMA_MARKETS}?clob_token_ids=${tokenId}&limit=1`;
-      const response = await fetch(url);
+    const MAX_RETRIES = 3;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const url = `${GAMMA_MARKETS}?clob_token_ids=${tokenId}&limit=1`;
+        const response = await fetch(url);
 
-      if (!response.ok) {
-        errors++;
-        if (errors <= 3 || errors % 100 === 0) {
-          console.error(`    Gamma API error (${errors} total): ${response.status}`);
+        if (response.status === 429) {
+          // Rate limited — back off exponentially
+          const backoff = Math.min(5000, 500 * Math.pow(2, attempt));
+          delay = Math.min(500, delay + 50); // slow down future batches too
+          if (attempt < MAX_RETRIES) {
+            await new Promise(resolve => setTimeout(resolve, backoff));
+            continue;
+          }
+          errors++;
+          if (errors <= 3 || errors % 200 === 0) {
+            console.error(`    Gamma 429 rate limit (${errors} total errors)`);
+          }
+          return;
         }
-        return;
-      }
 
-      const markets = await response.json();
+        if (!response.ok) {
+          errors++;
+          if (errors <= 3 || errors % 200 === 0) {
+            console.error(`    Gamma API error (${errors} total): ${response.status}`);
+          }
+          return;
+        }
 
-      if (Array.isArray(markets) && markets.length > 0) {
-        const market = markets[0];
-        const eventSlug = market.events?.[0]?.slug || '';
-        const marketSlug = market.slug || '';
-        const fullSlug = eventSlug && marketSlug ? `${eventSlug}/${marketSlug}` : eventSlug || marketSlug;
+        // Success — gradually speed back up
+        delay = Math.max(60, delay - 5);
 
-        const info = {
-          title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
-          slug: fullSlug,
-          category: market.category || '',
-          image: market.image || '',
-        };
+        const markets = await response.json();
 
-        // Map both tokens from this market (Yes/No pair) — avoids querying sibling later
-        if (market.tokens && Array.isArray(market.tokens)) {
-          for (const token of market.tokens) {
-            lookup.set(token.token_id, info);
+        if (Array.isArray(markets) && markets.length > 0) {
+          const market = markets[0];
+          const eventSlug = market.events?.[0]?.slug || '';
+          const marketSlug = market.slug || '';
+          const fullSlug = eventSlug && marketSlug ? `${eventSlug}/${marketSlug}` : eventSlug || marketSlug;
+
+          const info = {
+            title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
+            slug: fullSlug,
+            category: market.category || '',
+            image: market.image || '',
+          };
+
+          if (market.tokens && Array.isArray(market.tokens)) {
+            for (const token of market.tokens) {
+              lookup.set(token.token_id, info);
+            }
+          }
+          if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
+            for (const tid of market.clobTokenIds) {
+              if (!lookup.has(tid)) lookup.set(tid, info);
+            }
+          }
+          if (!lookup.has(tokenId)) {
+            lookup.set(tokenId, info);
           }
         }
-        if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
-          for (const tid of market.clobTokenIds) {
-            if (!lookup.has(tid)) lookup.set(tid, info);
-          }
-        }
-        if (!lookup.has(tokenId)) {
-          lookup.set(tokenId, info);
+        return; // success, no retry needed
+      } catch (err) {
+        if (attempt === MAX_RETRIES) {
+          errors++;
+          if (errors <= 3) console.error(`    Error fetching market:`, err.message);
         }
       }
-    } catch (err) {
-      errors++;
-      if (errors <= 3) console.error(`    Error fetching market:`, err.message);
     }
   }
 
@@ -596,11 +619,11 @@ async function resolveMarkets(tokenIds) {
     queried = Math.min(i + CONCURRENCY, ids.length);
 
     if (queried % 500 === 0 || queried >= ids.length) {
-      console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved, ${errors} errors`);
+      console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved, ${errors} errors, delay=${delay}ms`);
     }
 
-    // Small delay between batches to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 20));
+    // Adaptive delay between batches
+    await new Promise(resolve => setTimeout(resolve, delay));
   }
 
   return lookup;
