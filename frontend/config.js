@@ -9,7 +9,7 @@
 const CONFIG = {
   // ── CHANGE THESE TO YOUR REPO ──────────────────────────────
   githubUser: 'Br4cky',
-  githubRepo: 'polymarket-signal-engine',
+  githubRepo: 'polymarket-wallet-engine',
   githubBranch: 'main',
   // ───────────────────────────────────────────────────────────
 
