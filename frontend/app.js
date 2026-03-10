@@ -369,33 +369,43 @@ function renderDashboard() {
   const summary = data.analytics.summary || {};
   const leaderboard = data.analytics.leaderboard || [];
 
-  // Metric cards
+  // Metric cards — scanner uses lowercase "totalPnl" not "totalPnL"
   document.getElementById('metric-wallets').textContent = (summary.totalWallets || 0).toLocaleString();
   document.getElementById('metric-avg-score').textContent = (summary.avgScore || 0).toFixed(1);
-  document.getElementById('metric-pnl').textContent = fmtDollars(summary.totalPnL || 0);
+  document.getElementById('metric-pnl').textContent = fmtDollars(summary.totalPnl || summary.totalPnL || 0);
   document.getElementById('metric-win-rate').textContent = ((summary.avgWinRate || 0) * 100).toFixed(1) + '%';
 
-  // Leaderboard table
-  const leaderboardData = (leaderboard || []).slice(0, 50).map((w, idx) => ({
-    rank: idx + 1,
-    score: w.score || 0,
-    address: w.address || '',
-    totalPnL: w.totalPnL || 0,
-    winRate: w.winRate || 0,
-    markets: w.marketCount || 0,
-    recency: w.recency || 0,
-    efficiency: w.efficiency || 0
-  }));
+  // Leaderboard table — scanner nests stats under w.stats {}
+  const leaderboardData = (leaderboard || []).slice(0, 50).map((w, idx) => {
+    const s = w.stats || {};
+    return {
+      rank: idx + 1,
+      score: w.score || 0,
+      address: w.address || '',
+      totalPnl: s.totalPnl || 0,
+      winRate: s.wr || 0,
+      markets: s.estimatedMarkets || 0,
+      resolved: s.resolved || 0,
+      efficiency: s.efficiency || 0,
+      edgeRatio: s.edgeRatio || 0,
+      avgW: s.avgW || 0,
+      avgL: s.avgL || 0,
+      wins: s.wins || 0,
+      losses: s.losses || 0,
+      volume: s.totalVolume || 0,
+      openCount: s.openCount || 0,
+    };
+  });
 
   const leaderboardColumns = [
     { field: 'rank', render: v => String(v) },
     { field: 'score', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
-    { field: 'totalPnL', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
     { field: 'markets', render: v => String(v) },
-    { field: 'recency', render: v => (v || 0).toFixed(1) + '%' },
-    { field: 'efficiency', render: v => (v || 0).toFixed(2) }
+    { field: 'resolved', render: v => String(v) },
+    { field: 'efficiency', render: v => ((v || 0) * 100).toFixed(2) + '%' }
   ];
 
   createSortableTable('leaderboard-table', leaderboardColumns, leaderboardData, (row) => {
@@ -409,6 +419,8 @@ function renderDashboard() {
 }
 
 function showLeaderboardDetail(wallet) {
+  const s = wallet.stats || {};
+  const totalPnl = s.totalPnl || 0;
   const html = `
     <div class="detail-grid">
       <div class="detail-item">
@@ -421,27 +433,43 @@ function showLeaderboardDetail(wallet) {
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Total PnL</div>
-        <div class="detail-item-value" style="color: ${wallet.totalPnL >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtDollars(wallet.totalPnL || 0)}</div>
+        <div class="detail-item-value" style="color: ${totalPnl >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtDollars(totalPnl)}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Win Rate</div>
-        <div class="detail-item-value">${((wallet.winRate || 0) * 100).toFixed(1)}%</div>
+        <div class="detail-item-value">${((s.wr || 0) * 100).toFixed(1)}% (${s.wins || 0}W / ${s.losses || 0}L)</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Markets</div>
-        <div class="detail-item-value">${wallet.marketCount || 0}</div>
+        <div class="detail-item-value">${s.estimatedMarkets || 0}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Recency %</div>
-        <div class="detail-item-value">${(wallet.recency || 0).toFixed(1)}%</div>
+        <div class="detail-item-label">Avg Win</div>
+        <div class="detail-item-value" style="color: var(--green);">${fmtDollars(s.avgW || 0)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Avg Loss</div>
+        <div class="detail-item-value" style="color: var(--red);">${fmtDollars(s.avgL || 0)}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Efficiency</div>
-        <div class="detail-item-value">${(wallet.efficiency || 0).toFixed(2)}</div>
+        <div class="detail-item-value">${((s.efficiency || 0) * 100).toFixed(2)}%</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Total Trades</div>
-        <div class="detail-item-value">${wallet.totalTrades || 0}</div>
+        <div class="detail-item-label">Edge Ratio</div>
+        <div class="detail-item-value">${(s.edgeRatio || 0).toFixed(2)}x</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Resolved</div>
+        <div class="detail-item-value">${s.resolved || 0}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Volume</div>
+        <div class="detail-item-value">${fmtDollars(s.totalVolume || 0)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Open Positions</div>
+        <div class="detail-item-value">${s.openCount || 0}</div>
       </div>
     </div>
 
@@ -503,11 +531,11 @@ function renderScoreDistribution() {
 }
 
 function renderTrendline() {
-  if (!data.analytics || !data.analytics.timeline) return;
+  if (!data.analytics || !data.analytics.trendline) return;
 
   destroyChart('trendline');
 
-  const timeline = data.analytics.timeline || [];
+  const timeline = data.analytics.trendline || [];
 
   const ctx = document.getElementById('chart-trendline');
   if (ctx) {
@@ -576,13 +604,13 @@ function renderConsensus() {
   const consensus = data.analytics.consensus || [];
 
   const consensusData = consensus.map(m => ({
-    title: m.title || 'Unknown',
-    marketId: m.marketId || '',
-    walletCount: m.holdingWallets?.length || 0,
-    avgScore: m.avgHolderScore || 0,
-    totalPnL: m.totalPnL || 0,
-    conviction: (m.holdingWallets?.length || 0) * (m.avgHolderScore || 0),
-    holders: m.holdingWallets || []
+    title: m.marketTitle || m.title || 'Unknown',
+    marketId: m.tokenId || m.marketId || '',
+    walletCount: m.walletCount || m.wallets?.length || 0,
+    avgScore: m.avgScore || m.avgHolderScore || 0,
+    totalPnl: m.avgPnl || m.totalPnl || 0,
+    conviction: m.conviction || (m.walletCount || 0) * (m.avgScore || 0),
+    holders: m.wallets || m.holdingWallets || []
   }));
 
   const consensusColumns = [
@@ -599,7 +627,7 @@ function renderConsensus() {
       `;
     }},
     { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
-    { field: 'totalPnL', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
     { field: 'conviction', render: v => `${v.toFixed(0)}` }
   ];
 
@@ -635,7 +663,7 @@ function showConsensusDetail(market) {
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Total PnL</div>
-        <div class="detail-item-value" style="color: ${market.totalPnL >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtDollars(market.totalPnL)}</div>
+        <div class="detail-item-value" style="color: ${market.totalPnl >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtDollars(market.totalPnl)}</div>
       </div>
     </div>
 
@@ -662,20 +690,20 @@ function renderPortfolio() {
 
   const uniqueWallets = new Set();
   active.forEach(m => {
-    (m.holdingWallets || []).forEach(w => uniqueWallets.add(w.address));
+    (m.holders || []).forEach(w => uniqueWallets.add(w.address));
   });
 
-  document.getElementById('metric-open-positions').textContent = active.reduce((acc, m) => acc + (m.holdingWallets?.length || 0), 0).toLocaleString();
+  document.getElementById('metric-open-positions').textContent = active.reduce((acc, m) => acc + (m.holderCount || m.holders?.length || 0), 0).toLocaleString();
   document.getElementById('metric-unique-markets').textContent = active.length.toLocaleString();
   document.getElementById('metric-active-wallets').textContent = uniqueWallets.size.toLocaleString();
 
   const portfolioData = active.map(m => ({
-    title: m.title || 'Unknown',
-    holdingCount: m.holdingWallets?.length || 0,
+    title: m.marketTitle || m.title || 'Unknown',
+    holdingCount: m.holderCount || m.holders?.length || 0,
     totalShares: m.totalShares || 0,
-    avgEntryPrice: m.avgEntryPrice || 0,
+    avgEntryPrice: m.holders?.length ? m.holders.reduce((s, h) => s + (h.entryPrice || 0), 0) / m.holders.length : 0,
     direction: m.consensusDirection || 'MIXED',
-    holders: m.holdingWallets || []
+    holders: m.holders || []
   }));
 
   const portfolioColumns = [
@@ -695,7 +723,7 @@ function showPortfolioDetail(market) {
   const holders = market.holders.map((h, idx) => `
     <div class="detail-list-item">
       <div class="detail-list-item-label">${idx + 1}. ${truncAddr(h.address)}</div>
-      <div class="detail-list-item-value">${fmt(h.shares || 0, 0)} shares @ $${(h.avgPrice || 0).toFixed(2)}</div>
+      <div class="detail-list-item-value">${fmt(h.shares || 0, 0)} shares @ $${(h.entryPrice || 0).toFixed(2)}</div>
     </div>
   `).join('');
 
@@ -737,13 +765,14 @@ function showPortfolioDetail(market) {
 function renderPatterns() {
   if (!data.analytics) return;
 
-  const patterns = data.analytics.patterns || {};
+  const patterns = data.analytics.winPatterns || data.analytics.patterns || {};
   const summary = data.analytics.summary || {};
+  const overallStats = patterns.overallStats || {};
 
-  document.getElementById('metric-overall-winrate').textContent = ((patterns.overallWinRate || 0) * 100).toFixed(1) + '%';
-  document.getElementById('metric-avg-position').textContent = (patterns.avgPositionSize || 0).toFixed(0);
-  document.getElementById('metric-median-pnl').textContent = fmtDollars(patterns.medianPnL || 0);
-  document.getElementById('metric-resolved-count').textContent = (patterns.totalResolvedPositions || 0).toLocaleString();
+  document.getElementById('metric-overall-winrate').textContent = ((overallStats.winRate || 0) * 100).toFixed(1) + '%';
+  document.getElementById('metric-avg-position').textContent = overallStats.totalTrades ? fmtDollars(overallStats.totalPnl / overallStats.totalTrades) : '0';
+  document.getElementById('metric-median-pnl').textContent = fmtDollars(overallStats.avgPnl || 0);
+  document.getElementById('metric-resolved-count').textContent = (overallStats.totalTrades || 0).toLocaleString();
 
   // Win rate by size chart
   renderWinRateBySize(patterns);
@@ -755,14 +784,14 @@ function renderPatterns() {
   const winningMarkets = (patterns.topWinningMarkets || []).map(m => ({
     title: m.title || 'Unknown',
     winRate: m.winRate || 0,
-    avgPnL: m.avgPnL || 0,
-    positionCount: m.positionCount || 0
+    avgPnl: m.avgPnl || 0,
+    positionCount: m.totalTrades || m.positionCount || 0
   }));
 
   const patternsColumns = [
     { field: 'title', render: v => `<span style="color: var(--accent-light);">${v}</span>` },
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
-    { field: 'avgPnL', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'avgPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
     { field: 'positionCount', render: v => String(v) }
   ];
 
@@ -772,7 +801,8 @@ function renderPatterns() {
 function renderWinRateBySize(patterns) {
   destroyChart('winrate-size');
 
-  const buckets = patterns.winRateBySize || { small: 0, medium: 0, large: 0 };
+  const buckets = patterns.sizeBuckets || patterns.winRateBySize || { small: {}, medium: {}, large: {} };
+  const getWinRate = (b) => b && b.count > 0 ? (b.wins / b.count) : 0;
 
   const ctx = document.getElementById('chart-winrate-size');
   if (ctx) {
@@ -783,9 +813,9 @@ function renderWinRateBySize(patterns) {
         datasets: [{
           label: 'Win Rate (%)',
           data: [
-            (buckets.small || 0) * 100,
-            (buckets.medium || 0) * 100,
-            (buckets.large || 0) * 100
+            getWinRate(buckets.small) * 100,
+            getWinRate(buckets.medium) * 100,
+            getWinRate(buckets.large) * 100
           ],
           backgroundColor: ['rgba(0, 184, 148, 0.4)', 'rgba(253, 203, 110, 0.4)', 'rgba(225, 112, 85, 0.4)'],
           borderColor: ['#00b894', '#fdcb6e', '#e17055'],
@@ -820,9 +850,9 @@ function renderTopMarketsChart(patterns) {
         labels: topMarkets.map(m => m.title || 'Unknown'),
         datasets: [{
           label: 'Total PnL ($)',
-          data: topMarkets.map(m => m.totalPnL || 0),
-          backgroundColor: topMarkets.map(m => (m.totalPnL || 0) >= 0 ? 'rgba(0, 184, 148, 0.4)' : 'rgba(225, 112, 85, 0.4)'),
-          borderColor: topMarkets.map(m => (m.totalPnL || 0) >= 0 ? '#00b894' : '#e17055'),
+          data: topMarkets.map(m => m.totalPnl || 0),
+          backgroundColor: topMarkets.map(m => (m.totalPnl || 0) >= 0 ? 'rgba(0, 184, 148, 0.4)' : 'rgba(225, 112, 85, 0.4)'),
+          borderColor: topMarkets.map(m => (m.totalPnl || 0) >= 0 ? '#00b894' : '#e17055'),
           borderWidth: 1
         }]
       },
@@ -856,10 +886,10 @@ function renderSignals() {
   // Biggest wins table
   const winsData = biggestWins.slice(0, 50).map(w => ({
     marketTitle: w.marketTitle || 'Unknown',
-    wallet: w.wallet || '',
+    wallet: w.address || w.wallet || '',
     pnl: w.pnl || 0,
     roi: w.roi || 0,
-    score: w.score || 0
+    score: w.walletScore || w.score || 0
   }));
 
   const winsColumns = [
@@ -893,9 +923,9 @@ function renderSignals() {
 
   // Emerging consensus table
   const emergingData = emergingConsensus.map(m => ({
-    marketTitle: m.title || 'Unknown',
-    walletCount: m.holdingWallets?.length || 0,
-    avgScore: m.avgHolderScore || 0
+    marketTitle: m.marketTitle || m.title || 'Unknown',
+    walletCount: m.walletCount || m.wallets?.length || 0,
+    avgScore: m.avgScore || m.avgHolderScore || 0
   }));
 
   const emergingColumns = [
