@@ -279,8 +279,8 @@ async function runScan() {
       wallet.status = 'active';
       wallet.probationSince = null;
       scoredWallets.push({ address, score, stats, lastActiveTimestamp: lastActiveTs });
-    } else if (wallet.status === 'active' || !wallet.status) {
-      // Previously tracked but now failing filters — put on probation
+    } else if (wallet.status === 'active') {
+      // Previously active wallet now failing filters — put on probation
       wallet.status = 'probation';
       wallet.probationSince = wallet.probationSince || state.scanCount;
       console.log(`  ⚠ ${address.slice(0, 10)}... on probation (WR: ${(stats.wr*100).toFixed(1)}%, PnL: $${stats.totalPnl.toFixed(0)})`);

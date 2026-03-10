@@ -524,67 +524,72 @@ async function resolveMarkets(tokenIds) {
   if (tokenIds.size === 0) return new Map();
 
   const lookup = new Map();
-  const batchSize = 20; // Gamma API has URL length limits, keep batches small
   const ids = Array.from(tokenIds);
 
-  for (let i = 0; i < ids.length; i += batchSize) {
-    const batch = ids.slice(i, i + batchSize);
+  // Query one token at a time — Gamma API rejects comma-separated clob_token_ids with 422
+  for (let i = 0; i < ids.length; i++) {
+    const tokenId = ids[i];
 
     try {
-      // Query Gamma API by clob_token_ids to find markets matching our token IDs
-      const tokenIdsParam = batch.join(',');
-      const url = `${GAMMA_MARKETS}?clob_token_ids=${encodeURIComponent(tokenIdsParam)}&limit=100`;
+      const url = `${GAMMA_MARKETS}?clob_token_ids=${tokenId}&limit=1`;
       const response = await fetch(url);
 
       if (!response.ok) {
-        console.error(`Gamma API error: ${response.status}`);
+        // Don't spam logs for every failure — only log periodically
+        if (i < 3 || i % 50 === 0) {
+          console.error(`    Gamma API error for token ${i + 1}/${ids.length}: ${response.status}`);
+        }
         continue;
       }
 
       const markets = await response.json();
 
-      if (Array.isArray(markets)) {
-        for (const market of markets) {
-          // Build the full event slug: event_slug/market_slug for proper linking
-          const eventSlug = market.events?.[0]?.slug || '';
-          const marketSlug = market.slug || '';
-          const fullSlug = eventSlug && marketSlug ? `${eventSlug}/${marketSlug}` : eventSlug || marketSlug;
+      if (Array.isArray(markets) && markets.length > 0) {
+        const market = markets[0];
+        // Build the full event slug: event_slug/market_slug for proper linking
+        const eventSlug = market.events?.[0]?.slug || '';
+        const marketSlug = market.slug || '';
+        const fullSlug = eventSlug && marketSlug ? `${eventSlug}/${marketSlug}` : eventSlug || marketSlug;
 
-          if (market.tokens && Array.isArray(market.tokens)) {
-            for (const token of market.tokens) {
-              if (batch.includes(token.token_id)) {
-                lookup.set(token.token_id, {
-                  title: market.title || market.question || `Market ${token.token_id.slice(0, 8)}...`,
-                  slug: fullSlug,
-                  category: market.category || '',
-                  image: market.image || '',
-                });
-              }
-            }
-          }
-          // Also try clobTokenIds field format
-          if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
-            for (const tid of market.clobTokenIds) {
-              if (batch.includes(tid) && !lookup.has(tid)) {
-                lookup.set(tid, {
-                  title: market.title || market.question || `Market ${tid.slice(0, 8)}...`,
-                  slug: fullSlug,
-                  category: market.category || '',
-                  image: market.image || '',
-                });
-              }
+        const info = {
+          title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
+          slug: fullSlug,
+          category: market.category || '',
+          image: market.image || '',
+        };
+
+        // Map both tokens from this market (each market has Yes/No token pair)
+        if (market.tokens && Array.isArray(market.tokens)) {
+          for (const token of market.tokens) {
+            if (ids.includes(token.token_id) || token.token_id === tokenId) {
+              lookup.set(token.token_id, info);
             }
           }
         }
+        if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
+          for (const tid of market.clobTokenIds) {
+            if (ids.includes(tid) && !lookup.has(tid)) {
+              lookup.set(tid, info);
+            }
+          }
+        }
+        // Ensure the queried token itself is mapped
+        if (!lookup.has(tokenId)) {
+          lookup.set(tokenId, info);
+        }
       }
 
-      console.log(`    Gamma batch ${Math.floor(i / batchSize) + 1}: resolved ${lookup.size} markets so far`);
+      if ((i + 1) % 100 === 0 || i === ids.length - 1) {
+        console.log(`    Gamma progress: ${i + 1}/${ids.length} queried, ${lookup.size} resolved`);
+      }
     } catch (err) {
-      console.error(`Error fetching markets batch:`, err.message);
+      if (i < 3) console.error(`    Error fetching market for token ${i + 1}:`, err.message);
     }
 
-    // Add delay to avoid rate limiting
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Small delay to avoid rate limiting — 100ms per request
+    if (i < ids.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 
   return lookup;
