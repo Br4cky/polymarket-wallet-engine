@@ -603,20 +603,34 @@ function renderConsensus() {
 
   const consensus = data.analytics.consensus || [];
 
-  const consensusData = consensus.map(m => ({
-    title: m.marketTitle || m.title || 'Unknown',
-    marketId: m.tokenId || m.marketId || '',
-    walletCount: m.walletCount || m.wallets?.length || 0,
-    avgScore: m.avgScore || m.avgHolderScore || 0,
-    totalPnl: m.avgPnl || m.totalPnl || 0,
-    conviction: m.conviction || (m.walletCount || 0) * (m.avgScore || 0),
-    holders: m.wallets || m.holdingWallets || []
+  const totalWallets = data.analytics.summary?.totalWallets || 1;
+
+  // Build raw data with raw conviction scores
+  const rawConsensus = consensus.map(m => {
+    const wc = m.walletCount || m.wallets?.length || 0;
+    const as = m.avgScore || m.avgHolderScore || 0;
+    return {
+      title: m.marketTitle || m.title || 'Unknown',
+      marketId: m.tokenId || m.marketId || '',
+      walletCount: wc,
+      avgScore: as,
+      totalPnl: m.avgPnl || m.totalPnl || 0,
+      rawConviction: m.conviction || wc * as,
+      holders: m.wallets || m.holdingWallets || []
+    };
+  });
+
+  // Normalize conviction to 0-100 scale
+  const maxRaw = Math.max(...rawConsensus.map(m => m.rawConviction), 1);
+  const consensusData = rawConsensus.map(m => ({
+    ...m,
+    conviction: (m.rawConviction / maxRaw) * 100
   }));
 
   const consensusColumns = [
     { field: 'title', render: v => `<a href="javascript:void(0)" style="color: var(--accent-light);">${v}</a>` },
     { field: 'walletCount', render: v => {
-      const pct = (v / (data.analytics.summary?.totalWallets || 1) * 100).toFixed(0);
+      const pct = (v / totalWallets * 100).toFixed(0);
       return `
         <div class="bar-indicator">
           <div class="bar-indicator-bg">
@@ -628,7 +642,10 @@ function renderConsensus() {
     }},
     { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
     { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
-    { field: 'conviction', render: v => `${v.toFixed(0)}` }
+    { field: 'conviction', render: (v) => {
+      const cls = v >= 70 ? 'badge-high' : v >= 40 ? 'badge-mid' : 'badge-low';
+      return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
+    }}
   ];
 
   createSortableTable('consensus-table', consensusColumns, consensusData, (row) => {
