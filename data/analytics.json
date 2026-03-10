@@ -1,1 +1,55 @@
-{}
+{
+  "lastUpdated": "2026-03-10T11:44:39.784Z",
+  "scanCount": 1,
+  "summary": {
+    "totalWallets": 0,
+    "avgScore": 0,
+    "totalPnl": 0,
+    "avgWinRate": 0,
+    "topScore": 0
+  },
+  "leaderboard": [],
+  "consensus": [],
+  "activePositions": [],
+  "winPatterns": {
+    "topWinningMarkets": [],
+    "sizeBuckets": {
+      "small": {
+        "count": 0,
+        "wins": 0,
+        "totalPnl": 0,
+        "avgPnl": 0
+      },
+      "medium": {
+        "count": 0,
+        "wins": 0,
+        "totalPnl": 0,
+        "avgPnl": 0
+      },
+      "large": {
+        "count": 0,
+        "wins": 0,
+        "totalPnl": 0,
+        "avgPnl": 0
+      }
+    },
+    "overallStats": {
+      "totalTrades": 0,
+      "totalWins": 0,
+      "winRate": 0,
+      "totalPnl": 0,
+      "avgPnl": 0
+    }
+  },
+  "biggestWins": [],
+  "trendline": [
+    {
+      "scanIndex": 1,
+      "timestamp": "2026-03-10T11:44:39.784Z",
+      "avgScore": 0,
+      "topScore": 0,
+      "walletCount": 0,
+      "totalPnl": 0
+    }
+  ]
+}
