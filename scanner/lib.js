@@ -524,29 +524,35 @@ async function resolveMarkets(tokenIds) {
   if (tokenIds.size === 0) return new Map();
 
   const lookup = new Map();
+  const idsSet = new Set(tokenIds); // for fast has() checks
   const ids = Array.from(tokenIds);
+  const CONCURRENCY = 5; // parallel requests
+  let queried = 0;
+  let errors = 0;
 
-  // Query one token at a time — Gamma API rejects comma-separated clob_token_ids with 422
-  for (let i = 0; i < ids.length; i++) {
-    const tokenId = ids[i];
+  /**
+   * Fetch a single token from Gamma API
+   */
+  async function fetchOne(tokenId) {
+    // Skip if already resolved (e.g. sibling token from a previous market response)
+    if (lookup.has(tokenId)) return;
 
     try {
       const url = `${GAMMA_MARKETS}?clob_token_ids=${tokenId}&limit=1`;
       const response = await fetch(url);
 
       if (!response.ok) {
-        // Don't spam logs for every failure — only log periodically
-        if (i < 3 || i % 50 === 0) {
-          console.error(`    Gamma API error for token ${i + 1}/${ids.length}: ${response.status}`);
+        errors++;
+        if (errors <= 3 || errors % 100 === 0) {
+          console.error(`    Gamma API error (${errors} total): ${response.status}`);
         }
-        continue;
+        return;
       }
 
       const markets = await response.json();
 
       if (Array.isArray(markets) && markets.length > 0) {
         const market = markets[0];
-        // Build the full event slug: event_slug/market_slug for proper linking
         const eventSlug = market.events?.[0]?.slug || '';
         const marketSlug = market.slug || '';
         const fullSlug = eventSlug && marketSlug ? `${eventSlug}/${marketSlug}` : eventSlug || marketSlug;
@@ -558,38 +564,43 @@ async function resolveMarkets(tokenIds) {
           image: market.image || '',
         };
 
-        // Map both tokens from this market (each market has Yes/No token pair)
+        // Map both tokens from this market (Yes/No pair) — avoids querying sibling later
         if (market.tokens && Array.isArray(market.tokens)) {
           for (const token of market.tokens) {
-            if (ids.includes(token.token_id) || token.token_id === tokenId) {
-              lookup.set(token.token_id, info);
-            }
+            lookup.set(token.token_id, info);
           }
         }
         if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
           for (const tid of market.clobTokenIds) {
-            if (ids.includes(tid) && !lookup.has(tid)) {
-              lookup.set(tid, info);
-            }
+            if (!lookup.has(tid)) lookup.set(tid, info);
           }
         }
-        // Ensure the queried token itself is mapped
         if (!lookup.has(tokenId)) {
           lookup.set(tokenId, info);
         }
       }
-
-      if ((i + 1) % 100 === 0 || i === ids.length - 1) {
-        console.log(`    Gamma progress: ${i + 1}/${ids.length} queried, ${lookup.size} resolved`);
-      }
     } catch (err) {
-      if (i < 3) console.error(`    Error fetching market for token ${i + 1}:`, err.message);
+      errors++;
+      if (errors <= 3) console.error(`    Error fetching market:`, err.message);
+    }
+  }
+
+  // Process in concurrent batches
+  for (let i = 0; i < ids.length; i += CONCURRENCY) {
+    const batch = ids.slice(i, i + CONCURRENCY).filter(id => !lookup.has(id));
+
+    if (batch.length > 0) {
+      await Promise.all(batch.map(id => fetchOne(id)));
     }
 
-    // Small delay to avoid rate limiting — 100ms per request
-    if (i < ids.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    queried = Math.min(i + CONCURRENCY, ids.length);
+
+    if (queried % 500 === 0 || queried >= ids.length) {
+      console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved, ${errors} errors`);
     }
+
+    // Small delay between batches to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
 
   return lookup;
