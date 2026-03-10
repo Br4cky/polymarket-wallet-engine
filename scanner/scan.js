@@ -2,14 +2,15 @@
 
 /**
  * Polymarket Signal Engine - Main Scanner
- * Orchestrates the full pipeline: fetch positions, score wallets, resolve markets, compute analytics
+ * Processes positions inline as they're fetched (no giant array — no stack overflow).
+ * Matches the proven approach from the browser-based screener.
  */
 
 import {
   GOLDSKY_PNL,
-  GOLDSKY_POSITIONS,
-  discoverEntities,
-  fetchPositions,
+  gqlQuery,
+  introspectSchema,
+  introspectEntity,
   analyzePositions,
   computeScore,
   resolveMarkets,
@@ -25,413 +26,330 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Determine data directory from import.meta.url
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, '../data');
 
 // Configuration
-const MAX_POSITIONS = 200000; // per run
+const MAX_POSITIONS = 200000;
 const MIN_PNL = 1000;
-const MIN_POSITIONS = 20;
+const MIN_POSITIONS_STAGE1 = 20;
 const MAX_WALLETS = 2000;
-const SCORE_THRESHOLD = 30;
+const USDC_DIVISOR = 1e6;
+const BATCH_SIZE = 1000;
+const DELAY = 200;
 
-// Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-/**
- * Main scanner entry point
- */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function runScan() {
+  const scanStart = Date.now();
+
   console.log('\n===========================================');
   console.log('  Polymarket Signal Engine - Scanner');
   console.log(`  Started: ${new Date().toISOString()}`);
   console.log('===========================================\n');
 
-  try {
-    // ===== Step 1: Load State =====
-    console.log('📋 Loading state...');
-    const stateFile = path.join(DATA_DIR, 'state.json');
-    let state = loadJSON(stateFile);
+  // ===== Step 1: Load State =====
+  console.log('📋 Loading state...');
+  const stateFile = path.join(DATA_DIR, 'state.json');
+  let state = loadJSON(stateFile) || { lastId: '', scanCount: 0, lastRun: null, totalScanned: 0 };
 
-    if (!state) {
-      state = {
-        lastId: '',
-        scanCount: 0,
-        lastRun: null,
-        totalScanned: 0,
-      };
-    }
+  state.scanCount++;
+  state.lastRun = new Date().toISOString();
 
-    const previousScanCount = state.scanCount;
-    state.scanCount++;
-    state.lastRun = new Date().toISOString();
+  console.log(`  Scan #${state.scanCount}`);
+  console.log(`  Cursor: ${state.lastId || '(fresh start)'}`);
+  console.log(`  Previously scanned: ${state.totalScanned.toLocaleString()}\n`);
 
-    console.log(`  Current scan: #${state.scanCount}`);
-    console.log(`  Last cursor: ${state.lastId || '(new)'}`);
-    console.log(`  Total scanned so far: ${state.totalScanned}\n`);
+  // ===== Step 2: Discover Entity =====
+  console.log('🔍 Discovering entities...');
+  const entities = await introspectSchema(GOLDSKY_PNL);
+  console.log(`  Available: ${entities.join(', ')}`);
 
-    // ===== Step 2: Discover Entities =====
-    console.log('🔍 Discovering entities on PnL subgraph...');
-    let entities;
-    try {
-      entities = await discoverEntities(GOLDSKY_PNL);
-      console.log(`  Found ${entities.length} position-like entities:`);
-      for (const e of entities) {
-        console.log(`    - ${e.entity}`);
-      }
-    } catch (err) {
-      console.error('  Error discovering entities:', err.message);
-      console.log('  Falling back to known entity (Position)');
-      entities = [
-        {
-          entity: 'Position',
-          fields: {
-            user: 'user',
-            pnl: 'unrealizedPnl',
-            token: 'tokenId',
-            totalBought: 'totalBought',
-            amount: 'amount',
-          },
-          endpoint: GOLDSKY_PNL,
-        },
-      ];
-    }
-    console.log();
+  // Find the plural collection entity (userPositions) — skip singular lookup entities
+  const positionEntities = entities.filter(e =>
+    /position/i.test(e) && e.endsWith('s') && !e.startsWith('_')
+  );
+  console.log(`  Position collections: ${positionEntities.join(', ') || 'none'}`);
 
-    // ===== Step 3: Fetch Positions =====
-    console.log('📥 Fetching positions from subgraph...');
-    const allPositions = [];
-    let totalFetched = 0;
-
-    for (const entityConfig of entities) {
-      try {
-        console.log(
-          `  Fetching ${entityConfig.entity} (from ${entityConfig.lastId || 'start'})...`
-        );
-
-        const result = await fetchPositions(
-          entityConfig.endpoint,
-          entityConfig.entity,
-          entityConfig.fields,
-          state.lastId,
-          MAX_POSITIONS - allPositions.length
-        );
-
-        console.log(`    Fetched ${result.items.length} positions`);
-        allPositions.push(...result.items);
-
-        if (result.lastId) {
-          state.lastId = result.lastId;
-        }
-
-        totalFetched += result.items.length;
-
-        if (allPositions.length >= MAX_POSITIONS) {
-          console.log('  Reached batch size limit');
-          break;
-        }
-      } catch (err) {
-        console.error(`  Error fetching from ${entityConfig.entity}:`, err.message);
-      }
-    }
-
-    state.totalScanned += totalFetched;
-    console.log(`  Total positions fetched this run: ${totalFetched}\n`);
-
-    // ===== Step 4: Load Existing Wallets and Merge =====
-    console.log('👥 Loading existing wallet data...');
-    const walletsFile = path.join(DATA_DIR, 'wallets.json');
-    let walletData = loadJSON(walletsFile);
-
-    if (!walletData) {
-      walletData = {
-        metadata: { totalWallets: 0, lastUpdated: null, totalScans: 0 },
-        wallets: {},
-      };
-    }
-
-    const wallets = walletData.wallets || {};
-    let newWallets = 0;
-    let mergedPositions = 0;
-
-    console.log(`  Existing wallets: ${Object.keys(wallets).length}`);
-
-    // Merge new positions by wallet
-    for (const pos of allPositions) {
-      const { user } = pos;
-      if (!user) continue;
-
-      if (!wallets[user]) {
-        wallets[user] = {
-          score: 0,
-          stats: {},
-          positions: [],
-          firstSeen: state.scanCount,
-          lastSeen: state.scanCount,
-        };
-        newWallets++;
-      }
-
-      // Add scan index to position
-      const posWithIndex = { ...pos, scanIndex: state.scanCount };
-
-      // Merge by uid to avoid duplicates
-      const existing = wallets[user].positions.findIndex((p) => p.uid === pos.uid);
-      if (existing >= 0) {
-        wallets[user].positions[existing] = posWithIndex;
-      } else {
-        wallets[user].positions.push(posWithIndex);
-      }
-
-      wallets[user].lastSeen = state.scanCount;
-      mergedPositions++;
-    }
-
-    console.log(`  New wallets: ${newWallets}`);
-    console.log(`  Merged positions: ${mergedPositions}\n`);
-
-    // ===== Step 5: Score All Wallets =====
-    console.log('⭐ Scoring wallets...');
-    const scoredWallets = [];
-
-    for (const [address, wallet] of Object.entries(wallets)) {
-      const stats = analyzePositions(wallet.positions || []);
-      const score = computeScore(stats);
-
-      wallet.stats = stats;
-      wallet.score = score;
-
-      if (stats.resolved >= MIN_POSITIONS) {
-        scoredWallets.push({ address, score, stats });
-      }
-    }
-
-    // Sort and keep top wallets
-    scoredWallets.sort((a, b) => b.score - a.score);
-    const topWallets = scoredWallets.slice(0, MAX_WALLETS);
-
-    console.log(`  Scored ${scoredWallets.length} wallets with ${MIN_POSITIONS}+ positions`);
-    console.log(`  Keeping top ${Math.min(topWallets.length, MAX_WALLETS)} by score`);
-
-    // Update wallet data structure
-    const walletsByAddress = new Map();
-    for (const wallet of topWallets) {
-      walletsByAddress.set(wallet.address, wallets[wallet.address]);
-    }
-
-    // Remove wallets not in top list
-    for (const address of Object.keys(wallets)) {
-      if (!walletsByAddress.has(address)) {
-        delete wallets[address];
-      }
-    }
-
-    const topScore = topWallets.length > 0 ? topWallets[0].score : 0;
-    const avgScore = topWallets.length > 0
-      ? topWallets.reduce((sum, w) => sum + w.score, 0) / topWallets.length
-      : 0;
-
-    console.log(`  Top score: ${topScore.toFixed(1)}`);
-    console.log(`  Avg score: ${avgScore.toFixed(1)}\n`);
-
-    // ===== Step 6: Collect Token IDs and Resolve Markets =====
-    console.log('🎯 Resolving markets...');
-    const tokenIds = new Set();
-
-    for (const wallet of walletsByAddress.values()) {
-      if (wallet.positions) {
-        for (const pos of wallet.positions) {
-          tokenIds.add(pos.tokenId);
-        }
-      }
-    }
-
-    console.log(`  Unique tokens: ${tokenIds.size}`);
-
-    // Load existing market cache
-    const marketsFile = path.join(DATA_DIR, 'markets.json');
-    let marketLookup = loadJSON(marketsFile) || {};
-
-    // Find tokens that need resolution
-    const tokensToResolve = new Set();
-    for (const tokenId of tokenIds) {
-      if (!marketLookup[tokenId]) {
-        tokensToResolve.add(tokenId);
-      }
-    }
-
-    if (tokensToResolve.size > 0) {
-      console.log(`  Fetching ${tokensToResolve.size} new markets from Gamma API...`);
-      try {
-        const newMarkets = await resolveMarkets(tokensToResolve);
-        for (const [tokenId, market] of newMarkets) {
-          marketLookup[tokenId] = market;
-        }
-        console.log(`  Resolved ${newMarkets.size} markets`);
-      } catch (err) {
-        console.error(`  Error resolving markets: ${err.message}`);
-      }
-    } else {
-      console.log('  All tokens already cached');
-    }
-    console.log();
-
-    // ===== Step 7: Compute Analytics =====
-    console.log('📊 Computing analytics...');
-    let consensus = [];
-    let winPatterns = {};
-    let activePositions = [];
-    let biggestWins = [];
-
-    const marketLookupMap = new Map(Object.entries(marketLookup));
-
-    try {
-      consensus = computeConsensus(walletsByAddress, marketLookupMap, 3);
-      console.log(`  Consensus markets: ${consensus.length}`);
-    } catch (err) {
-      console.error(`  Error computing consensus: ${err.message}`);
-    }
-
-    try {
-      winPatterns = computeWinPatterns(walletsByAddress, marketLookupMap);
-      console.log(
-        `  Top winning markets: ${winPatterns.topWinningMarkets?.length || 0}`
-      );
-    } catch (err) {
-      console.error(`  Error computing win patterns: ${err.message}`);
-    }
-
-    try {
-      activePositions = computeActivePositions(walletsByAddress, marketLookupMap);
-      console.log(`  Markets with active positions: ${activePositions.length}`);
-    } catch (err) {
-      console.error(`  Error computing active positions: ${err.message}`);
-    }
-
-    try {
-      biggestWins = findBiggestWins(walletsByAddress, marketLookupMap, 50);
-      console.log(`  Top wins found: ${biggestWins.length}`);
-    } catch (err) {
-      console.error(`  Error finding biggest wins: ${err.message}`);
-    }
-    console.log();
-
-    // ===== Step 8: Build Leaderboard =====
-    console.log('🏆 Building leaderboard...');
-    const leaderboard = topWallets.slice(0, 50).map((w, i) => ({
-      rank: i + 1,
-      address: w.address,
-      score: w.score,
-      stats: w.stats,
-    }));
-
-    console.log(`  Leaderboard size: ${leaderboard.length}\n`);
-
-    // ===== Step 9: Save All Files =====
-    console.log('💾 Saving files...');
-
-    // Update metadata
-    walletData.metadata = {
-      totalWallets: walletsByAddress.size,
-      lastUpdated: new Date().toISOString(),
-      totalScans: state.scanCount,
-    };
-
-    // Save state
-    saveJSON(stateFile, state);
-    console.log(`  ✓ state.json (scanCount=${state.scanCount})`);
-
-    // Save wallets
-    walletData.wallets = wallets;
-    saveJSON(walletsFile, walletData);
-    console.log(`  ✓ wallets.json (${walletsByAddress.size} wallets)`);
-
-    // Save markets
-    saveJSON(marketsFile, marketLookup);
-    console.log(`  ✓ markets.json (${Object.keys(marketLookup).length} markets)`);
-
-    // Compute trendline entry
-    const summaryStats = {
-      totalWallets: walletsByAddress.size,
-      avgScore: avgScore,
-      totalPnl: topWallets.reduce((sum, w) => sum + (w.stats.totalPnl || 0), 0),
-      avgWinRate: topWallets.reduce((sum, w) => sum + (w.stats.wr || 0), 0) / Math.max(1, topWallets.length),
-      topScore: topScore,
-    };
-
-    // Load existing analytics
-    const analyticsFile = path.join(DATA_DIR, 'analytics.json');
-    let analytics = loadJSON(analyticsFile);
-
-    if (!analytics) {
-      analytics = {
-        lastUpdated: null,
-        scanCount: 0,
-        summary: {},
-        leaderboard: [],
-        consensus: [],
-        activePositions: [],
-        winPatterns: {},
-        biggestWins: [],
-        trendline: [],
-      };
-    }
-
-    // Update analytics
-    analytics.lastUpdated = new Date().toISOString();
-    analytics.scanCount = state.scanCount;
-    analytics.summary = summaryStats;
-    analytics.leaderboard = leaderboard;
-    analytics.consensus = consensus.slice(0, 50);
-    analytics.activePositions = activePositions.slice(0, 50);
-    analytics.winPatterns = winPatterns;
-    analytics.biggestWins = biggestWins;
-
-    // Update trendline
-    if (!Array.isArray(analytics.trendline)) {
-      analytics.trendline = [];
-    }
-
-    analytics.trendline.push({
-      scanIndex: state.scanCount,
-      timestamp: analytics.lastUpdated,
-      avgScore: avgScore,
-      topScore: topScore,
-      walletCount: walletsByAddress.size,
-      totalPnl: summaryStats.totalPnl,
-    });
-
-    // Keep last 100 trendline entries
-    if (analytics.trendline.length > 100) {
-      analytics.trendline = analytics.trendline.slice(-100);
-    }
-
-    saveJSON(analyticsFile, analytics);
-    console.log(`  ✓ analytics.json\n`);
-
-    // ===== Completion =====
-    console.log('===========================================');
-    console.log('  ✅ Scan Complete');
-    console.log(`  Duration: ${Math.round((Date.now() - scanStartTime) / 1000)}s`);
-    console.log('  Summary:');
-    console.log(`    - Positions fetched: ${totalFetched}`);
-    console.log(`    - Wallets tracked: ${walletsByAddress.size}`);
-    console.log(`    - Markets resolved: ${Object.keys(marketLookup).length}`);
-    console.log(`    - Top score: ${topScore.toFixed(1)}`);
-    console.log(`    - Avg score: ${avgScore.toFixed(1)}`);
-    console.log('===========================================\n');
-
-    process.exit(0);
-  } catch (err) {
-    console.error('\n❌ Fatal error:', err.message);
-    console.error(err.stack);
+  if (positionEntities.length === 0) {
+    console.error('  ❌ No position collection entities found. Aborting.');
     process.exit(1);
   }
+
+  const entityName = positionEntities[0]; // e.g., "userPositions"
+
+  // Introspect fields — try singular PascalCase type name first
+  let typeName = entityName.charAt(0).toUpperCase() + entityName.slice(1);
+  if (typeName.endsWith('s')) typeName = typeName.slice(0, -1);
+  let fields = await introspectEntity(GOLDSKY_PNL, typeName);
+  if (!fields.length) fields = await introspectEntity(GOLDSKY_PNL, entityName);
+
+  console.log(`  ${entityName} fields: ${fields.join(', ')}`);
+
+  const userField = fields.find(f => /user|account|trader|owner/i.test(f));
+  const pnlField = fields.find(f => /pnl|profit|realized/i.test(f));
+  const tokenField = fields.find(f => /tokenId|token/i.test(f));
+  const boughtField = fields.find(f => /totalBought|total_bought|volume/i.test(f));
+  const amountField = fields.find(f => /^amount$/i.test(f));
+
+  console.log(`  Mapped: user=${userField}, pnl=${pnlField}, token=${tokenField}, bought=${boughtField}, amount=${amountField}\n`);
+
+  if (!userField) {
+    console.error('  ❌ No user field found. Aborting.');
+    process.exit(1);
+  }
+
+  // ===== Step 3: Fetch & Process Inline =====
+  // Process each position as it comes in — no giant array, no stack overflow.
+  // This matches the original browser screener approach.
+  console.log('📥 Fetching positions (processing inline)...');
+
+  const wallets = {}; // address → { positions: [...], firstSeen, lastSeen }
+
+  // Load existing wallet data to merge with
+  const walletsFile = path.join(DATA_DIR, 'wallets.json');
+  const existingData = loadJSON(walletsFile);
+  if (existingData && existingData.wallets) {
+    for (const [addr, w] of Object.entries(existingData.wallets)) {
+      wallets[addr] = w;
+    }
+    console.log(`  Loaded ${Object.keys(wallets).length} existing wallets`);
+  }
+
+  let cursor = state.lastId || '';
+  let fetched = 0;
+  let useNested = false;
+
+  // Build field strings
+  let fieldStr = `id ${userField}`;
+  if (pnlField) fieldStr += ` ${pnlField}`;
+  if (tokenField) fieldStr += ` ${tokenField}`;
+  if (boughtField) fieldStr += ` ${boughtField}`;
+  if (amountField) fieldStr += ` ${amountField}`;
+
+  let nestedFieldStr = `id ${userField} { id }`;
+  if (pnlField) nestedFieldStr += ` ${pnlField}`;
+  if (tokenField) nestedFieldStr += ` ${tokenField}`;
+  if (boughtField) nestedFieldStr += ` ${boughtField}`;
+  if (amountField) nestedFieldStr += ` ${amountField}`;
+
+  while (fetched < MAX_POSITIONS) {
+    let batch;
+    try {
+      if (useNested) throw new Error('use nested');
+      const q = `{ ${entityName}(first: ${BATCH_SIZE}, where: { id_gt: "${cursor}" }) { ${fieldStr} } }`;
+      const data = await gqlQuery(GOLDSKY_PNL, q);
+      batch = data?.[entityName] || [];
+    } catch {
+      try {
+        const q = `{ ${entityName}(first: ${BATCH_SIZE}, where: { id_gt: "${cursor}" }) { ${nestedFieldStr} } }`;
+        const data = await gqlQuery(GOLDSKY_PNL, q);
+        batch = data?.[entityName] || [];
+        useNested = true;
+      } catch (err) {
+        console.error(`  Query failed: ${err.message}`);
+        break;
+      }
+    }
+
+    if (!batch || batch.length === 0) {
+      console.log(`  Exhausted all data at ${fetched.toLocaleString()} positions`);
+      break;
+    }
+
+    // Process each position inline
+    for (const item of batch) {
+      const uid = typeof item[userField] === 'object' ? item[userField]?.id : item[userField];
+      if (!uid) continue;
+
+      const pos = {
+        uid: item.id,
+        pnl: pnlField ? parseFloat(item[pnlField] || 0) / USDC_DIVISOR : 0,
+        tokenId: tokenField ? (item[tokenField] || null) : null,
+        totalBought: boughtField ? parseFloat(item[boughtField] || 0) / USDC_DIVISOR : 0,
+        amount: amountField ? parseFloat(item[amountField] || 0) / USDC_DIVISOR : 0,
+        scanIndex: state.scanCount,
+      };
+
+      if (!wallets[uid]) {
+        wallets[uid] = { positions: [], firstSeen: state.scanCount, lastSeen: state.scanCount };
+      }
+
+      // Dedupe by uid
+      const existing = wallets[uid].positions.findIndex(p => p.uid === pos.uid);
+      if (existing >= 0) {
+        wallets[uid].positions[existing] = pos;
+      } else {
+        wallets[uid].positions.push(pos);
+      }
+      wallets[uid].lastSeen = state.scanCount;
+    }
+
+    fetched += batch.length;
+    cursor = batch[batch.length - 1].id;
+
+    if (fetched % 10000 === 0) {
+      console.log(`  ${fetched.toLocaleString()} positions, ${Object.keys(wallets).length} wallets...`);
+    }
+
+    if (batch.length < BATCH_SIZE) {
+      console.log(`  Exhausted all data at ${fetched.toLocaleString()} positions`);
+      break;
+    }
+
+    await sleep(DELAY);
+  }
+
+  state.lastId = cursor;
+  state.totalScanned += fetched;
+  console.log(`\n  ✓ Fetched: ${fetched.toLocaleString()} positions`);
+  console.log(`  ✓ Total wallets in DB: ${Object.keys(wallets).length}`);
+  console.log(`  ✓ Cumulative scanned: ${state.totalScanned.toLocaleString()}\n`);
+
+  // ===== Step 4: Score All Wallets =====
+  console.log('⭐ Scoring wallets...');
+  const scoredWallets = [];
+
+  for (const [address, wallet] of Object.entries(wallets)) {
+    const stats = analyzePositions(wallet.positions || []);
+    const score = computeScore(stats);
+    wallet.stats = stats;
+    wallet.score = score;
+
+    if (stats.totalPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1) {
+      scoredWallets.push({ address, score, stats });
+    }
+  }
+
+  scoredWallets.sort((a, b) => b.score - a.score);
+  const topWallets = scoredWallets.slice(0, MAX_WALLETS);
+
+  console.log(`  ${scoredWallets.length} wallets pass filters (PnL >= $${MIN_PNL}, positions >= ${MIN_POSITIONS_STAGE1})`);
+  console.log(`  Keeping top ${topWallets.length}`);
+
+  // Build map of top wallets, prune the rest to keep file size manageable
+  const topAddresses = new Set(topWallets.map(w => w.address));
+  for (const address of Object.keys(wallets)) {
+    if (!topAddresses.has(address)) {
+      delete wallets[address];
+    }
+  }
+
+  const topScore = topWallets[0]?.score || 0;
+  const avgScore = topWallets.length > 0
+    ? topWallets.reduce((s, w) => s + w.score, 0) / topWallets.length
+    : 0;
+
+  console.log(`  Top score: ${topScore.toFixed(1)}, Avg: ${avgScore.toFixed(1)}\n`);
+
+  // ===== Step 5: Resolve Markets =====
+  console.log('🎯 Resolving markets...');
+  const tokenIds = new Set();
+  for (const w of Object.values(wallets)) {
+    for (const p of (w.positions || [])) {
+      if (p.tokenId) tokenIds.add(p.tokenId);
+    }
+  }
+
+  const marketsFile = path.join(DATA_DIR, 'markets.json');
+  let marketLookup = loadJSON(marketsFile) || {};
+
+  const toResolve = new Set();
+  for (const id of tokenIds) {
+    if (!marketLookup[id]) toResolve.add(id);
+  }
+
+  console.log(`  Unique tokens: ${tokenIds.size}, need resolution: ${toResolve.size}`);
+
+  if (toResolve.size > 0) {
+    try {
+      const resolved = await resolveMarkets(toResolve);
+      for (const [id, market] of resolved) {
+        marketLookup[id] = market;
+      }
+      console.log(`  Resolved ${resolved.size} markets`);
+    } catch (err) {
+      console.error(`  Market resolution error: ${err.message}`);
+    }
+  }
+  console.log();
+
+  // ===== Step 6: Compute Analytics =====
+  console.log('📊 Computing analytics...');
+  const walletMap = new Map(Object.entries(wallets));
+  const marketMap = new Map(Object.entries(marketLookup));
+
+  let consensus = [], winPatterns = {}, activePositions = [], biggestWins = [];
+
+  try { consensus = computeConsensus(walletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
+  try { winPatterns = computeWinPatterns(walletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
+  try { activePositions = computeActivePositions(walletMap, marketMap); } catch (e) { console.error(`  Active positions error: ${e.message}`); }
+  try { biggestWins = findBiggestWins(walletMap, marketMap, 50); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
+
+  console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}\n`);
+
+  // ===== Step 7: Build Leaderboard =====
+  const leaderboard = topWallets.slice(0, 50).map((w, i) => ({
+    rank: i + 1,
+    address: w.address,
+    score: +w.score.toFixed(2),
+    stats: w.stats,
+  }));
+
+  // ===== Step 8: Save Everything =====
+  console.log('💾 Saving...');
+
+  saveJSON(stateFile, state);
+  console.log(`  ✓ state.json (scan #${state.scanCount})`);
+
+  saveJSON(walletsFile, { metadata: { totalWallets: topAddresses.size, lastUpdated: new Date().toISOString(), totalScans: state.scanCount }, wallets });
+  console.log(`  ✓ wallets.json (${topAddresses.size} wallets)`);
+
+  saveJSON(marketsFile, marketLookup);
+  console.log(`  ✓ markets.json (${Object.keys(marketLookup).length} markets)`);
+
+  // Analytics
+  const analyticsFile = path.join(DATA_DIR, 'analytics.json');
+  let analytics = loadJSON(analyticsFile) || { trendline: [] };
+
+  analytics.lastUpdated = new Date().toISOString();
+  analytics.scanCount = state.scanCount;
+  analytics.summary = {
+    totalWallets: topAddresses.size,
+    avgScore, topScore,
+    totalPnl: topWallets.reduce((s, w) => s + (w.stats.totalPnl || 0), 0),
+    avgWinRate: topWallets.length > 0 ? topWallets.reduce((s, w) => s + (w.stats.wr || 0), 0) / topWallets.length : 0,
+  };
+  analytics.leaderboard = leaderboard;
+  analytics.consensus = consensus.slice(0, 50);
+  analytics.activePositions = activePositions.slice(0, 50);
+  analytics.winPatterns = winPatterns;
+  analytics.biggestWins = biggestWins;
+
+  if (!Array.isArray(analytics.trendline)) analytics.trendline = [];
+  analytics.trendline.push({ scanIndex: state.scanCount, timestamp: analytics.lastUpdated, avgScore, topScore, walletCount: topAddresses.size, totalPnl: analytics.summary.totalPnl });
+  if (analytics.trendline.length > 100) analytics.trendline = analytics.trendline.slice(-100);
+
+  saveJSON(analyticsFile, analytics);
+  console.log(`  ✓ analytics.json`);
+
+  // ===== Done =====
+  const duration = Math.round((Date.now() - scanStart) / 1000);
+  console.log(`\n===========================================`);
+  console.log(`  ✅ Scan #${state.scanCount} Complete (${duration}s)`);
+  console.log(`    Positions: ${fetched.toLocaleString()}`);
+  console.log(`    Wallets tracked: ${topAddresses.size}`);
+  console.log(`    Markets: ${Object.keys(marketLookup).length}`);
+  console.log(`    Top: ${topScore.toFixed(1)} / Avg: ${avgScore.toFixed(1)}`);
+  console.log(`===========================================\n`);
 }
 
-// Record start time and run
-const scanStartTime = Date.now();
-runScan();
+runScan().catch(err => {
+  console.error('\n❌ Fatal:', err.message);
+  console.error(err.stack);
+  process.exit(1);
+});
