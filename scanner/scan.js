@@ -348,7 +348,15 @@ async function runScan() {
 
   if (toResolve.size > 0) {
     try {
-      const resolved = await resolveMarkets(toResolve);
+      // Pass a save callback so markets.json is saved periodically during resolution
+      // This preserves progress if the scan is cancelled or times out
+      const resolved = await resolveMarkets(toResolve, (partialLookup) => {
+        for (const [id, market] of partialLookup) {
+          marketLookup[id] = market;
+        }
+        saveJSON(marketsFile, marketLookup);
+        console.log(`    💾 Saved markets.json checkpoint (${Object.keys(marketLookup).length} total)`);
+      });
       for (const [id, market] of resolved) {
         marketLookup[id] = market;
       }
@@ -356,6 +364,8 @@ async function runScan() {
     } catch (err) {
       console.error(`  Market resolution error: ${err.message}`);
     }
+    // Final save after resolution completes
+    saveJSON(marketsFile, marketLookup);
   }
   console.log();
 

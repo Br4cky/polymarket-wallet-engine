@@ -518,9 +518,10 @@ function computeScore(stats, lastActiveTimestamp) {
 /**
  * Resolve market data from Gamma API
  * @param {Set} tokenIds - Set of token IDs to resolve
+ * @param {Function} [onCheckpoint] - Optional callback(lookup) called every ~5000 tokens to save progress
  * @returns {Promise<Map>} Map of tokenId → {title, slug, category, image}
  */
-async function resolveMarkets(tokenIds) {
+async function resolveMarkets(tokenIds, onCheckpoint) {
   if (tokenIds.size === 0) return new Map();
 
   const lookup = new Map();
@@ -620,6 +621,11 @@ async function resolveMarkets(tokenIds) {
 
     if (queried % 500 === 0 || queried >= ids.length) {
       console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved, ${errors} errors, delay=${delay}ms`);
+    }
+
+    // Checkpoint save every 5000 tokens to preserve progress
+    if (onCheckpoint && queried % 5000 === 0 && queried > 0) {
+      try { onCheckpoint(lookup); } catch (e) { /* non-fatal */ }
     }
 
     // Adaptive delay between batches
