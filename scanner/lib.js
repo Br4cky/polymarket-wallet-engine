@@ -228,6 +228,136 @@ async function fetchPositions(endpoint, entity, fields, lastId = '', maxBatch = 
   return { items, lastId: cursor };
 }
 
+/**
+ * Refresh positions for tracked wallets by re-querying the subgraph.
+ * Detects position closures (amount going to 0), PnL changes, and new positions.
+ * @param {string} endpoint - The GraphQL endpoint
+ * @param {string} entityName - The entity name (e.g. "userPositions")
+ * @param {object} fields - {user, pnl, token, totalBought, amount} field mappings
+ * @param {Object} wallets - wallets map (address → {positions, ...}) — mutated in place
+ * @param {number} scanIndex - Current scan index
+ * @param {string} scanTimestamp - Current scan ISO timestamp
+ * @param {number} [delay=200] - Delay between batches in ms
+ * @returns {Promise<{refreshed: number, newPositions: number, closures: number}>}
+ */
+async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scanIndex, scanTimestamp, delay = 200) {
+  const addresses = Object.keys(wallets);
+  let totalRefreshed = 0;
+  let totalNew = 0;
+  let totalClosures = 0;
+
+  // Build field strings (same logic as fetchPositions)
+  let fieldStr = `id ${fields.user}`;
+  if (fields.pnl) fieldStr += ` ${fields.pnl}`;
+  if (fields.token) fieldStr += ` ${fields.token}`;
+  if (fields.totalBought) fieldStr += ` ${fields.totalBought}`;
+  if (fields.amount) fieldStr += ` ${fields.amount}`;
+
+  let nestedFieldStr = `id ${fields.user} { id }`;
+  if (fields.pnl) nestedFieldStr += ` ${fields.pnl}`;
+  if (fields.token) nestedFieldStr += ` ${fields.token}`;
+  if (fields.totalBought) nestedFieldStr += ` ${fields.totalBought}`;
+  if (fields.amount) nestedFieldStr += ` ${fields.amount}`;
+
+  let useNested = false;
+
+  for (let i = 0; i < addresses.length; i++) {
+    const address = addresses[i];
+    const wallet = wallets[address];
+
+    // Query all positions for this wallet using id range filter
+    // Position IDs are formatted as "{address}-{tokenId}"
+    const idPrefix = address.toLowerCase();
+    let allPositions = [];
+    let cursor = '';
+
+    // Paginate through all positions for this wallet
+    while (true) {
+      let batch;
+      const whereClause = cursor
+        ? `id_gt: "${cursor}", id_gte: "${idPrefix}-", id_lt: "${idPrefix}~"`
+        : `id_gte: "${idPrefix}-", id_lt: "${idPrefix}~"`;
+
+      try {
+        if (useNested) throw new Error('use nested');
+        const q = `{ ${entityName}(first: 1000, where: { ${whereClause} }) { ${fieldStr} } }`;
+        const data = await gqlQuery(endpoint, q);
+        batch = data?.[entityName] || [];
+      } catch {
+        try {
+          const q = `{ ${entityName}(first: 1000, where: { ${whereClause} }) { ${nestedFieldStr} } }`;
+          const data = await gqlQuery(endpoint, q);
+          batch = data?.[entityName] || [];
+          useNested = true;
+        } catch (err) {
+          console.error(`    Error refreshing ${address.slice(0, 10)}...: ${err.message}`);
+          batch = [];
+          break;
+        }
+      }
+
+      if (!batch || batch.length === 0) break;
+      allPositions = allPositions.concat(batch);
+      cursor = batch[batch.length - 1]?.id || '';
+      if (batch.length < 1000) break;
+    }
+
+    // Build a map of existing positions by uid for fast lookup
+    const existingByUid = new Map();
+    for (const p of (wallet.positions || [])) {
+      existingByUid.set(p.uid, p);
+    }
+
+    // Process fresh positions from subgraph
+    for (const item of allPositions) {
+      const uid = item.id;
+      const pnl = fields.pnl ? parseFloat(item[fields.pnl] || 0) / USDC_DIVISOR : 0;
+      const tokenId = fields.token ? (item[fields.token] || null) : null;
+      const totalBought = fields.totalBought ? parseFloat(item[fields.totalBought] || 0) / USDC_DIVISOR : 0;
+      const amount = fields.amount ? parseFloat(item[fields.amount] || 0) / USDC_DIVISOR : 0;
+
+      const existing = existingByUid.get(uid);
+
+      if (existing) {
+        // Track closures: was open (amount > 0.01), now closed (amount ≈ 0)
+        const wasOpen = (existing.amount || 0) > 0.01;
+        const nowClosed = amount <= 0.01;
+        if (wasOpen && nowClosed) totalClosures++;
+
+        // Update with fresh data, preserve original firstSeenTimestamp
+        existing.pnl = pnl;
+        existing.totalBought = totalBought;
+        existing.amount = amount;
+        existing.scanIndex = scanIndex;
+        // Don't overwrite firstSeenTimestamp — keep original
+      } else {
+        // Brand new position for this tracked wallet
+        wallet.positions.push({
+          uid,
+          pnl,
+          tokenId,
+          totalBought,
+          amount,
+          scanIndex,
+          firstSeenTimestamp: scanTimestamp,
+        });
+        totalNew++;
+      }
+    }
+
+    wallet.lastSeen = scanIndex;
+    totalRefreshed++;
+
+    if ((i + 1) % 10 === 0 || i === addresses.length - 1) {
+      console.log(`    Refreshed ${i + 1}/${addresses.length} wallets (${totalNew} new, ${totalClosures} closures)...`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
+  return { refreshed: totalRefreshed, newPositions: totalNew, closures: totalClosures };
+}
+
 // ============================================================================
 // Scoring Functions (matching existing screener formulas)
 // ============================================================================
@@ -866,6 +996,7 @@ export {
   computeActivePositions,
   findBiggestWins,
   computeResolvedPositions,
+  refreshTrackedWallets,
   loadJSON,
   saveJSON,
 };

@@ -19,6 +19,7 @@ import {
   computeActivePositions,
   findBiggestWins,
   computeResolvedPositions,
+  refreshTrackedWallets,
   loadJSON,
   saveJSON,
 } from './lib.js';
@@ -36,6 +37,7 @@ const MIN_PNL = 1000;
 const MIN_POSITIONS_STAGE1 = 20;
 const MIN_WIN_RATE = 0.50;  // 50% minimum win rate to qualify
 const MAX_WALLETS = 2000;
+const PROBATION_SCANS = 3;  // Number of scans before a demoted wallet is removed
 const USDC_DIVISOR = 1e6;
 const BATCH_SIZE = 1000;
 const DELAY = 200;
@@ -134,6 +136,23 @@ async function runScan() {
   scanTimestampMap[state.scanCount] = state.lastRun; // Current scan
   console.log(`  Timestamp map: ${Object.keys(scanTimestampMap).length} scans mapped`);
 
+  // ===== Step 3a: Refresh Tracked Wallets =====
+  const trackedCount = Object.keys(wallets).length;
+  if (trackedCount > 0) {
+    console.log(`\n🔄 Refreshing ${trackedCount} tracked wallets...`);
+    const discoveredFields = { user: userField, pnl: pnlField, token: tokenField, totalBought: boughtField, amount: amountField };
+    try {
+      const refreshResult = await refreshTrackedWallets(
+        GOLDSKY_PNL, entityName, discoveredFields, wallets,
+        state.scanCount, state.lastRun, DELAY
+      );
+      console.log(`  ✓ Refreshed: ${refreshResult.refreshed} wallets, ${refreshResult.newPositions} new positions, ${refreshResult.closures} closures\n`);
+    } catch (err) {
+      console.error(`  ⚠ Refresh error (non-fatal): ${err.message}\n`);
+    }
+  }
+
+  // ===== Step 3b: Fetch New Positions =====
   let cursor = state.lastId || '';
   let fetched = 0;
   let useNested = false;
@@ -253,24 +272,53 @@ async function runScan() {
     wallet.stats = stats;
     wallet.score = score;
 
-    if (stats.totalPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE) {
+    const passesFilters = stats.totalPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE;
+
+    if (passesFilters) {
+      // Active and qualifying — clear any probation
+      wallet.status = 'active';
+      wallet.probationSince = null;
       scoredWallets.push({ address, score, stats, lastActiveTimestamp: lastActiveTs });
+    } else if (wallet.status === 'active' || !wallet.status) {
+      // Previously tracked but now failing filters — put on probation
+      wallet.status = 'probation';
+      wallet.probationSince = wallet.probationSince || state.scanCount;
+      console.log(`  ⚠ ${address.slice(0, 10)}... on probation (WR: ${(stats.wr*100).toFixed(1)}%, PnL: $${stats.totalPnl.toFixed(0)})`);
+      // Still include in scored wallets so they appear in the dashboard
+      scoredWallets.push({ address, score, stats, lastActiveTimestamp: lastActiveTs });
+    } else if (wallet.status === 'probation') {
+      const scansSinceProbation = state.scanCount - (wallet.probationSince || state.scanCount);
+      if (scansSinceProbation >= PROBATION_SCANS) {
+        // Exceeded probation period — will be removed
+        wallet.status = 'removed';
+        console.log(`  ✖ ${address.slice(0, 10)}... removed after ${PROBATION_SCANS} scans of underperformance`);
+      } else {
+        // Still in probation window — keep tracking
+        console.log(`  ⚠ ${address.slice(0, 10)}... probation scan ${scansSinceProbation + 1}/${PROBATION_SCANS}`);
+        scoredWallets.push({ address, score, stats, lastActiveTimestamp: lastActiveTs });
+      }
     }
   }
 
   scoredWallets.sort((a, b) => b.score - a.score);
   const topWallets = scoredWallets.slice(0, MAX_WALLETS);
 
-  console.log(`  ${scoredWallets.length} wallets pass filters (PnL >= $${MIN_PNL}, positions >= ${MIN_POSITIONS_STAGE1}, WR >= ${(MIN_WIN_RATE*100).toFixed(0)}%)`);
+  console.log(`  ${scoredWallets.length} wallets pass filters or on probation`);
   console.log(`  Keeping top ${topWallets.length}`);
 
-  // Build map of top wallets, prune the rest to keep file size manageable
+  // Build map of tracked wallets — remove only those marked 'removed'
   const topAddresses = new Set(topWallets.map(w => w.address));
+  let removedCount = 0;
   for (const address of Object.keys(wallets)) {
-    if (!topAddresses.has(address)) {
+    if (wallets[address].status === 'removed') {
+      delete wallets[address];
+      removedCount++;
+    } else if (!topAddresses.has(address) && !wallets[address].status) {
+      // New wallet that didn't make the cut — remove
       delete wallets[address];
     }
   }
+  if (removedCount > 0) console.log(`  Removed ${removedCount} wallets after probation`);
 
   const topScore = topWallets[0]?.score || 0;
   const avgScore = topWallets.length > 0
@@ -332,6 +380,7 @@ async function runScan() {
     address: w.address,
     score: +w.score.toFixed(2),
     stats: w.stats,
+    status: wallets[w.address]?.status || 'active',
     lastActiveTimestamp: w.lastActiveTimestamp || null,
   }));
 
