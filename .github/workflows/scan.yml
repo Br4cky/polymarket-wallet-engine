@@ -11,7 +11,7 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -23,10 +23,11 @@ jobs:
         run: node scanner/scan.js
 
       - name: Commit Results
+        if: always()
         run: |
           git config user.name "Polymarket Scanner Bot"
           git config user.email "scanner@polymarket-signals.local"
           git add data/
-          SCAN_COUNT=$(node -e "const fs = require('fs'); const s = JSON.parse(fs.readFileSync('data/state.json','utf8')); console.log(s.scanCount);")
+          SCAN_COUNT=$(node -e "const fs = require('fs'); try { const s = JSON.parse(fs.readFileSync('data/state.json','utf8')); console.log(s.scanCount); } catch(e) { console.log('unknown'); }")
           git diff --cached --quiet || git commit -m "Scan #${SCAN_COUNT}: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git push
