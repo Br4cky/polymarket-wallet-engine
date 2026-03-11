@@ -354,7 +354,8 @@ async function runScan() {
 
   const toResolve = new Set();
   for (const id of tokenIds) {
-    if (!marketLookup[id]) toResolve.add(id);
+    // Re-resolve if missing entirely OR missing the new groupId/outcome fields
+    if (!marketLookup[id] || !marketLookup[id].groupId) toResolve.add(id);
   }
 
   console.log(`  Unique tokens: ${tokenIds.size}, need resolution: ${toResolve.size}`);
