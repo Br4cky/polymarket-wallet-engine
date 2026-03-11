@@ -703,11 +703,16 @@ function renderConsensus() {
   const rawConsensus = consensus.map(m => {
     const wc = m.walletCount || m.wallets?.length || 0;
     const as = m.avgScore || m.avgHolderScore || 0;
+    const yc = m.yesCount || 0;
+    const nc = m.noCount || 0;
     return {
       title: m.marketTitle || m.title || 'Unknown',
       slug: m.slug || m.tokenId || '',
       marketId: m.tokenId || m.marketId || '',
       walletCount: wc,
+      yesCount: yc,
+      noCount: nc,
+      direction: m.direction || (yc > 0 && nc === 0 ? 'yes' : nc > 0 && yc === 0 ? 'no' : 'mixed'),
       avgScore: as,
       totalPnl: m.avgPnl || m.totalPnl || 0,
       rawConviction: m.conviction || wc * as,
@@ -724,6 +729,13 @@ function renderConsensus() {
 
   const consensusColumns = [
     { field: 'title', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` },
+    { field: 'direction', render: (v, row) => {
+      const y = row.yesCount || 0;
+      const n = row.noCount || 0;
+      if (v === 'yes') return `<span class="badge badge-high">YES ${y}</span>`;
+      if (v === 'no') return `<span class="badge badge-low">NO ${n}</span>`;
+      return `<span class="badge badge-high" style="margin-right:4px;">YES ${y}</span><span class="badge badge-low">NO ${n}</span>`;
+    }},
     { field: 'walletCount', render: v => {
       const pct = (v / totalWallets * 100).toFixed(0);
       return `
@@ -749,21 +761,36 @@ function renderConsensus() {
 }
 
 function showConsensusDetail(market) {
-  const holders = market.holders.map((h, idx) => `
-    <div class="detail-list-item">
-      <div class="detail-list-item-label">${idx + 1}. <span class="address-link" onclick="openPolymarketProfile('${h.address}')">${truncAddr(h.address)}</span></div>
-      <div class="detail-list-item-value">
-        <span class="badge ${scoreClass(h.score)}">${h.score.toFixed(1)}</span>
-        ${fmtDollars(h.pnl || 0)}
+  const holders = market.holders.map((h, idx) => {
+    const side = h.outcome || 'Unknown';
+    const sideClass = side === 'Yes' ? 'badge-high' : side === 'No' ? 'badge-low' : 'badge-mid';
+    return `
+      <div class="detail-list-item">
+        <div class="detail-list-item-label">${idx + 1}. <span class="address-link" onclick="openPolymarketProfile('${h.address}')">${truncAddr(h.address)}</span></div>
+        <div class="detail-list-item-value">
+          <span class="badge ${sideClass}" style="margin-right:4px;">${side}</span>
+          <span class="badge ${scoreClass(h.score)}">${h.score.toFixed(1)}</span>
+          ${fmtDollars(h.pnl || 0)}
+        </div>
       </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
+
+  const dirLabel = market.direction === 'yes'
+    ? `<span class="badge badge-high">ALL YES (${market.yesCount})</span>`
+    : market.direction === 'no'
+      ? `<span class="badge badge-low">ALL NO (${market.noCount})</span>`
+      : `<span class="badge badge-high" style="margin-right:4px;">YES ${market.yesCount}</span><span class="badge badge-low">NO ${market.noCount}</span>`;
 
   const html = `
     <div class="detail-grid">
       <div class="detail-item">
         <div class="detail-item-label">Market Title</div>
         <div class="detail-item-value" style="font-size: 14px;">${market.slug ? `<a href="${polymarketUrl(market.slug)}" target="_blank" style="color: var(--accent-light);">${market.title}</a>` : market.title}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Direction</div>
+        <div class="detail-item-value">${dirLabel}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Consensus Wallets</div>
@@ -1097,11 +1124,21 @@ function renderSignals() {
     marketTitle: m.marketTitle || m.title || 'Unknown',
     slug: m.slug || '',
     walletCount: m.walletCount || m.wallets?.length || 0,
+    yesCount: m.yesCount || 0,
+    noCount: m.noCount || 0,
+    direction: m.direction || 'mixed',
     avgScore: m.avgScore || m.avgHolderScore || 0
   }));
 
   const emergingColumns = [
     { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'direction', render: (v, row) => {
+      const y = row.yesCount || 0;
+      const n = row.noCount || 0;
+      if (v === 'yes') return `<span class="badge badge-high">YES ${y}</span>`;
+      if (v === 'no') return `<span class="badge badge-low">NO ${n}</span>`;
+      return `<span class="badge badge-high" style="margin-right:4px;">YES ${y}</span><span class="badge badge-low">NO ${n}</span>`;
+    }},
     { field: 'walletCount', render: v => String(v) },
     { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` }
   ];

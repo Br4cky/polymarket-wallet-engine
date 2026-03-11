@@ -586,26 +586,46 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
           const eventSlug = market.events?.[0]?.slug || '';
           const marketSlug = market.slug || '';
           const fullSlug = eventSlug && marketSlug ? `${eventSlug}/${marketSlug}` : eventSlug || marketSlug;
+          // Use condition_id as the grouping key for Yes/No token pairs
+          const groupId = market.condition_id || market.id || tokenId;
 
-          const info = {
-            title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
-            slug: fullSlug,
-            category: market.category || '',
-            image: market.image || '',
-          };
-
+          // Build per-token info with outcome
           if (market.tokens && Array.isArray(market.tokens)) {
             for (const token of market.tokens) {
-              lookup.set(token.token_id, info);
+              lookup.set(token.token_id, {
+                title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
+                slug: fullSlug,
+                category: market.category || '',
+                image: market.image || '',
+                groupId,
+                outcome: token.outcome || 'Unknown',
+              });
             }
           }
           if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
-            for (const tid of market.clobTokenIds) {
-              if (!lookup.has(tid)) lookup.set(tid, info);
+            for (let ci = 0; ci < market.clobTokenIds.length; ci++) {
+              const tid = market.clobTokenIds[ci];
+              if (!lookup.has(tid)) {
+                lookup.set(tid, {
+                  title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
+                  slug: fullSlug,
+                  category: market.category || '',
+                  image: market.image || '',
+                  groupId,
+                  outcome: ci === 0 ? 'Yes' : 'No',
+                });
+              }
             }
           }
           if (!lookup.has(tokenId)) {
-            lookup.set(tokenId, info);
+            lookup.set(tokenId, {
+              title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
+              slug: fullSlug,
+              category: market.category || '',
+              image: market.image || '',
+              groupId,
+              outcome: 'Unknown',
+            });
           }
         }
         return; // success, no retry needed
@@ -657,9 +677,9 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
  * @returns {Array} Consensus markets sorted by conviction
  */
 function computeConsensus(walletData, marketLookup, minWallets = 3) {
+  // Group by market (using groupId to combine Yes/No tokens into one entry)
   const marketMap = new Map();
 
-  // Group positions by market
   for (const [address, wallet] of walletData) {
     if (!wallet.positions) continue;
 
@@ -667,43 +687,64 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
       if (pos.amount <= 0.01) continue; // Only active positions
 
       const tokenId = pos.tokenId;
-      if (!marketMap.has(tokenId)) {
-        marketMap.set(tokenId, {
-          tokenId,
+      const marketInfo = marketLookup.get(tokenId) || {};
+      // Use groupId to combine Yes/No sides; fall back to tokenId if no groupId
+      const groupKey = marketInfo.groupId || tokenId;
+      const outcome = marketInfo.outcome || 'Unknown';
+
+      if (!marketMap.has(groupKey)) {
+        marketMap.set(groupKey, {
+          groupId: groupKey,
+          tokenId, // keep one tokenId for reference
           wallets: [],
           pnlSum: 0,
+          yesCount: 0,
+          noCount: 0,
         });
       }
 
-      const market = marketMap.get(tokenId);
+      const market = marketMap.get(groupKey);
       market.wallets.push({
         address,
         score: wallet.score,
         pnl: pos.pnl,
+        outcome,
       });
       market.pnlSum += pos.pnl;
+
+      if (outcome === 'Yes') market.yesCount++;
+      else if (outcome === 'No') market.noCount++;
     }
   }
 
   // Filter and compute metrics
   const consensus = [];
-  for (const [tokenId, market] of marketMap) {
+  for (const [groupKey, market] of marketMap) {
     if (market.wallets.length < minWallets) continue;
 
-    const marketInfo = marketLookup.get(tokenId) || {
-      title: `Market ${tokenId}`,
-      slug: tokenId,
+    // Use market info from any token in the group
+    const marketInfo = marketLookup.get(market.tokenId) || {
+      title: `Market ${market.tokenId}`,
+      slug: market.tokenId,
     };
 
     const avgScore = market.wallets.reduce((sum, w) => sum + w.score, 0) / market.wallets.length;
     const avgPnl = market.pnlSum / market.wallets.length;
     const conviction = market.wallets.length * avgScore;
 
+    // Determine consensus direction
+    let direction = 'mixed';
+    if (market.yesCount > 0 && market.noCount === 0) direction = 'yes';
+    else if (market.noCount > 0 && market.yesCount === 0) direction = 'no';
+
     consensus.push({
       marketTitle: marketInfo.title,
-      slug: marketInfo.slug || tokenId,
-      tokenId,
+      slug: marketInfo.slug || market.tokenId,
+      tokenId: market.tokenId,
       walletCount: market.wallets.length,
+      yesCount: market.yesCount,
+      noCount: market.noCount,
+      direction,
       wallets: market.wallets,
       avgScore,
       avgPnl,
