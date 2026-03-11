@@ -444,7 +444,7 @@ function renderDashboard() {
   const walletPositions = walletsData?.wallets || {};
 
   // Build leaderboard with potentially filtered stats
-  const leaderboardData = leaderboard.slice(0, 50).map((w, idx) => {
+  const leaderboardData = leaderboard.map((w, idx) => {
     let s = w.stats || {};
 
     if (isFiltered && walletPositions[w.address]) {
@@ -480,12 +480,15 @@ function renderDashboard() {
   // Update metric cards (from filtered leaderboard)
   const totalPnl = leaderboardData.reduce((s, w) => s + w.totalPnl, 0);
   const avgScore = leaderboardData.length > 0 ? leaderboardData.reduce((s, w) => s + w.score, 0) / leaderboardData.length : 0;
-  const avgWinRate = leaderboardData.length > 0 ? leaderboardData.reduce((s, w) => s + w.winRate, 0) / leaderboardData.length : 0;
+  // Use pooled win rate (total wins / total resolved) for consistency with patterns tab
+  const totalWins = leaderboardData.reduce((s, w) => s + (w.wins || 0), 0);
+  const totalResolved = leaderboardData.reduce((s, w) => s + (w.resolved || 0), 0);
+  const pooledWinRate = totalResolved > 0 ? totalWins / totalResolved : 0;
 
   document.getElementById('metric-wallets').textContent = leaderboardData.length.toLocaleString();
   document.getElementById('metric-avg-score').textContent = avgScore.toFixed(1);
   document.getElementById('metric-pnl').textContent = fmtDollars(totalPnl);
-  document.getElementById('metric-win-rate').textContent = (avgWinRate * 100).toFixed(1) + '%';
+  document.getElementById('metric-win-rate').textContent = (pooledWinRate * 100).toFixed(1) + '%';
 
   const leaderboardColumns = [
     { field: 'rank', render: v => String(v) },
