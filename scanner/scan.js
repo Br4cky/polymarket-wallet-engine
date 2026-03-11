@@ -199,12 +199,15 @@ async function runScan() {
       const uid = typeof item[userField] === 'object' ? item[userField]?.id : item[userField];
       if (!uid) continue;
 
+      const pnlVal = pnlField ? parseFloat(item[pnlField] || 0) / USDC_DIVISOR : 0;
+      const amountVal = amountField ? parseFloat(item[amountField] || 0) / USDC_DIVISOR : 0;
+
       const pos = {
         uid: item.id,
-        pnl: pnlField ? parseFloat(item[pnlField] || 0) / USDC_DIVISOR : 0,
+        pnl: pnlVal,
         tokenId: tokenField ? (item[tokenField] || null) : null,
         totalBought: boughtField ? parseFloat(item[boughtField] || 0) / USDC_DIVISOR : 0,
-        amount: amountField ? parseFloat(item[amountField] || 0) / USDC_DIVISOR : 0,
+        amount: amountVal,
         scanIndex: state.scanCount,
         firstSeenTimestamp: state.lastRun, // stamp new positions with current scan time
       };
@@ -213,13 +216,23 @@ async function runScan() {
         wallets[uid] = { positions: [], firstSeen: state.scanCount, lastSeen: state.scanCount };
       }
 
-      // Dedupe by uid — preserve original firstSeenTimestamp on updates
+      // Dedupe by uid — preserve original firstSeenTimestamp and resolvedTimestamp on updates
       const existingIdx = wallets[uid].positions.findIndex(p => p.uid === pos.uid);
       if (existingIdx >= 0) {
-        const origTimestamp = wallets[uid].positions[existingIdx].firstSeenTimestamp;
-        pos.firstSeenTimestamp = origTimestamp || scanTimestampMap[wallets[uid].positions[existingIdx].scanIndex] || pos.firstSeenTimestamp;
+        const existing = wallets[uid].positions[existingIdx];
+        pos.firstSeenTimestamp = existing.firstSeenTimestamp || scanTimestampMap[existing.scanIndex] || pos.firstSeenTimestamp;
+        // Detect closure: was open, now closed → stamp resolvedTimestamp
+        if ((existing.amount || 0) > 0.01 && amountVal <= 0.01 && Math.abs(pnlVal) > 0.01) {
+          pos.resolvedTimestamp = state.lastRun;
+        } else {
+          pos.resolvedTimestamp = existing.resolvedTimestamp || null;
+        }
         wallets[uid].positions[existingIdx] = pos;
       } else {
+        // New position — if already resolved when discovered, stamp it
+        if (amountVal <= 0.01 && Math.abs(pnlVal) > 0.01) {
+          pos.resolvedTimestamp = state.lastRun;
+        }
         wallets[uid].positions.push(pos);
       }
       wallets[uid].lastSeen = state.scanCount;

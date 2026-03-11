@@ -322,7 +322,11 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
         // Track closures: was open (amount > 0.01), now closed (amount ≈ 0)
         const wasOpen = (existing.amount || 0) > 0.01;
         const nowClosed = amount <= 0.01;
-        if (wasOpen && nowClosed) totalClosures++;
+        if (wasOpen && nowClosed) {
+          totalClosures++;
+          // Stamp when the position actually resolved
+          existing.resolvedTimestamp = scanTimestamp;
+        }
 
         // Update with fresh data, preserve original firstSeenTimestamp
         existing.pnl = pnl;
@@ -332,7 +336,7 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
         // Don't overwrite firstSeenTimestamp — keep original
       } else {
         // Brand new position for this tracked wallet
-        wallet.positions.push({
+        const newPos = {
           uid,
           pnl,
           tokenId,
@@ -340,7 +344,12 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
           amount,
           scanIndex,
           firstSeenTimestamp: scanTimestamp,
-        });
+        };
+        // If discovered already resolved (closed with non-zero PnL), stamp it now
+        if (amount <= 0.01 && Math.abs(pnl) > 0.01) {
+          newPos.resolvedTimestamp = scanTimestamp;
+        }
+        wallet.positions.push(newPos);
         totalNew++;
       }
     }
@@ -937,8 +946,9 @@ function computeResolvedPositions(walletData, marketLookup, scanTimestampMap) {
       if (Math.abs(pos.pnl || 0) < 0.01) continue;
       if ((pos.amount || 0) > 0.01) continue; // still open
 
-      // Get timestamp — prefer firstSeenTimestamp, fall back to scanIndex map
-      const ts = pos.firstSeenTimestamp || scanTimestampMap?.[pos.scanIndex] || null;
+      // Get resolved timestamp — when the position actually closed
+      // Only use resolvedTimestamp for period filtering (not firstSeenTimestamp which is discovery time)
+      const ts = pos.resolvedTimestamp || null;
       const tsMs = ts ? new Date(ts).getTime() : null;
 
       const marketInfo = marketLookup.get(pos.tokenId) || {};
