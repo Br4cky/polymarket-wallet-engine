@@ -393,6 +393,8 @@ function analyzePositions(positions) {
       avgW: 0,
       avgL: 0,
       totalPnl: 0,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
       totalVolume: 0,
       uniqueTokens: 0,
       estimatedMarkets: 0,
@@ -404,18 +406,29 @@ function analyzePositions(positions) {
       positionsPerWeek: 0,
       newPositionsThisScan: 0,
       suspiciousWinRate: false,
+      openProfitable: 0,
+      openLosing: 0,
     };
   }
 
+  // --- Wins/Losses: ONLY closed positions (amount ≈ 0) count ---
+  // A "win" means the prediction was correct (market resolved in trader's favour).
+  // For closed positions, positive PnL = correct prediction, negative = wrong.
+  // Open positions are NEVER wins or losses — the prediction isn't decided yet.
   let wins = 0;
   let losses = 0;
-  let winSum = 0;
-  let lossSum = 0;
+  let winSum = 0;   // total $ won across winning resolved positions
+  let lossSum = 0;  // total $ lost across losing resolved positions
+
+  // --- PnL: tracked separately for realized vs unrealized ---
   let totalPnl = 0;
+  let realizedPnl = 0;   // closed positions only
+  let unrealizedPnl = 0; // open positions only
   let totalVolume = 0;
   let openCount = 0;
+  let openProfitable = 0; // open positions currently in profit
+  let openLosing = 0;     // open positions currently losing
   let maxScanIndex = 0;
-  let openLosses = 0; // Track positions that are open AND currently losing
 
   const uniqueTokens = new Set();
 
@@ -428,7 +441,17 @@ function analyzePositions(positions) {
 
     if (scanIndex > maxScanIndex) maxScanIndex = scanIndex;
 
-    if (totalBought > 0.01) {
+    const isOpen = (amount || 0) > 0.01;
+
+    if (isOpen) {
+      // Open position — track unrealized PnL, NOT a win or loss
+      openCount++;
+      unrealizedPnl += pnl;
+      if (pnl > 0.01) openProfitable++;
+      else if (pnl < -0.01) openLosing++;
+    } else if (totalBought > 0.01) {
+      // Closed position with meaningful volume — this is a resolved prediction
+      realizedPnl += pnl;
       if (pnl > 0) {
         wins++;
         winSum += pnl;
@@ -436,12 +459,6 @@ function analyzePositions(positions) {
         losses++;
         lossSum += -pnl;
       }
-    }
-
-    if (amount > 0.01) {
-      openCount++;
-      // Track open positions with negative PnL (unrealized losses)
-      if (pnl < -0.01) openLosses++;
     }
   }
 
@@ -491,7 +508,7 @@ function analyzePositions(positions) {
     : +(discoveredPositions).toFixed(1);
 
   // Flag suspiciously perfect win rates — 100% WR with hiding losses in open positions
-  const suspiciousWinRate = (wr >= 0.99 && losses === 0 && resolved >= 20 && openLosses >= 3);
+  const suspiciousWinRate = (wr >= 0.99 && losses === 0 && resolved >= 20 && openLosing >= 3);
 
   return {
     wins,
@@ -501,13 +518,16 @@ function analyzePositions(positions) {
     avgW,
     avgL,
     totalPnl,
+    realizedPnl,
+    unrealizedPnl,
     totalVolume,
     uniqueTokens: uniqueTokenCount,
     estimatedMarkets,
     efficiency,
     edgeRatio,
     openCount,
-    openLosses,
+    openProfitable,
+    openLosing,
     maxScanIndex,
     tradingDays,
     positionsPerWeek,
@@ -829,17 +849,18 @@ function computeWinPatterns(walletData, marketLookup) {
   let overallTrades = 0;
   let overallPnl = 0;
 
-  // Analyze all resolved positions (skip open/unresolved ones with ~$0 PnL)
+  // Analyze only CLOSED positions (amount ≈ 0) — these are resolved predictions
+  // Open positions are excluded because the prediction outcome isn't decided yet
   for (const [address, wallet] of walletData) {
     if (!wallet.positions) continue;
 
     for (const pos of wallet.positions) {
       const { pnl, tokenId, totalBought } = pos;
 
-      // Skip unresolved positions — only count positions with meaningful PnL
+      // Skip open positions — prediction not yet resolved
+      if ((pos.amount || 0) > 0.01) continue;
+      // Skip positions with no meaningful activity
       if (Math.abs(pnl) < 0.01 && (totalBought || 0) < 0.01) continue;
-      // Also skip open positions (still holding shares)
-      if ((pos.amount || 0) > 0.01 && Math.abs(pnl) < 0.01) continue;
 
       overallTrades++;
       overallPnl += pnl;

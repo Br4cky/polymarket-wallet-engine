@@ -95,18 +95,31 @@ function filterPositionsByTime(positions, range) {
 }
 
 function recomputeStats(positions) {
-  let wins = 0, losses = 0, winSum = 0, lossSum = 0, totalPnl = 0;
-  let totalVolume = 0, openCount = 0;
+  // Wins/Losses: ONLY closed positions (amount ≈ 0) — resolved predictions
+  // Open positions are excluded because the prediction outcome isn't decided yet
+  let wins = 0, losses = 0, winSum = 0, lossSum = 0;
+  let totalPnl = 0, realizedPnl = 0, unrealizedPnl = 0;
+  let totalVolume = 0, openCount = 0, openProfitable = 0, openLosing = 0;
   const uniqueTokens = new Set();
 
   for (const pos of positions) {
-    totalPnl += pos.pnl || 0;
+    const pnl = pos.pnl || 0;
+    totalPnl += pnl;
     totalVolume += pos.totalBought || 0;
     if (pos.tokenId) uniqueTokens.add(pos.tokenId);
-    if ((pos.amount || 0) > 0.01) openCount++;
-    if ((pos.totalBought || 0) > 0.01) {
-      if ((pos.pnl || 0) > 0) { wins++; winSum += pos.pnl; }
-      else if ((pos.pnl || 0) < 0) { losses++; lossSum += -pos.pnl; }
+
+    const isOpen = (pos.amount || 0) > 0.01;
+
+    if (isOpen) {
+      openCount++;
+      unrealizedPnl += pnl;
+      if (pnl > 0.01) openProfitable++;
+      else if (pnl < -0.01) openLosing++;
+    } else if ((pos.totalBought || 0) > 0.01) {
+      // Closed position — resolved prediction
+      realizedPnl += pnl;
+      if (pnl > 0) { wins++; winSum += pnl; }
+      else if (pnl < 0) { losses++; lossSum += -pnl; }
     }
   }
 
@@ -118,10 +131,12 @@ function recomputeStats(positions) {
   const edgeRatio = avgL > 0 ? avgW / avgL : (avgW > 0 ? 10 : 0);
 
   return {
-    wins, losses, resolved, wr, avgW, avgL, totalPnl, totalVolume,
+    wins, losses, resolved, wr, avgW, avgL,
+    totalPnl, realizedPnl, unrealizedPnl,
+    totalVolume,
     uniqueTokens: uniqueTokens.size,
     estimatedMarkets: Math.max(1, Math.ceil(uniqueTokens.size / 2)),
-    efficiency, edgeRatio, openCount,
+    efficiency, edgeRatio, openCount, openProfitable, openLosing,
   };
 }
 
@@ -472,7 +487,7 @@ function renderDashboard() {
       if (filtered.length > 0) {
         s = recomputeStats(filtered);
       } else {
-        s = { totalPnl: 0, wr: 0, estimatedMarkets: 0, resolved: 0, efficiency: 0, edgeRatio: 0, avgW: 0, avgL: 0, wins: 0, losses: 0, totalVolume: 0, openCount: 0 };
+        s = { totalPnl: 0, realizedPnl: 0, unrealizedPnl: 0, wr: 0, estimatedMarkets: 0, resolved: 0, efficiency: 0, edgeRatio: 0, avgW: 0, avgL: 0, wins: 0, losses: 0, totalVolume: 0, openCount: 0, openProfitable: 0, openLosing: 0 };
       }
     }
 
@@ -563,7 +578,15 @@ function showLeaderboardDetail(wallet) {
         <div class="detail-item-value" style="color: ${totalPnl >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtDollars(totalPnl)}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Win Rate</div>
+        <div class="detail-item-label">Realized PnL</div>
+        <div class="detail-item-value" style="color: ${(s.realizedPnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtDollars(s.realizedPnl || 0)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Unrealized PnL</div>
+        <div class="detail-item-value" style="color: ${(s.unrealizedPnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtDollars(s.unrealizedPnl || 0)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Win Rate (Resolved)</div>
         <div class="detail-item-value">${((s.wr || 0) * 100).toFixed(1)}% (${s.wins || 0}W / ${s.losses || 0}L)</div>
       </div>
       <div class="detail-item">
@@ -587,7 +610,7 @@ function showLeaderboardDetail(wallet) {
         <div class="detail-item-value">${(s.edgeRatio || 0).toFixed(2)}x</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Resolved</div>
+        <div class="detail-item-label">Resolved Trades</div>
         <div class="detail-item-value">${s.resolved || 0}</div>
       </div>
       <div class="detail-item">
@@ -596,7 +619,7 @@ function showLeaderboardDetail(wallet) {
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Open Positions</div>
-        <div class="detail-item-value">${s.openCount || 0}</div>
+        <div class="detail-item-value">${s.openCount || 0}${(s.openCount || 0) > 0 ? ` <span style="font-size: 11px; color: var(--text-dim);">(${s.openProfitable || 0} in profit, ${s.openLosing || 0} losing)</span>` : ''}</div>
       </div>
     </div>
 
@@ -1065,7 +1088,7 @@ function renderSignals() {
     if (wrEl) {
       const wr = ((s.winRate || 0) * 100).toFixed(1);
       const pnl = s.totalPnl || 0;
-      wrEl.innerHTML = `<span style="color: ${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtDollars(pnl)}</span> &middot; ${wr}% WR (${s.wins || 0}W/${s.losses || 0}L)`;
+      wrEl.innerHTML = `<span style="color: ${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtDollars(pnl)} realized</span> &middot; ${wr}% WR (${s.wins || 0}W/${s.losses || 0}L)`;
     }
   }
 

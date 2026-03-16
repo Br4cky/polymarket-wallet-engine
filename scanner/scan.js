@@ -505,6 +505,8 @@ async function runScan() {
     totalWallets: topAddresses.size,
     avgScore, topScore,
     totalPnl: topWallets.reduce((s, w) => s + (w.stats.totalPnl || 0), 0),
+    realizedPnl: topWallets.reduce((s, w) => s + (w.stats.realizedPnl || 0), 0),
+    unrealizedPnl: topWallets.reduce((s, w) => s + (w.stats.unrealizedPnl || 0), 0),
     avgWinRate: topWallets.length > 0 ? topWallets.reduce((s, w) => s + (w.stats.wr || 0), 0) / topWallets.length : 0,
     totalPositions,
     totalOpenPositions,

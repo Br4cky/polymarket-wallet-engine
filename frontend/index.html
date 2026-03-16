@@ -65,9 +65,9 @@
           <div class="metric-unit">realized</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Overall Win Rate</div>
+          <div class="metric-label">Win Rate (Resolved)</div>
           <div class="metric-value" id="metric-win-rate">0%</div>
-          <div class="metric-unit">of trades</div>
+          <div class="metric-unit">closed predictions</div>
         </div>
         <div class="metric-card">
           <div class="metric-label">Avg Trades/Week</div>
@@ -108,9 +108,9 @@
                 <th data-field="score" class="sortable">Score</th>
                 <th data-field="address">Address</th>
                 <th data-field="totalPnL" class="sortable">Total PnL</th>
-                <th data-field="winRate" class="sortable">Win Rate</th>
+                <th data-field="winRate" class="sortable" title="Win rate based on resolved (closed) predictions only">Win Rate</th>
                 <th data-field="markets" class="sortable">Markets</th>
-                <th data-field="resolved" class="sortable">Resolved</th>
+                <th data-field="resolved" class="sortable" title="Number of closed/resolved predictions">Resolved</th>
                 <th data-field="efficiency" class="sortable">Efficiency</th>
                 <th data-field="positionsPerWeek" class="sortable">Trades/Wk</th>
                 <th data-field="lastActive" class="sortable">Last Active</th>
@@ -226,7 +226,7 @@
       <!-- Stats Cards -->
       <div class="metrics-grid">
         <div class="metric-card">
-          <div class="metric-label">Overall Win Rate</div>
+          <div class="metric-label">Win Rate (Resolved)</div>
           <div class="metric-value" id="metric-overall-winrate">0%</div>
         </div>
         <div class="metric-card">
@@ -430,7 +430,7 @@
           </div>
 
           <div class="control-group">
-            <label for="minWinRate">Min Win Rate (%)</label>
+            <label for="minWinRate">Min Win Rate (%, resolved only)</label>
             <input type="number" id="minWinRate" min="0" max="100" value="40" class="input">
           </div>
 
