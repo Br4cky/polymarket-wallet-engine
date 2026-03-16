@@ -657,8 +657,11 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
           if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
             for (let ci = 0; ci < market.clobTokenIds.length; ci++) {
               const tid = market.clobTokenIds[ci];
-              if (!lookup.has(tid)) {
+              const existing = lookup.get(tid);
+              // Override if not set OR if outcome is Unknown (tokens array didn't have real outcomes)
+              if (!existing || existing.outcome === 'Unknown') {
                 lookup.set(tid, {
+                  ...(existing || {}),
                   title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
                   slug: fullSlug,
                   category: market.category || '',
