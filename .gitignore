@@ -3,5 +3,6 @@ node_modules/
 *.log
 
 # Large uncompressed data files (use .gz versions instead)
+# Note: .gz files MUST be tracked — do NOT add data/*.gz here
 data/wallets.json
 data/markets.json
