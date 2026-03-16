@@ -27,6 +27,8 @@ jobs:
         run: |
           git config user.name "Polymarket Scanner Bot"
           git config user.email "scanner@polymarket-signals.local"
+          # Remove old uncompressed files if they exist (migrating to .gz)
+          git rm -f --ignore-unmatch data/wallets.json data/markets.json
           git add data/
           SCAN_COUNT=$(node -e "const fs = require('fs'); try { const s = JSON.parse(fs.readFileSync('data/state.json','utf8')); console.log(s.scanCount); } catch(e) { console.log('unknown'); }")
           git diff --cached --quiet || git commit -m "Scan #${SCAN_COUNT}: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

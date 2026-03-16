@@ -133,6 +133,31 @@ function openPolymarketProfile(address) {
    Data Loading
    ============================================================================ */
 
+/**
+ * Fetch and decompress a gzipped JSON file
+ * Falls back to plain JSON if .gz fetch fails
+ */
+async function fetchGzJSON(url) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('Not found');
+    const ds = new DecompressionStream('gzip');
+    const decompressed = resp.body.pipeThrough(ds);
+    const text = await new Response(decompressed).text();
+    return JSON.parse(text);
+  } catch (gzErr) {
+    // Fall back to plain JSON (without .gz extension)
+    try {
+      const plainUrl = url.replace(/\.gz$/, '');
+      const resp = await fetch(plainUrl);
+      if (!resp.ok) throw new Error('Not found');
+      return resp.json();
+    } catch {
+      return null;
+    }
+  }
+}
+
 async function loadData() {
   try {
     const [analytics, wallets, markets] = await Promise.all([
@@ -140,14 +165,8 @@ async function loadData() {
         if (!r.ok) throw new Error('Not found');
         return r.json();
       }).catch(() => null),
-      fetch(DATA_BASE + 'wallets.json').then(r => {
-        if (!r.ok) throw new Error('Not found');
-        return r.json();
-      }).catch(() => null),
-      fetch(DATA_BASE + 'markets.json').then(r => {
-        if (!r.ok) throw new Error('Not found');
-        return r.json();
-      }).catch(() => null),
+      fetchGzJSON(DATA_BASE + 'wallets.json.gz'),
+      fetchGzJSON(DATA_BASE + 'markets.json.gz'),
     ]);
 
     return { analytics, wallets, markets };
@@ -473,6 +492,8 @@ function renderDashboard() {
       losses: s.losses || 0,
       volume: s.totalVolume || 0,
       openCount: s.openCount || 0,
+      positionsPerWeek: s.positionsPerWeek || 0,
+      tradingDays: s.tradingDays || 0,
       lastActive: w.lastActiveTimestamp || w.stats?.lastActiveTimestamp || null,
     };
   });
@@ -485,10 +506,16 @@ function renderDashboard() {
   const totalResolved = leaderboardData.reduce((s, w) => s + (w.resolved || 0), 0);
   const pooledWinRate = totalResolved > 0 ? totalWins / totalResolved : 0;
 
+  const avgTradesPerWeek = leaderboardData.length > 0
+    ? (leaderboardData.reduce((s, w) => s + (w.positionsPerWeek || 0), 0) / leaderboardData.length) : 0;
+  const totalOpen = leaderboardData.reduce((s, w) => s + (w.openCount || 0), 0);
+
   document.getElementById('metric-wallets').textContent = leaderboardData.length.toLocaleString();
   document.getElementById('metric-avg-score').textContent = avgScore.toFixed(1);
   document.getElementById('metric-pnl').textContent = fmtDollars(totalPnl);
   document.getElementById('metric-win-rate').textContent = (pooledWinRate * 100).toFixed(1) + '%';
+  document.getElementById('metric-trades-per-week').textContent = avgTradesPerWeek.toFixed(1);
+  document.getElementById('metric-open-total').textContent = totalOpen.toLocaleString();
 
   const leaderboardColumns = [
     { field: 'rank', render: v => String(v) },
@@ -499,6 +526,7 @@ function renderDashboard() {
     { field: 'markets', render: v => String(v) },
     { field: 'resolved', render: v => String(v) },
     { field: 'efficiency', render: v => ((v || 0) * 100).toFixed(2) + '%' },
+    { field: 'positionsPerWeek', render: v => `<span style="color: var(--accent-light);">${(v || 0).toFixed(1)}</span>` },
     { field: 'lastActive', render: v => `<span style="color: var(--text-dim); font-size: 12px;">${relativeTime(v)}</span>` }
   ];
 
@@ -1548,10 +1576,9 @@ async function init() {
   data = await loadData();
   updateStatusBar();
 
-  // Pre-load wallets.json for time filtering (has per-position data)
+  // Pre-load wallets data for time filtering (has per-position data)
   try {
-    const walletsResp = await fetch(DATA_BASE + 'wallets.json');
-    if (walletsResp.ok) walletsData = await walletsResp.json();
+    walletsData = await fetchGzJSON(DATA_BASE + 'wallets.json.gz');
   } catch { /* ok — time filtering just won't recompute stats */ }
 
   // Attach tab listeners

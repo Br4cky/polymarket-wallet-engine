@@ -22,6 +22,8 @@ import {
   refreshTrackedWallets,
   loadJSON,
   saveJSON,
+  loadGzJSON,
+  saveGzJSON,
 } from './lib.js';
 
 import fs from 'fs';
@@ -115,8 +117,8 @@ async function runScan() {
   const wallets = {}; // address → { positions: [...], firstSeen, lastSeen }
 
   // Load existing wallet data to merge with
-  const walletsFile = path.join(DATA_DIR, 'wallets.json');
-  const existingData = loadJSON(walletsFile);
+  const walletsFile = path.join(DATA_DIR, 'wallets.json.gz');
+  const existingData = loadGzJSON(walletsFile);
   if (existingData && existingData.wallets) {
     for (const [addr, w] of Object.entries(existingData.wallets)) {
       wallets[addr] = w;
@@ -349,8 +351,8 @@ async function runScan() {
     }
   }
 
-  const marketsFile = path.join(DATA_DIR, 'markets.json');
-  let marketLookup = loadJSON(marketsFile) || {};
+  const marketsFile = path.join(DATA_DIR, 'markets.json.gz');
+  let marketLookup = loadGzJSON(marketsFile) || {};
 
   const toResolve = new Set();
   for (const id of tokenIds) {
@@ -368,8 +370,8 @@ async function runScan() {
         for (const [id, market] of partialLookup) {
           marketLookup[id] = market;
         }
-        saveJSON(marketsFile, marketLookup);
-        console.log(`    💾 Saved markets.json checkpoint (${Object.keys(marketLookup).length} total)`);
+        saveGzJSON(marketsFile, marketLookup);
+        console.log(`    💾 Saved markets.json.gz checkpoint (${Object.keys(marketLookup).length} total)`);
       });
       for (const [id, market] of resolved) {
         marketLookup[id] = market;
@@ -379,7 +381,7 @@ async function runScan() {
       console.error(`  Market resolution error: ${err.message}`);
     }
     // Final save after resolution completes
-    saveJSON(marketsFile, marketLookup);
+    saveGzJSON(marketsFile, marketLookup);
   }
   console.log();
 
@@ -414,22 +416,39 @@ async function runScan() {
   saveJSON(stateFile, state);
   console.log(`  ✓ state.json (scan #${state.scanCount})`);
 
-  saveJSON(walletsFile, { metadata: { totalWallets: topAddresses.size, lastUpdated: new Date().toISOString(), totalScans: state.scanCount }, wallets });
-  console.log(`  ✓ wallets.json (${topAddresses.size} wallets)`);
+  saveGzJSON(walletsFile, { metadata: { totalWallets: topAddresses.size, lastUpdated: new Date().toISOString(), totalScans: state.scanCount }, wallets });
+  console.log(`  ✓ wallets.json.gz (${topAddresses.size} wallets)`);
 
-  saveJSON(marketsFile, marketLookup);
-  console.log(`  ✓ markets.json (${Object.keys(marketLookup).length} markets)`);
+  saveGzJSON(marketsFile, marketLookup);
+  console.log(`  ✓ markets.json.gz (${Object.keys(marketLookup).length} markets)`);
 
   // Analytics
   let analytics = loadJSON(analyticsFile) || { trendline: [] };
 
   analytics.lastUpdated = new Date().toISOString();
   analytics.scanCount = state.scanCount;
+  // Compute aggregate activity stats
+  const totalPositions = topWallets.reduce((s, w) => s + (w.stats.resolved || 0), 0);
+  const totalOpenPositions = topWallets.reduce((s, w) => s + (w.stats.openCount || 0), 0);
+  const avgPositionsPerWeek = topWallets.length > 0
+    ? +(topWallets.reduce((s, w) => s + (w.stats.positionsPerWeek || 0), 0) / topWallets.length).toFixed(1) : 0;
+  const avgTradingDays = topWallets.length > 0
+    ? +(topWallets.reduce((s, w) => s + (w.stats.tradingDays || 0), 0) / topWallets.length).toFixed(1) : 0;
+  const mostActiveWallets = topWallets
+    .map(w => ({ address: w.address, positionsPerWeek: w.stats.positionsPerWeek || 0, tradingDays: w.stats.tradingDays || 0, score: w.score }))
+    .sort((a, b) => b.positionsPerWeek - a.positionsPerWeek)
+    .slice(0, 10);
+
   analytics.summary = {
     totalWallets: topAddresses.size,
     avgScore, topScore,
     totalPnl: topWallets.reduce((s, w) => s + (w.stats.totalPnl || 0), 0),
     avgWinRate: topWallets.length > 0 ? topWallets.reduce((s, w) => s + (w.stats.wr || 0), 0) / topWallets.length : 0,
+    totalPositions,
+    totalOpenPositions,
+    avgPositionsPerWeek,
+    avgTradingDays,
+    mostActiveWallets,
   };
   analytics.leaderboard = leaderboard;
   analytics.consensus = consensus.slice(0, 50);

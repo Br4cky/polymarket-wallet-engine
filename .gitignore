@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 *.log
+
+# Large uncompressed data files (use .gz versions instead)
+data/wallets.json
+data/markets.json

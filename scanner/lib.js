@@ -5,6 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 
 const GOLDSKY_PNL = 'https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/pnl-subgraph/0.0.14/gn';
 const GOLDSKY_POSITIONS = 'https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/positions-subgraph/0.0.7/gn';
@@ -1070,6 +1071,40 @@ function saveJSON(filepath, data) {
   fs.writeFileSync(filepath, JSON.stringify(data, null, 2) + '\n', 'utf8');
 }
 
+/**
+ * Load and parse a gzipped JSON file, return null if missing
+ * Falls back to uncompressed .json if .gz doesn't exist
+ * @param {string} filepath - Path to .gz file
+ * @returns {any} Parsed JSON or null
+ */
+function loadGzJSON(filepath) {
+  try {
+    const compressed = fs.readFileSync(filepath);
+    const decompressed = zlib.gunzipSync(compressed);
+    return JSON.parse(decompressed.toString('utf8'));
+  } catch (err) {
+    // Fall back to plain JSON (without .gz extension)
+    const plainPath = filepath.replace(/\.gz$/, '');
+    try {
+      const data = fs.readFileSync(plainPath, 'utf8');
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Write data to a gzipped JSON file (compact, no indentation for smaller size)
+ * @param {string} filepath - Path to .gz file
+ * @param {any} data - Data to write
+ */
+function saveGzJSON(filepath, data) {
+  const json = JSON.stringify(data);
+  const compressed = zlib.gzipSync(json, { level: 9 });
+  fs.writeFileSync(filepath, compressed);
+}
+
 // ============================================================================
 // Exports
 // ============================================================================
@@ -1095,4 +1130,6 @@ export {
   refreshTrackedWallets,
   loadJSON,
   saveJSON,
+  loadGzJSON,
+  saveGzJSON,
 };
