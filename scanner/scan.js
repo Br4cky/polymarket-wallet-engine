@@ -223,17 +223,27 @@ async function runScan() {
       if (existingIdx >= 0) {
         const existing = wallets[uid].positions[existingIdx];
         pos.firstSeenTimestamp = existing.firstSeenTimestamp || scanTimestampMap[existing.scanIndex] || pos.firstSeenTimestamp;
+        pos.discoveredScan = existing.discoveredScan || existing.scanIndex; // preserve original discovery scan
         // Detect closure: was open, now closed → stamp resolvedTimestamp
         if ((existing.amount || 0) > 0.01 && amountVal <= 0.01 && Math.abs(pnlVal) > 0.01) {
           pos.resolvedTimestamp = state.lastRun;
         } else {
           pos.resolvedTimestamp = existing.resolvedTimestamp || null;
         }
+        // Track PnL changes — real activity signal
+        if (Math.abs((existing.pnl || 0) - pnlVal) > 0.01) {
+          pos.pnlChangedThisScan = true;
+        }
         wallets[uid].positions[existingIdx] = pos;
       } else {
-        // New position — if already resolved when discovered, stamp it
+        // Brand new position — mark it as discovered this scan
+        pos.discoveredScan = state.scanCount;
+        pos.isNewThisScan = true;
+        // If already resolved when discovered, stamp it but DON'T use current time
+        // (we don't know when it actually resolved — leave resolvedTimestamp null)
         if (amountVal <= 0.01 && Math.abs(pnlVal) > 0.01) {
-          pos.resolvedTimestamp = state.lastRun;
+          // Position was already closed when we first saw it — we don't know the real resolve time
+          pos.resolvedTimestamp = null;
         }
         wallets[uid].positions.push(pos);
       }
@@ -268,20 +278,50 @@ async function runScan() {
   for (const [address, wallet] of Object.entries(wallets)) {
     const stats = analyzePositions(wallet.positions || []);
 
-    // Compute lastActiveTimestamp from positions or scan map
-    let lastActiveTs = null;
+    // Compute lastActiveTimestamp from REAL activity signals:
+    // 1. The most recent discoveredScan timestamp (when a NEW position appeared)
+    // 2. The most recent resolvedTimestamp (when a position actually closed)
+    // 3. The most recent PnL/amount change detected during refresh
+    // NOT from firstSeenTimestamp which just reflects initial discovery scan time
+    let lastActiveTs = wallet.lastActiveTimestamp || null; // preserve existing value
+
+    // Check for positions newly discovered in THIS scan
+    let hasNewActivity = false;
     for (const p of (wallet.positions || [])) {
-      const ts = p.firstSeenTimestamp || scanTimestampMap[p.scanIndex];
-      if (ts && (!lastActiveTs || ts > lastActiveTs)) lastActiveTs = ts;
+      // New position discovered this scan
+      if (p.isNewThisScan) {
+        hasNewActivity = true;
+        break;
+      }
+      // Position resolved (closed) this scan
+      if (p.resolvedTimestamp === state.lastRun) {
+        hasNewActivity = true;
+        break;
+      }
+      // PnL changed this scan (position was updated during refresh)
+      if (p.pnlChangedThisScan) {
+        hasNewActivity = true;
+        break;
+      }
     }
-    if (!lastActiveTs) lastActiveTs = scanTimestampMap[wallet.lastSeen] || state.lastRun;
+
+    if (hasNewActivity) {
+      lastActiveTs = state.lastRun; // Wallet was genuinely active this scan
+    }
+
+    // Fallback for wallets that have never had activity tracked
+    // (migration: use most recent discoveredScan timestamp if available)
+    if (!lastActiveTs) {
+      for (const p of (wallet.positions || [])) {
+        const ts = p.discoveredScan ? scanTimestampMap[p.discoveredScan] : null;
+        if (ts && (!lastActiveTs || ts > lastActiveTs)) lastActiveTs = ts;
+      }
+    }
+    // Ultimate fallback: use the scan when this wallet was first seen
+    if (!lastActiveTs) lastActiveTs = scanTimestampMap[wallet.firstSeen] || state.lastRun;
 
     wallet.lastActiveTimestamp = lastActiveTs;
     stats.lastActiveTimestamp = lastActiveTs;
-
-    // Compute days since active for recency scoring
-    const daysSinceActive = (Date.now() - new Date(lastActiveTs).getTime()) / (1000 * 60 * 60 * 24);
-    stats.daysSinceActive = Math.round(daysSinceActive);
 
     const score = computeScore(stats, lastActiveTs);
     wallet.stats = stats;
@@ -320,6 +360,10 @@ async function runScan() {
 
   console.log(`  ${scoredWallets.length} wallets pass filters or on probation`);
   console.log(`  Keeping top ${topWallets.length}`);
+  const suspWallets = scoredWallets.filter(w => w.stats.suspiciousWinRate);
+  if (suspWallets.length > 0) console.log(`  ⚠ ${suspWallets.length} wallets flagged for suspicious 100% win rate`);
+  const activeNow = scoredWallets.filter(w => w.stats.newPositionsThisScan > 0);
+  console.log(`  📈 ${activeNow.length} wallets had new activity this scan`);
 
   // Build map of tracked wallets — remove only those marked 'removed'
   const topAddresses = new Set(topWallets.map(w => w.address));
@@ -395,7 +439,7 @@ async function runScan() {
   try { consensus = computeConsensus(walletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
   try { winPatterns = computeWinPatterns(walletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
   try { activePositions = computeActivePositions(walletMap, marketMap); } catch (e) { console.error(`  Active positions error: ${e.message}`); }
-  try { biggestWins = findBiggestWins(walletMap, marketMap, 50); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
+  try { biggestWins = findBiggestWins(walletMap, marketMap, 200); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
   try { resolvedPositions = computeResolvedPositions(walletMap, marketMap, scanTimestampMap); } catch (e) { console.error(`  Resolved positions error: ${e.message}`); }
 
   console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}, Resolved: ${resolvedPositions.positions?.length || 0}\n`);
@@ -412,6 +456,15 @@ async function runScan() {
 
   // ===== Step 8: Save Everything =====
   console.log('💾 Saving...');
+
+  // Clean up transient per-scan flags before persisting
+  // These flags are only meaningful during the current scan for activity detection
+  for (const wallet of Object.values(wallets)) {
+    for (const pos of (wallet.positions || [])) {
+      delete pos.isNewThisScan;
+      delete pos.pnlChangedThisScan;
+    }
+  }
 
   saveJSON(stateFile, state);
   console.log(`  ✓ state.json (scan #${state.scanCount})`);
@@ -439,6 +492,14 @@ async function runScan() {
     .sort((a, b) => b.positionsPerWeek - a.positionsPerWeek)
     .slice(0, 10);
 
+  // Count wallets with suspicious win rates and recently active wallets
+  const suspiciousCount = topWallets.filter(w => w.stats.suspiciousWinRate).length;
+  const activeRecently = topWallets.filter(w => {
+    const ts = w.lastActiveTimestamp;
+    return ts && (Date.now() - new Date(ts).getTime()) < 7 * 24 * 60 * 60 * 1000;
+  }).length;
+  const newThisScan = topWallets.filter(w => (w.stats.newPositionsThisScan || 0) > 0).length;
+
   analytics.summary = {
     totalWallets: topAddresses.size,
     avgScore, topScore,
@@ -449,10 +510,15 @@ async function runScan() {
     avgPositionsPerWeek,
     avgTradingDays,
     mostActiveWallets,
+    suspiciousWinRateCount: suspiciousCount,
+    activeInLast7Days: activeRecently,
+    walletsWithNewActivityThisScan: newThisScan,
   };
   analytics.leaderboard = leaderboard;
-  analytics.consensus = consensus.slice(0, 50);
-  analytics.activePositions = activePositions.slice(0, 50);
+  // Store full datasets — frontend can paginate/filter as needed
+  // Previous hard caps of 50 were silently discarding data
+  analytics.consensus = consensus;
+  analytics.activePositions = activePositions;
   analytics.winPatterns = winPatterns;
   analytics.biggestWins = biggestWins;
   analytics.resolvedPositions = resolvedPositions;

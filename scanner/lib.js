@@ -329,12 +329,17 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
           existing.resolvedTimestamp = scanTimestamp;
         }
 
-        // Update with fresh data, preserve original firstSeenTimestamp
+        // Track PnL changes as real activity signals
+        if (Math.abs((existing.pnl || 0) - pnl) > 0.01) {
+          existing.pnlChangedThisScan = true;
+        }
+
+        // Update with fresh data, preserve original firstSeenTimestamp and discoveredScan
         existing.pnl = pnl;
         existing.totalBought = totalBought;
         existing.amount = amount;
         existing.scanIndex = scanIndex;
-        // Don't overwrite firstSeenTimestamp — keep original
+        // Don't overwrite firstSeenTimestamp or discoveredScan — keep originals
       } else {
         // Brand new position for this tracked wallet
         const newPos = {
@@ -345,11 +350,12 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
           amount,
           scanIndex,
           firstSeenTimestamp: scanTimestamp,
+          discoveredScan: scanIndex, // Track which scan first found this position
+          isNewThisScan: true,       // Flag for activity detection
         };
-        // If discovered already resolved (closed with non-zero PnL), stamp it now
-        if (amount <= 0.01 && Math.abs(pnl) > 0.01) {
-          newPos.resolvedTimestamp = scanTimestamp;
-        }
+        // If discovered already resolved, DON'T stamp resolvedTimestamp
+        // (we don't know when it actually resolved — just that it was already closed)
+        // Only stamp resolvedTimestamp when we actually SEE a position go from open → closed
         wallet.positions.push(newPos);
         totalNew++;
       }
@@ -394,6 +400,10 @@ function analyzePositions(positions) {
       edgeRatio: 0,
       openCount: 0,
       maxScanIndex: 0,
+      tradingDays: 0,
+      positionsPerWeek: 0,
+      newPositionsThisScan: 0,
+      suspiciousWinRate: false,
     };
   }
 
@@ -405,6 +415,7 @@ function analyzePositions(positions) {
   let totalVolume = 0;
   let openCount = 0;
   let maxScanIndex = 0;
+  let openLosses = 0; // Track positions that are open AND currently losing
 
   const uniqueTokens = new Set();
 
@@ -427,7 +438,11 @@ function analyzePositions(positions) {
       }
     }
 
-    if (amount > 0.01) openCount++;
+    if (amount > 0.01) {
+      openCount++;
+      // Track open positions with negative PnL (unrealized losses)
+      if (pnl < -0.01) openLosses++;
+    }
   }
 
   const resolved = wins + losses;
@@ -440,26 +455,43 @@ function analyzePositions(positions) {
   // Efficiency: PnL per dollar traded (same as original screener)
   const efficiency = totalVolume > 0 ? totalPnl / totalVolume : 0;
 
-  // Edge ratio: average win / average loss (same as original screener)
-  const edgeRatio = avgL > 0 ? avgW / avgL : (avgW > 0 ? 10 : 0);
+  // Edge ratio: average win / average loss — capped at 10 to avoid absurd values
+  const edgeRatio = avgL > 0 ? Math.min(10, avgW / avgL) : (avgW > 0 ? 10 : 0);
 
-  // Activity rate metrics — count unique days positions were first seen
+  // Activity rate metrics — count unique scanIndexes (each scan = 6h interval)
+  // This measures how many distinct scans found NEW positions, not total portfolio size
+  const scanIndexes = new Set();
   const uniqueDays = new Set();
   let earliestTs = null;
   let latestTs = null;
+  let newPositionsThisScan = 0;
   for (const pos of positions) {
+    if (pos.discoveredScan) {
+      scanIndexes.add(pos.discoveredScan);
+    }
     if (pos.firstSeenTimestamp) {
       const day = pos.firstSeenTimestamp.slice(0, 10); // YYYY-MM-DD
       uniqueDays.add(day);
       if (!earliestTs || pos.firstSeenTimestamp < earliestTs) earliestTs = pos.firstSeenTimestamp;
       if (!latestTs || pos.firstSeenTimestamp > latestTs) latestTs = pos.firstSeenTimestamp;
     }
+    if (pos.isNewThisScan) newPositionsThisScan++;
   }
   const tradingDays = uniqueDays.size;
+  // Use actual scan span for weeks tracked — each scan is ~6 hours apart
+  const scansActive = scanIndexes.size || 1;
   const weeksTracked = earliestTs && latestTs
     ? Math.max(1, (new Date(latestTs) - new Date(earliestTs)) / (7 * 24 * 60 * 60 * 1000))
     : 1;
-  const positionsPerWeek = +(positions.length / weeksTracked).toFixed(1);
+  // positionsPerWeek: only count positions that have discoveredScan set (real new entries)
+  // divided by weeks actually tracked, not total portfolio size / 1
+  const discoveredPositions = positions.filter(p => p.discoveredScan).length;
+  const positionsPerWeek = weeksTracked > 0.5
+    ? +(discoveredPositions / weeksTracked).toFixed(1)
+    : +(discoveredPositions).toFixed(1);
+
+  // Flag suspiciously perfect win rates — 100% WR with hiding losses in open positions
+  const suspiciousWinRate = (wr >= 0.99 && losses === 0 && resolved >= 20 && openLosses >= 3);
 
   return {
     wins,
@@ -475,38 +507,49 @@ function analyzePositions(positions) {
     efficiency,
     edgeRatio,
     openCount,
+    openLosses,
     maxScanIndex,
     tradingDays,
     positionsPerWeek,
+    newPositionsThisScan,
+    suspiciousWinRate,
   };
 }
 
 /**
  * Compute a composite score from 0-100
- * Weights: WR (30) + Markets (20) + Efficiency (20) + Edge (15) + Sample size (15)
- * Then applies a recency multiplier based on how recently the wallet was active.
+ * Weights: WR (25) + Markets (15) + Efficiency (15) + Edge (10) + Sample (15) + Activity (20)
+ * Then applies recency multiplier and suspicion penalty.
  * @param {object} stats - Statistics from analyzePositions
- * @param {string} [lastActiveTimestamp] - ISO timestamp of last activity
+ * @param {string} [lastActiveTimestamp] - ISO timestamp of last real activity
  * @returns {number} Score 0-100
  */
 function computeScore(stats, lastActiveTimestamp) {
   const { resolved, wr } = stats;
   const sampleFactor = resolved > 0 ? Math.min(1, Math.sqrt(resolved) / 10) : 0;
 
-  // Exact same formula as the browser screener:
-  // Win rate component (30 pts): wr * sampleFactor * 30
-  const wrScore = wr * sampleFactor * 30;
-  // Market diversity (20 pts): min(1, estimatedMarkets/50) * 20
+  // Win rate component (25 pts): wr * sampleFactor * 25
+  const wrScore = wr * sampleFactor * 25;
+  // Market diversity (15 pts): min(1, estimatedMarkets/50) * 15
   const estimatedMarkets = stats.estimatedMarkets || Math.max(1, Math.ceil((stats.uniqueTokens || 0) / 2));
-  const marketScore = Math.min(1, estimatedMarkets / 50) * 20;
-  // Profit efficiency (20 pts): min(1, max(0, efficiency)/0.10) * 20
-  const efficiencyScore = Math.min(1, Math.max(0, stats.efficiency || 0) / 0.10) * 20;
-  // Edge ratio (15 pts): min(1, max(0, edgeRatio-0.5)/2.5) * 15
-  const edgeScore = Math.min(1, Math.max(0, (stats.edgeRatio || 0) - 0.5) / 2.5) * 15;
+  const marketScore = Math.min(1, estimatedMarkets / 50) * 15;
+  // Profit efficiency (15 pts): use log scale to avoid saturation
+  // Old cap was 10% which 51% of wallets hit. Now use log scale: log10(1 + eff*100) / 2
+  const rawEff = Math.max(0, stats.efficiency || 0);
+  const efficiencyScore = Math.min(1, Math.log10(1 + rawEff * 100) / 2) * 15;
+  // Edge ratio (10 pts): use log scale to avoid saturation at 3.0
+  // Old: min(1, (edge-0.5)/2.5). Now: log2(1+max(0,edge-0.5)) / 3
+  const rawEdge = Math.max(0, (stats.edgeRatio || 0) - 0.5);
+  const edgeScore = Math.min(1, Math.log2(1 + rawEdge) / 3) * 10;
   // Sample size (15 pts): min(1, resolved/200) * 15
   const sampleScore = Math.min(1, resolved / 200) * 15;
+  // Activity component (20 pts) — rewards wallets that actively trade
+  // Based on positions per week and trading days, with diminishing returns
+  const ppw = stats.positionsPerWeek || 0;
+  const activityScore = Math.min(1, Math.log10(1 + ppw) / 2) * 12 +
+    Math.min(1, (stats.tradingDays || 0) / 14) * 8;
 
-  let rawScore = wrScore + marketScore + efficiencyScore + edgeScore + sampleScore;
+  let rawScore = wrScore + marketScore + efficiencyScore + edgeScore + sampleScore + activityScore;
 
   // Recency multiplier — penalise stale wallets
   let recencyMultiplier = 1.0;
@@ -514,8 +557,16 @@ function computeScore(stats, lastActiveTimestamp) {
     const daysSince = (Date.now() - new Date(lastActiveTimestamp).getTime()) / (1000 * 60 * 60 * 24);
     if (daysSince > 90) recencyMultiplier = 0.5;
     else if (daysSince > 30) recencyMultiplier = 0.75;
+    else if (daysSince > 14) recencyMultiplier = 0.85;
     else if (daysSince > 7) recencyMultiplier = 0.9;
     stats.recencyMultiplier = recencyMultiplier;
+    stats.daysSinceActive = Math.round(daysSince);
+  }
+
+  // Suspicious win rate penalty — wallets with 100% WR but hiding losses in open positions
+  if (stats.suspiciousWinRate) {
+    rawScore *= 0.7; // 30% penalty
+    stats.suspiciousPenalty = true;
   }
 
   return rawScore * recencyMultiplier;
@@ -828,7 +879,7 @@ function computeWinPatterns(walletData, marketLookup) {
   // Top winning markets
   const topWinningMarkets = Array.from(marketWins.values())
     .sort((a, b) => (b.wins / b.total || 0) - (a.wins / a.total || 0))
-    .slice(0, 20)
+    .slice(0, 100)
     .map((m) => ({
       title: m.market.title,
       slug: m.market.slug,
@@ -989,7 +1040,8 @@ function computeResolvedPositions(walletData, marketLookup, scanTimestampMap) {
       if ((pos.amount || 0) > 0.01) continue; // still open
 
       // Get resolved timestamp — when the position actually closed
-      // Only use resolvedTimestamp for period filtering (not firstSeenTimestamp which is discovery time)
+      // Only positions where we WITNESSED the closure (open → closed between scans)
+      // have a valid resolvedTimestamp. Positions discovered already-closed have null.
       const ts = pos.resolvedTimestamp || null;
       const tsMs = ts ? new Date(ts).getTime() : null;
 
@@ -1044,8 +1096,8 @@ function computeResolvedPositions(walletData, marketLookup, scanTimestampMap) {
   };
 
   return {
-    // Top 100 resolved positions for the table
-    positions: allResolved.slice(0, 100).map(p => {
+    // Top 500 resolved positions for the table
+    positions: allResolved.slice(0, 500).map(p => {
       const { timestampMs, ...rest } = p;
       return rest;
     }),

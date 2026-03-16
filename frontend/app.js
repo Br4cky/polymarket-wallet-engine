@@ -494,6 +494,7 @@ function renderDashboard() {
       openCount: s.openCount || 0,
       positionsPerWeek: s.positionsPerWeek || 0,
       tradingDays: s.tradingDays || 0,
+      suspiciousWinRate: s.suspiciousWinRate || false,
       lastActive: w.lastActiveTimestamp || w.stats?.lastActiveTimestamp || null,
     };
   });
@@ -522,7 +523,11 @@ function renderDashboard() {
     { field: 'score', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
     { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
-    { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
+    { field: 'winRate', render: (v, row) => {
+      const pct = ((v || 0) * 100).toFixed(1) + '%';
+      if (row.suspiciousWinRate) return `<span style="color: var(--yellow);" title="Suspicious: 100% WR with unrealized losses in open positions">${pct} ⚠</span>`;
+      return pct;
+    }},
     { field: 'markets', render: v => String(v) },
     { field: 'resolved', render: v => String(v) },
     { field: 'efficiency', render: v => ((v || 0) * 100).toFixed(2) + '%' },
@@ -723,7 +728,7 @@ function renderTrendline() {
 function renderConsensus() {
   if (!data.analytics) return;
 
-  const consensus = data.analytics.consensus || [];
+  const consensus = (data.analytics.consensus || []).slice(0, 200); // Display top 200
 
   const totalWallets = data.analytics.summary?.totalWallets || 1;
 
