@@ -38,6 +38,7 @@ const MAX_POSITIONS = 200000;
 const MIN_PNL = 1000;
 const MIN_POSITIONS_STAGE1 = 20;
 const MIN_WIN_RATE = 0.50;  // 50% minimum win rate to qualify
+const MAX_INACTIVE_DAYS = 90; // Wallets with no activity in 90 days are excluded
 const MAX_WALLETS = 2000;
 const PROBATION_SCANS = 3;  // Number of scans before a demoted wallet is removed
 const USDC_DIVISOR = 1e6;
@@ -101,8 +102,9 @@ async function runScan() {
   const tokenField = fields.find(f => /tokenId|token/i.test(f));
   const boughtField = fields.find(f => /totalBought|total_bought|volume/i.test(f));
   const amountField = fields.find(f => /^amount$/i.test(f));
+  const avgPriceField = fields.find(f => /avgPrice|avg_price|averagePrice/i.test(f));
 
-  console.log(`  Mapped: user=${userField}, pnl=${pnlField}, token=${tokenField}, bought=${boughtField}, amount=${amountField}\n`);
+  console.log(`  Mapped: user=${userField}, pnl=${pnlField}, token=${tokenField}, bought=${boughtField}, amount=${amountField}, avgPrice=${avgPriceField}\n`);
 
   if (!userField) {
     console.error('  ❌ No user field found. Aborting.');
@@ -127,8 +129,9 @@ async function runScan() {
   }
 
   // Build scanIndex → timestamp map from trendline for backfilling
-  const analyticsFile = path.join(DATA_DIR, 'analytics.json');
-  const existingAnalytics = loadJSON(analyticsFile) || {};
+  const analyticsFile = path.join(DATA_DIR, 'analytics.json.gz');
+  const analyticsFilePlain = path.join(DATA_DIR, 'analytics.json');
+  const existingAnalytics = loadGzJSON(analyticsFile) || loadJSON(analyticsFilePlain) || {};
   const scanTimestampMap = {};
   for (const entry of (existingAnalytics.trendline || [])) {
     if (entry.scanIndex && entry.timestamp) {
@@ -142,7 +145,7 @@ async function runScan() {
   const trackedCount = Object.keys(wallets).length;
   if (trackedCount > 0) {
     console.log(`\n🔄 Refreshing ${trackedCount} tracked wallets...`);
-    const discoveredFields = { user: userField, pnl: pnlField, token: tokenField, totalBought: boughtField, amount: amountField };
+    const discoveredFields = { user: userField, pnl: pnlField, token: tokenField, totalBought: boughtField, amount: amountField, avgPrice: avgPriceField };
     try {
       const refreshResult = await refreshTrackedWallets(
         GOLDSKY_PNL, entityName, discoveredFields, wallets,
@@ -165,12 +168,14 @@ async function runScan() {
   if (tokenField) fieldStr += ` ${tokenField}`;
   if (boughtField) fieldStr += ` ${boughtField}`;
   if (amountField) fieldStr += ` ${amountField}`;
+  if (avgPriceField) fieldStr += ` ${avgPriceField}`;
 
   let nestedFieldStr = `id ${userField} { id }`;
   if (pnlField) nestedFieldStr += ` ${pnlField}`;
   if (tokenField) nestedFieldStr += ` ${tokenField}`;
   if (boughtField) nestedFieldStr += ` ${boughtField}`;
   if (amountField) nestedFieldStr += ` ${amountField}`;
+  if (avgPriceField) nestedFieldStr += ` ${avgPriceField}`;
 
   while (fetched < MAX_POSITIONS) {
     let batch;
@@ -204,12 +209,16 @@ async function runScan() {
       const pnlVal = pnlField ? parseFloat(item[pnlField] || 0) / USDC_DIVISOR : 0;
       const amountVal = amountField ? parseFloat(item[amountField] || 0) / USDC_DIVISOR : 0;
 
+      // avgPrice from subgraph is in USDC (6 decimals) — divide to get per-share price
+      const avgPriceVal = avgPriceField ? parseFloat(item[avgPriceField] || 0) / USDC_DIVISOR : null;
+
       const pos = {
         uid: item.id,
         pnl: pnlVal,
         tokenId: tokenField ? (item[tokenField] || null) : null,
         totalBought: boughtField ? parseFloat(item[boughtField] || 0) / USDC_DIVISOR : 0,
         amount: amountVal,
+        avgPrice: avgPriceVal,
         scanIndex: state.scanCount,
         firstSeenTimestamp: state.lastRun, // stamp new positions with current scan time
       };
@@ -276,6 +285,9 @@ async function runScan() {
   const scoredWallets = [];
 
   for (const [address, wallet] of Object.entries(wallets)) {
+    // Skip tombstoned wallets — they've been removed and shouldn't be re-scored
+    if (wallet.status === 'removed') continue;
+
     const stats = analyzePositions(wallet.positions || []);
 
     // Compute lastActiveTimestamp from REAL activity signals:
@@ -327,7 +339,11 @@ async function runScan() {
     wallet.stats = stats;
     wallet.score = score;
 
-    const passesFilters = stats.totalPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE;
+    // Filter on REALIZED PnL only — unrealized gains aren't proven performance
+    // Also exclude wallets inactive for 90+ days — stale wallets aren't useful for signals
+    const daysSinceActive = lastActiveTs ? (Date.now() - new Date(lastActiveTs).getTime()) / (24 * 60 * 60 * 1000) : Infinity;
+    const isActive = daysSinceActive <= MAX_INACTIVE_DAYS;
+    const passesFilters = isActive && (stats.realizedPnl || stats.totalPnl) >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE;
 
     if (passesFilters) {
       // Active and qualifying — clear any probation
@@ -338,7 +354,8 @@ async function runScan() {
       // Previously active wallet now failing filters — put on probation
       wallet.status = 'probation';
       wallet.probationSince = wallet.probationSince || state.scanCount;
-      console.log(`  ⚠ ${address.slice(0, 10)}... on probation (WR: ${(stats.wr*100).toFixed(1)}%, PnL: $${stats.totalPnl.toFixed(0)})`);
+      const reason = !isActive ? `inactive ${Math.floor(daysSinceActive)}d` : `WR: ${(stats.wr*100).toFixed(1)}%, Realized: $${(stats.realizedPnl || stats.totalPnl).toFixed(0)}`;
+      console.log(`  ⚠ ${address.slice(0, 10)}... on probation (${reason})`);
       // Still include in scored wallets so they appear in the dashboard
       scoredWallets.push({ address, score, stats, lastActiveTimestamp: lastActiveTs });
     } else if (wallet.status === 'probation') {
@@ -365,19 +382,27 @@ async function runScan() {
   const activeNow = scoredWallets.filter(w => w.stats.newPositionsThisScan > 0);
   console.log(`  📈 ${activeNow.length} wallets had new activity this scan`);
 
-  // Build map of tracked wallets — remove only those marked 'removed'
+  // Build map of tracked wallets — tombstone removed wallets instead of deleting
+  // Keeps a lightweight record so we don't re-discover and re-process them
   const topAddresses = new Set(topWallets.map(w => w.address));
   let removedCount = 0;
   for (const address of Object.keys(wallets)) {
     if (wallets[address].status === 'removed') {
-      delete wallets[address];
+      // Tombstone: keep address and removal metadata, drop positions to save space
+      wallets[address] = {
+        status: 'removed',
+        removedAt: state.scanCount,
+        removedTimestamp: new Date().toISOString(),
+        previousScore: wallets[address].score || 0,
+        positions: [], // clear position data to save space
+      };
       removedCount++;
     } else if (!topAddresses.has(address) && !wallets[address].status) {
-      // New wallet that didn't make the cut — remove
+      // New wallet that didn't make the cut — remove entirely (never qualified)
       delete wallets[address];
     }
   }
-  if (removedCount > 0) console.log(`  Removed ${removedCount} wallets after probation`);
+  if (removedCount > 0) console.log(`  Removed ${removedCount} wallets after probation (tombstoned)`);
 
   const topScore = topWallets[0]?.score || 0;
   const avgScore = topWallets.length > 0
@@ -477,7 +502,7 @@ async function runScan() {
   console.log(`  ✓ markets.json.gz (${Object.keys(marketLookup).length} markets)`);
 
   // Analytics
-  let analytics = loadJSON(analyticsFile) || { trendline: [] };
+  let analytics = loadGzJSON(analyticsFile) || loadJSON(analyticsFilePlain) || { trendline: [] };
 
   analytics.lastUpdated = new Date().toISOString();
   analytics.scanCount = state.scanCount;
@@ -530,8 +555,12 @@ async function runScan() {
   analytics.trendline.push({ scanIndex: state.scanCount, timestamp: analytics.lastUpdated, avgScore, topScore, walletCount: topAddresses.size, totalPnl: analytics.summary.totalPnl });
   if (analytics.trendline.length > 100) analytics.trendline = analytics.trendline.slice(-100);
 
-  saveJSON(analyticsFile, analytics);
-  console.log(`  ✓ analytics.json`);
+  saveGzJSON(analyticsFile, analytics);
+  // Remove old uncompressed analytics.json if it exists
+  if (fs.existsSync(analyticsFilePlain)) {
+    try { fs.unlinkSync(analyticsFilePlain); } catch {}
+  }
+  console.log(`  ✓ analytics.json.gz`);
 
   // ===== Done =====
   const duration = Math.round((Date.now() - scanStart) / 1000);

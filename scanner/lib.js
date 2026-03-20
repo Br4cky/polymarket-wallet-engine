@@ -242,7 +242,8 @@ async function fetchPositions(endpoint, entity, fields, lastId = '', maxBatch = 
  * @returns {Promise<{refreshed: number, newPositions: number, closures: number}>}
  */
 async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scanIndex, scanTimestamp, delay = 200) {
-  const addresses = Object.keys(wallets);
+  // Skip tombstoned/removed wallets — don't waste API calls on them
+  const addresses = Object.keys(wallets).filter(addr => wallets[addr].status !== 'removed');
   let totalRefreshed = 0;
   let totalNew = 0;
   let totalClosures = 0;
@@ -253,12 +254,14 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
   if (fields.token) fieldStr += ` ${fields.token}`;
   if (fields.totalBought) fieldStr += ` ${fields.totalBought}`;
   if (fields.amount) fieldStr += ` ${fields.amount}`;
+  if (fields.avgPrice) fieldStr += ` ${fields.avgPrice}`;
 
   let nestedFieldStr = `id ${fields.user} { id }`;
   if (fields.pnl) nestedFieldStr += ` ${fields.pnl}`;
   if (fields.token) nestedFieldStr += ` ${fields.token}`;
   if (fields.totalBought) nestedFieldStr += ` ${fields.totalBought}`;
   if (fields.amount) nestedFieldStr += ` ${fields.amount}`;
+  if (fields.avgPrice) nestedFieldStr += ` ${fields.avgPrice}`;
 
   let useNested = false;
 
@@ -274,26 +277,36 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
 
     // Paginate through all positions for this wallet
     while (true) {
-      let batch;
+      let batch = [];
       const whereClause = cursor
         ? `id_gt: "${cursor}", id_gte: "${idPrefix}-", id_lt: "${idPrefix}~"`
         : `id_gte: "${idPrefix}-", id_lt: "${idPrefix}~"`;
 
-      try {
-        if (useNested) throw new Error('use nested');
-        const q = `{ ${entityName}(first: 1000, where: { ${whereClause} }) { ${fieldStr} } }`;
-        const data = await gqlQuery(endpoint, q);
-        batch = data?.[entityName] || [];
-      } catch {
+      // Retry once on timeout/error before giving up
+      for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const q = `{ ${entityName}(first: 1000, where: { ${whereClause} }) { ${nestedFieldStr} } }`;
+          if (useNested) throw new Error('use nested');
+          const q = `{ ${entityName}(first: 1000, where: { ${whereClause} }) { ${fieldStr} } }`;
           const data = await gqlQuery(endpoint, q);
           batch = data?.[entityName] || [];
-          useNested = true;
-        } catch (err) {
-          console.error(`    Error refreshing ${address.slice(0, 10)}...: ${err.message}`);
-          batch = [];
-          break;
+          break; // success
+        } catch {
+          try {
+            const q = `{ ${entityName}(first: 1000, where: { ${whereClause} }) { ${nestedFieldStr} } }`;
+            const data = await gqlQuery(endpoint, q);
+            batch = data?.[entityName] || [];
+            useNested = true;
+            break; // success
+          } catch (err) {
+            if (attempt === 0) {
+              // First failure — wait and retry
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              continue;
+            }
+            console.error(`    Error refreshing ${address.slice(0, 10)}...: ${err.message}`);
+            batch = [];
+            break;
+          }
         }
       }
 
@@ -316,6 +329,7 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
       const tokenId = fields.token ? (item[fields.token] || null) : null;
       const totalBought = fields.totalBought ? parseFloat(item[fields.totalBought] || 0) / USDC_DIVISOR : 0;
       const amount = fields.amount ? parseFloat(item[fields.amount] || 0) / USDC_DIVISOR : 0;
+      const avgPrice = fields.avgPrice ? parseFloat(item[fields.avgPrice] || 0) / USDC_DIVISOR : null;
 
       const existing = existingByUid.get(uid);
 
@@ -338,6 +352,7 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
         existing.pnl = pnl;
         existing.totalBought = totalBought;
         existing.amount = amount;
+        existing.avgPrice = avgPrice;
         existing.scanIndex = scanIndex;
         // Don't overwrite firstSeenTimestamp or discoveredScan — keep originals
       } else {
@@ -348,6 +363,7 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
           tokenId,
           totalBought,
           amount,
+          avgPrice,
           scanIndex,
           firstSeenTimestamp: scanTimestamp,
           discoveredScan: scanIndex, // Track which scan first found this position
@@ -661,44 +677,63 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
           // Use condition_id as the grouping key for Yes/No token pairs
           const groupId = market.condition_id || market.id || tokenId;
 
-          // Build per-token info with outcome
+          const commonFields = {
+            title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
+            slug: fullSlug,
+            category: market.category || '',
+            image: market.image || '',
+            groupId,
+          };
+
+          // Parse stringified JSON arrays from Gamma API
+          // clobTokenIds and outcomes come as strings like '["id1","id2"]'
+          let clobIds = market.clobTokenIds;
+          if (typeof clobIds === 'string') {
+            try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
+          }
+          let outcomesList = market.outcomes;
+          if (typeof outcomesList === 'string') {
+            try { outcomesList = JSON.parse(outcomesList); } catch(e) { outcomesList = null; }
+          }
+
+          // Build per-token info with outcome from tokens array
           if (market.tokens && Array.isArray(market.tokens)) {
             for (const token of market.tokens) {
-              lookup.set(token.token_id, {
-                title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
-                slug: fullSlug,
-                category: market.category || '',
-                image: market.image || '',
-                groupId,
-                outcome: token.outcome || 'Unknown',
-              });
-            }
-          }
-          if (market.clobTokenIds && Array.isArray(market.clobTokenIds)) {
-            for (let ci = 0; ci < market.clobTokenIds.length; ci++) {
-              const tid = market.clobTokenIds[ci];
-              const existing = lookup.get(tid);
-              // Override if not set OR if outcome is Unknown (tokens array didn't have real outcomes)
-              if (!existing || existing.outcome === 'Unknown') {
+              const tid = token.token_id || token.tokenId;
+              if (tid) {
                 lookup.set(tid, {
-                  ...(existing || {}),
-                  title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
-                  slug: fullSlug,
-                  category: market.category || '',
-                  image: market.image || '',
-                  groupId,
-                  outcome: ci === 0 ? 'Yes' : 'No',
+                  ...commonFields,
+                  outcome: token.outcome || 'Unknown',
                 });
               }
             }
           }
+
+          // Use parsed clobTokenIds + outcomes to map tokens to Yes/No
+          // This is the most reliable source — Gamma returns them in order [Yes, No]
+          if (Array.isArray(clobIds)) {
+            for (let ci = 0; ci < clobIds.length; ci++) {
+              const tid = clobIds[ci];
+              const existing = lookup.get(tid);
+              // Determine outcome: prefer outcomes array, fallback to positional
+              const outcomeValue = (Array.isArray(outcomesList) && outcomesList[ci])
+                ? outcomesList[ci]
+                : (ci === 0 ? 'Yes' : 'No');
+              // Override if not set OR if outcome is still Unknown
+              if (!existing || existing.outcome === 'Unknown') {
+                lookup.set(tid, {
+                  ...(existing || {}),
+                  ...commonFields,
+                  outcome: outcomeValue,
+                });
+              }
+            }
+          }
+
+          // Final fallback: if the requested tokenId still isn't in lookup
           if (!lookup.has(tokenId)) {
             lookup.set(tokenId, {
-              title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
-              slug: fullSlug,
-              category: market.category || '',
-              image: market.image || '',
-              groupId,
+              ...commonFields,
               outcome: 'Unknown',
             });
           }
@@ -954,7 +989,10 @@ function computeActivePositions(walletData, marketLookup) {
       }
 
       const market = marketHoldings.get(tokenId);
-      const entryPrice = pos.amount > 0 ? pos.totalBought / pos.amount : 0;
+      // Note: totalBought includes all USDC ever spent (even on shares since sold),
+      // so totalBought/amount overstates entry price if partial sells occurred.
+      // Use avgPrice from subgraph if available, otherwise approximate with a cap at $1.
+      const entryPrice = pos.avgPrice || (pos.amount > 0 ? Math.min(1, pos.totalBought / pos.amount) : 0);
 
       market.holders.push({
         address,
@@ -997,6 +1035,7 @@ function findBiggestWins(walletData, marketLookup, topN = 50) {
 
     for (const pos of wallet.positions) {
       if (pos.pnl <= 0) continue; // Only winning positions
+      if ((pos.amount || 0) > 0.01) continue; // Only closed/resolved — skip unrealized gains
 
       const market = marketLookup.get(pos.tokenId) || {
         title: `Market ${pos.tokenId}`,

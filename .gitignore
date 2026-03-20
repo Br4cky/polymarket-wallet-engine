@@ -6,3 +6,4 @@ node_modules/
 # Note: .gz files MUST be tracked — do NOT add data/*.gz here
 data/wallets.json
 data/markets.json
+data/analytics.json

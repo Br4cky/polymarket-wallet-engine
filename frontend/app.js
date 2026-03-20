@@ -176,10 +176,7 @@ async function fetchGzJSON(url) {
 async function loadData() {
   try {
     const [analytics, wallets, markets] = await Promise.all([
-      fetch(DATA_BASE + 'analytics.json').then(r => {
-        if (!r.ok) throw new Error('Not found');
-        return r.json();
-      }).catch(() => null),
+      fetchGzJSON(DATA_BASE + 'analytics.json.gz'),
       fetchGzJSON(DATA_BASE + 'wallets.json.gz'),
       fetchGzJSON(DATA_BASE + 'markets.json.gz'),
     ]);
