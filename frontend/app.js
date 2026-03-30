@@ -778,6 +778,9 @@ function renderConsensus() {
       yesCount: yc,
       noCount: nc,
       direction: m.direction || (yc > 0 && nc === 0 ? 'yes' : nc > 0 && yc === 0 ? 'no' : 'mixed'),
+      topOutcome: m.topOutcome || null,
+      topOutcomeCount: m.topOutcomeCount || 0,
+      outcomeCounts: m.outcomeCounts || {},
       avgScore: as,
       totalPnl: m.avgPnl || m.totalPnl || 0,
       rawConviction: m.conviction || wc * as,
@@ -797,8 +800,22 @@ function renderConsensus() {
     { field: 'direction', render: (v, row) => {
       const y = row.yesCount || 0;
       const n = row.noCount || 0;
+      // Binary markets: show Yes/No counts
       if (v === 'yes') return `<span class="badge badge-high">YES ${y}</span>`;
       if (v === 'no') return `<span class="badge badge-low">NO ${n}</span>`;
+      // Non-binary markets: show top outcome (e.g., "Lakers", "Over 2.5")
+      if (v !== 'mixed' && v !== 'yes' && v !== 'no' && row.topOutcome) {
+        const count = row.topOutcomeCount || 0;
+        return `<span class="badge badge-high">${row.topOutcome} (${count})</span>`;
+      }
+      // Mixed: show top two outcomes
+      if (row.outcomeCounts && Object.keys(row.outcomeCounts).length > 0) {
+        const sorted = Object.entries(row.outcomeCounts).sort((a, b) => b[1] - a[1]);
+        return sorted.slice(0, 2).map(([outcome, count]) => {
+          const cls = outcome === 'Yes' ? 'badge-high' : outcome === 'No' ? 'badge-low' : 'badge-mid';
+          return `<span class="badge ${cls}" style="margin-right:4px;">${outcome} ${count}</span>`;
+        }).join('');
+      }
       return `<span class="badge badge-high" style="margin-right:4px;">YES ${y}</span><span class="badge badge-low">NO ${n}</span>`;
     }},
     { field: 'walletCount', render: v => {
@@ -841,11 +858,21 @@ function showConsensusDetail(market) {
     `;
   }).join('');
 
-  const dirLabel = market.direction === 'yes'
-    ? `<span class="badge badge-high">ALL YES (${market.yesCount})</span>`
-    : market.direction === 'no'
-      ? `<span class="badge badge-low">ALL NO (${market.noCount})</span>`
-      : `<span class="badge badge-high" style="margin-right:4px;">YES ${market.yesCount}</span><span class="badge badge-low">NO ${market.noCount}</span>`;
+  let dirLabel;
+  if (market.outcomeCounts && Object.keys(market.outcomeCounts).length > 0) {
+    // Show full outcome breakdown
+    const sorted = Object.entries(market.outcomeCounts).sort((a, b) => b[1] - a[1]);
+    dirLabel = sorted.map(([outcome, count]) => {
+      const cls = outcome === 'Yes' ? 'badge-high' : outcome === 'No' ? 'badge-low' : 'badge-mid';
+      return `<span class="badge ${cls}" style="margin-right:4px;">${outcome} (${count})</span>`;
+    }).join('');
+  } else if (market.direction === 'yes') {
+    dirLabel = `<span class="badge badge-high">ALL YES (${market.yesCount})</span>`;
+  } else if (market.direction === 'no') {
+    dirLabel = `<span class="badge badge-low">ALL NO (${market.noCount})</span>`;
+  } else {
+    dirLabel = `<span class="badge badge-high" style="margin-right:4px;">YES ${market.yesCount}</span><span class="badge badge-low">NO ${market.noCount}</span>`;
+  }
 
   const html = `
     <div class="detail-grid">
@@ -906,17 +933,19 @@ function renderPortfolio() {
     slug: m.slug || m.tokenId || '',
     holdingCount: m.holderCount || m.holders?.length || 0,
     totalShares: m.totalShares || 0,
-    avgEntryPrice: m.holders?.length ? m.holders.reduce((s, h) => s + (h.entryPrice || 0), 0) / m.holders.length : 0,
-    direction: m.consensusDirection || 'MIXED',
+    totalValue: m.totalValue || (m.holders || []).reduce((s, h) => s + (h.positionValue || h.shares * (h.entryPrice || 0)), 0),
+    totalPnl: m.totalPnl || (m.holders || []).reduce((s, h) => s + (h.currentPnl || 0), 0),
+    avgEntryPrice: m.avgEntryPrice || (m.holders?.length ? m.holders.reduce((s, h) => s + (h.entryPrice || 0), 0) / m.holders.length : 0),
     holders: m.holders || []
   }));
 
   const portfolioColumns = [
     { field: 'title', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` },
     { field: 'holdingCount', render: v => String(v) },
+    { field: 'totalValue', render: v => fmtDollars(v) },
     { field: 'totalShares', render: v => fmt(v, 0) },
     { field: 'avgEntryPrice', render: v => '$' + v.toFixed(2) },
-    { field: 'direction', render: v => `<span class="badge ${v === 'YES' ? 'badge-positive' : v === 'NO' ? 'badge-negative' : 'badge-mid'}">${v}</span>` }
+    { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` }
   ];
 
   createSortableTable('portfolio-table', portfolioColumns, portfolioData, (row) => {
@@ -925,12 +954,14 @@ function renderPortfolio() {
 }
 
 function showPortfolioDetail(market) {
-  const holders = market.holders.map((h, idx) => `
+  const holders = market.holders.map((h, idx) => {
+    const val = h.positionValue || (h.shares * (h.entryPrice || 0));
+    return `
     <div class="detail-list-item">
       <div class="detail-list-item-label">${idx + 1}. <span class="address-link" onclick="openPolymarketProfile('${h.address}')">${truncAddr(h.address)}</span></div>
-      <div class="detail-list-item-value">${fmt(h.shares || 0, 0)} shares @ $${(h.entryPrice || 0).toFixed(2)}</div>
+      <div class="detail-list-item-value">${fmt(h.shares || 0, 0)} shares @ $${(h.entryPrice || 0).toFixed(2)} (${fmtDollars(val)}) <span class="${pnlClass(h.currentPnl || 0)}">${fmtDollars(h.currentPnl || 0)}</span></div>
     </div>
-  `).join('');
+  `;}).join('');
 
   const html = `
     <div class="detail-grid">
@@ -943,12 +974,20 @@ function showPortfolioDetail(market) {
         <div class="detail-item-value">${market.holdingCount}</div>
       </div>
       <div class="detail-item">
+        <div class="detail-item-label">Total Value</div>
+        <div class="detail-item-value">${fmtDollars(market.totalValue || 0)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Total PnL</div>
+        <div class="detail-item-value"><span class="${pnlClass(market.totalPnl || 0)}">${fmtDollars(market.totalPnl || 0)}</span></div>
+      </div>
+      <div class="detail-item">
         <div class="detail-item-label">Total Shares</div>
         <div class="detail-item-value">${fmt(market.totalShares, 0)}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Consensus Direction</div>
-        <div class="detail-item-value">${market.direction}</div>
+        <div class="detail-item-label">Avg Entry Price</div>
+        <div class="detail-item-value">$${(market.avgEntryPrice || 0).toFixed(2)}</div>
       </div>
     </div>
 

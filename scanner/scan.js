@@ -460,10 +460,25 @@ async function runScan() {
   const walletMap = new Map(Object.entries(wallets));
   const marketMap = new Map(Object.entries(marketLookup));
 
+  // Build a clean wallet map excluding contaminated wallets (bots + market makers)
+  // These pollute consensus signals and distort pattern analysis
+  const cleanWalletMap = new Map();
+  let contaminatedCount = 0;
+  for (const [addr, w] of walletMap) {
+    if (w.stats && w.stats.isContaminated) {
+      contaminatedCount++;
+    } else {
+      cleanWalletMap.set(addr, w);
+    }
+  }
+  console.log(`  Filtered ${contaminatedCount} contaminated wallets (bots/MMs) from signal pool — ${cleanWalletMap.size} clean wallets remain`);
+
   let consensus = [], winPatterns = {}, activePositions = [], biggestWins = [], resolvedPositions = {};
 
-  try { consensus = computeConsensus(walletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
-  try { winPatterns = computeWinPatterns(walletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
+  // Use clean wallet map for consensus and patterns — these drive signal quality
+  try { consensus = computeConsensus(cleanWalletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
+  try { winPatterns = computeWinPatterns(cleanWalletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
+  // Active positions and biggest wins use all wallets — informational, not signal-driving
   try { activePositions = computeActivePositions(walletMap, marketMap); } catch (e) { console.error(`  Active positions error: ${e.message}`); }
   try { biggestWins = findBiggestWins(walletMap, marketMap, 200); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
   try { resolvedPositions = computeResolvedPositions(walletMap, marketMap, scanTimestampMap); } catch (e) { console.error(`  Resolved positions error: ${e.message}`); }

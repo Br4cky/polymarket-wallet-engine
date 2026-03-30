@@ -523,8 +523,15 @@ function analyzePositions(positions) {
     ? +(discoveredPositions / weeksTracked).toFixed(1)
     : +(discoveredPositions).toFixed(1);
 
-  // Flag suspiciously perfect win rates — 100% WR with hiding losses in open positions
-  const suspiciousWinRate = (wr >= 0.99 && losses === 0 && resolved >= 20 && openLosing >= 3);
+  // Flag suspiciously perfect win rates — market makers / arbitrageurs
+  // Broad detection: any wallet with 100% WR (zero losses) and enough resolved positions
+  const suspiciousWinRate = (wr >= 0.99 && losses === 0 && resolved >= 10);
+
+  // Flag bot-like activity — wallets trading at inhuman frequency
+  const isBotLike = (positionsPerWeek > 500);
+
+  // Combined contamination flag
+  const isContaminated = suspiciousWinRate || isBotLike;
 
   return {
     wins,
@@ -549,6 +556,8 @@ function analyzePositions(positions) {
     positionsPerWeek,
     newPositionsThisScan,
     suspiciousWinRate,
+    isBotLike,
+    isContaminated,
   };
 }
 
@@ -599,9 +608,18 @@ function computeScore(stats, lastActiveTimestamp) {
     stats.daysSinceActive = Math.round(daysSince);
   }
 
-  // Suspicious win rate penalty — wallets with 100% WR but hiding losses in open positions
-  if (stats.suspiciousWinRate) {
-    rawScore *= 0.7; // 30% penalty
+  // Contamination penalties — market makers, bots, and suspicious wallets
+  if (stats.isContaminated) {
+    if (stats.suspiciousWinRate && stats.isBotLike) {
+      rawScore *= 0.1; // 90% penalty for MM + bot combo — almost certainly not a real trader
+      stats.contaminationType = 'mm_bot';
+    } else if (stats.suspiciousWinRate) {
+      rawScore *= 0.2; // 80% penalty for market makers / arbitrageurs
+      stats.contaminationType = 'market_maker';
+    } else if (stats.isBotLike) {
+      rawScore *= 0.3; // 70% penalty for bots — high frequency but may still have signal
+      stats.contaminationType = 'bot';
+    }
     stats.suspiciousPenalty = true;
   }
 
@@ -787,7 +805,7 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
  * @returns {Array} Consensus markets sorted by conviction
  */
 function computeConsensus(walletData, marketLookup, minWallets = 3) {
-  // Group by market (using groupId to combine Yes/No tokens into one entry)
+  // Group by market (using groupId to combine all outcome tokens into one entry)
   const marketMap = new Map();
 
   for (const [address, wallet] of walletData) {
@@ -798,7 +816,7 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
 
       const tokenId = pos.tokenId;
       const marketInfo = marketLookup.get(tokenId) || {};
-      // Use groupId to combine Yes/No sides; fall back to tokenId if no groupId
+      // Use groupId to combine all outcome sides; fall back to tokenId if no groupId
       const groupKey = marketInfo.groupId || tokenId;
       const outcome = marketInfo.outcome || 'Unknown';
 
@@ -808,8 +826,7 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
           tokenId, // keep one tokenId for reference
           wallets: [],
           pnlSum: 0,
-          yesCount: 0,
-          noCount: 0,
+          outcomeCounts: {}, // Track ALL outcomes, not just Yes/No
         });
       }
 
@@ -822,8 +839,10 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
       });
       market.pnlSum += pos.pnl;
 
-      if (outcome === 'Yes') market.yesCount++;
-      else if (outcome === 'No') market.noCount++;
+      // Count every outcome type (Yes, No, Lakers, Pistons, Over 2.5, etc.)
+      if (outcome && outcome !== 'Unknown') {
+        market.outcomeCounts[outcome] = (market.outcomeCounts[outcome] || 0) + 1;
+      }
     }
   }
 
@@ -842,19 +861,44 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
     const avgPnl = market.pnlSum / market.wallets.length;
     const conviction = market.wallets.length * avgScore;
 
-    // Determine consensus direction
+    // Determine consensus direction from ALL outcome types
+    const outcomes = Object.entries(market.outcomeCounts)
+      .sort((a, b) => b[1] - a[1]); // Sort by count descending
+
     let direction = 'mixed';
-    if (market.yesCount > 0 && market.noCount === 0) direction = 'yes';
-    else if (market.noCount > 0 && market.yesCount === 0) direction = 'no';
+    let topOutcome = null;
+    let topCount = 0;
+    let totalVotes = 0;
+
+    if (outcomes.length > 0) {
+      topOutcome = outcomes[0][0];
+      topCount = outcomes[0][1];
+      totalVotes = outcomes.reduce((sum, [, count]) => sum + count, 0);
+
+      // Consensus if dominant outcome has >60% of votes, or is the only outcome
+      if (outcomes.length === 1) {
+        direction = topOutcome.toLowerCase(); // "yes", "no", "lakers", etc.
+      } else if (topCount / totalVotes > 0.6) {
+        direction = topOutcome.toLowerCase();
+      }
+    }
+
+    // Backwards-compatible yesCount/noCount + new generic fields
+    const yesCount = market.outcomeCounts['Yes'] || 0;
+    const noCount = market.outcomeCounts['No'] || 0;
 
     consensus.push({
       marketTitle: marketInfo.title,
       slug: marketInfo.slug || market.tokenId,
       tokenId: market.tokenId,
       walletCount: market.wallets.length,
-      yesCount: market.yesCount,
-      noCount: market.noCount,
+      yesCount,
+      noCount,
       direction,
+      topOutcome: topOutcome || 'Unknown',
+      topOutcomeCount: topCount,
+      totalOutcomeVotes: totalVotes,
+      outcomeCounts: market.outcomeCounts, // Full breakdown for frontend
       wallets: market.wallets,
       avgScore,
       avgPnl,
@@ -985,6 +1029,8 @@ function computeActivePositions(walletData, marketLookup) {
           market: marketLookup.get(tokenId) || { title: `Market ${tokenId}` },
           holders: [],
           totalShares: 0,
+          totalValue: 0,
+          totalPnl: 0,
         });
       }
 
@@ -994,14 +1040,20 @@ function computeActivePositions(walletData, marketLookup) {
       // Use avgPrice from subgraph if available, otherwise approximate with a cap at $1.
       const entryPrice = pos.avgPrice || (pos.amount > 0 ? Math.min(1, pos.totalBought / pos.amount) : 0);
 
+      // Estimated dollar value of this position (shares * entry price)
+      const positionValue = pos.amount * entryPrice;
+
       market.holders.push({
         address,
         shares: pos.amount,
         entryPrice,
+        positionValue,
         currentPnl: pos.pnl,
         walletScore: wallet.score,
       });
       market.totalShares += pos.amount;
+      market.totalValue += positionValue;
+      market.totalPnl += pos.pnl;
     }
   }
 
@@ -1014,6 +1066,11 @@ function computeActivePositions(walletData, marketLookup) {
       tokenId: m.tokenId,
       holderCount: m.holders.length,
       totalShares: m.totalShares,
+      totalValue: +m.totalValue.toFixed(2),
+      totalPnl: +m.totalPnl.toFixed(2),
+      avgEntryPrice: m.holders.length > 0
+        ? +(m.holders.reduce((s, h) => s + h.entryPrice, 0) / m.holders.length).toFixed(4)
+        : 0,
       holders: m.holders,
     }));
 
