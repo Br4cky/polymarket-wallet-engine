@@ -319,17 +319,21 @@
       <!-- Active Signals Table -->
       <div class="section">
         <h2>Active Signals</h2>
-        <div class="signal-tier-filters" style="margin-bottom: 12px;">
+        <div class="signal-tier-filters" style="margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
           <button class="btn btn-sm signal-filter active" data-tier="all">All</button>
           <button class="btn btn-sm signal-filter" data-tier="elite">Elite</button>
           <button class="btn btn-sm signal-filter" data-tier="pro">Pro</button>
           <button class="btn btn-sm signal-filter" data-tier="starter">Starter</button>
+          <span style="border-left: 1px solid var(--border); margin: 0 4px;"></span>
+          <button class="btn btn-sm signal-filter" data-type="consensus">Consensus</button>
+          <button class="btn btn-sm signal-filter" data-type="solo">Solo</button>
         </div>
         <div class="table-wrapper">
           <table id="active-signals-table" class="data-table sortable">
             <thead>
               <tr>
                 <th data-field="marketTitle">Market</th>
+                <th data-field="signalType">Type</th>
                 <th data-field="tier">Tier</th>
                 <th data-field="direction">Direction</th>
                 <th data-field="walletCount" class="sortable">Wallets</th>
@@ -340,7 +344,7 @@
               </tr>
             </thead>
             <tbody id="active-signals-tbody">
-              <tr><td colspan="8" class="empty-state">Loading signals...</td></tr>
+              <tr><td colspan="9" class="empty-state">Loading signals...</td></tr>
             </tbody>
           </table>
         </div>

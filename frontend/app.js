@@ -1162,7 +1162,8 @@ function renderSignalEngine() {
   const tiersEl = el('metric-signal-tiers');
   if (tiersEl) {
     const tb = stats.tierBreakdown || {};
-    tiersEl.innerHTML = `<span class="badge badge-high" style="margin-right:4px;">${tb.elite || 0} Elite</span><span class="badge badge-mid" style="margin-right:4px;">${tb.pro || 0} Pro</span><span class="badge badge-low">${tb.starter || 0} Starter</span>`;
+    const tt = stats.typeBreakdown || {};
+    tiersEl.innerHTML = `${tb.elite || 0} Elite / ${tb.pro || 0} Pro / ${tb.starter || 0} Starter &middot; ${tt.consensus || 0} consensus, ${tt.solo || 0} solo`;
   }
 
   const hrEl = el('metric-signal-hitrate');
@@ -1204,6 +1205,7 @@ function renderSignalEngine() {
   const signalData = activeSignals.map(s => ({
     marketTitle: s.marketTitle || 'Unknown',
     slug: s.slug || '',
+    signalType: s.signalType || 'consensus',
     tier: s.tier || 'starter',
     direction: s.direction || 'mixed',
     topOutcome: s.topOutcome || null,
@@ -1218,10 +1220,21 @@ function renderSignalEngine() {
     currentWallets: s.currentWallets || [],
     signalId: s.signalId || '',
     openedAt: s.openedAt || null,
+    // Solo-specific fields
+    soloWallet: s.soloWallet || null,
+    walletScore: s.walletScore || 0,
+    walletWinRate: s.walletWinRate || 0,
+    walletResolved: s.walletResolved || 0,
+    walletPnl: s.walletPnl || 0,
+    positionValue: s.positionValue || 0,
   }));
 
   const signalColumns = [
     { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'signalType', render: v => {
+      if (v === 'solo') return `<span class="badge" style="background: var(--purple, #9b59b6); color: white;">SOLO</span>`;
+      return `<span class="badge badge-mid">CONSENSUS</span>`;
+    }},
     { field: 'tier', render: v => `<span class="badge ${tierClass(v)}">${v.toUpperCase()}</span>` },
     { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
     { field: 'walletCount', render: v => String(v) },
@@ -1242,13 +1255,16 @@ function renderSignalEngine() {
     showSignalDetail(row);
   });
 
-  // --- Tier filter buttons ---
+  // --- Filter buttons (tier + type) ---
   document.querySelectorAll('.signal-filter').forEach(btn => {
     btn.onclick = () => {
       document.querySelectorAll('.signal-filter').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       const tier = btn.dataset.tier;
-      const filtered = tier === 'all' ? signalData : signalData.filter(s => s.tier === tier);
+      const type = btn.dataset.type;
+      let filtered = signalData;
+      if (tier && tier !== 'all') filtered = filtered.filter(s => s.tier === tier);
+      if (type && type !== 'all') filtered = filtered.filter(s => s.signalType === type);
       createSortableTable('active-signals-table', signalColumns, filtered, (row) => {
         showSignalDetail(row);
       });
@@ -1314,8 +1330,41 @@ function showSignalDetail(signal) {
     `;
   }).join('');
 
-  const tierClass = signal.tier === 'elite' ? 'badge-high' : signal.tier === 'pro' ? 'badge-mid' : 'badge-low';
+  const tierCls = signal.tier === 'elite' ? 'badge-high' : signal.tier === 'pro' ? 'badge-mid' : 'badge-low';
   const confClass = signal.confidence >= 80 ? 'badge-high' : signal.confidence >= 55 ? 'badge-mid' : 'badge-low';
+  const isSolo = signal.signalType === 'solo';
+  const typeBadge = isSolo
+    ? `<span class="badge" style="background: var(--purple, #9b59b6); color: white;">SOLO</span>`
+    : `<span class="badge badge-mid">CONSENSUS</span>`;
+
+  // Solo-specific section
+  const soloSection = isSolo ? `
+    <div class="detail-section">
+      <h3>Solo Wallet Profile</h3>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="detail-item-label">Wallet</div>
+          <div class="detail-item-value"><span class="address-link" onclick="openPolymarketProfile('${signal.soloWallet}')">${truncAddr(signal.soloWallet || '')}</span></div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-item-label">Win Rate</div>
+          <div class="detail-item-value">${((signal.walletWinRate || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-item-label">Resolved Positions</div>
+          <div class="detail-item-value">${signal.walletResolved || 0}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-item-label">Wallet Realized PnL</div>
+          <div class="detail-item-value"><span class="${pnlClass(signal.walletPnl || 0)}">${fmtDollars(signal.walletPnl || 0)}</span></div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-item-label">Position Value</div>
+          <div class="detail-item-value">${fmtDollars(signal.positionValue || 0)}</div>
+        </div>
+      </div>
+    </div>
+  ` : '';
 
   const html = `
     <div class="detail-grid">
@@ -1324,19 +1373,19 @@ function showSignalDetail(signal) {
         <div class="detail-item-value" style="font-size: 14px;">${signal.slug ? `<a href="${polymarketUrl(signal.slug)}" target="_blank" style="color: var(--accent-light);">${signal.marketTitle}</a>` : signal.marketTitle}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Tier</div>
-        <div class="detail-item-value"><span class="badge ${tierClass}">${(signal.tier || 'starter').toUpperCase()}</span></div>
+        <div class="detail-item-label">Type / Tier</div>
+        <div class="detail-item-value">${typeBadge} <span class="badge ${tierCls}">${(signal.tier || 'starter').toUpperCase()}</span></div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Confidence</div>
         <div class="detail-item-value"><span class="badge ${confClass}">${(signal.confidence || 0).toFixed(1)}</span> (peak: ${(signal.peakConfidence || 0).toFixed(1)})</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Backing Wallets</div>
-        <div class="detail-item-value">${signal.walletCount}</div>
+        <div class="detail-item-label">${isSolo ? 'Wallet' : 'Backing Wallets'}</div>
+        <div class="detail-item-value">${isSolo ? `<span class="address-link" onclick="openPolymarketProfile('${signal.soloWallet}')">${truncAddr(signal.soloWallet || '')}</span>` : signal.walletCount}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Avg PnL</div>
+        <div class="detail-item-label">${isSolo ? 'Position PnL' : 'Avg PnL'}</div>
         <div class="detail-item-value"><span class="${pnlClass(signal.avgPnl || 0)}">${fmtDollars(signal.avgPnl || 0)}</span></div>
       </div>
       <div class="detail-item">
@@ -1345,8 +1394,10 @@ function showSignalDetail(signal) {
       </div>
     </div>
 
+    ${soloSection}
+
     <div class="detail-section">
-      <h3>Backing Wallets</h3>
+      <h3>${isSolo ? 'Wallet Position' : 'Backing Wallets'}</h3>
       <div class="detail-list">
         ${wallets || '<div class="empty-state">No wallet data available</div>'}
       </div>

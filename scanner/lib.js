@@ -1317,11 +1317,20 @@ function saveGzJSON(filepath, data) {
  * Signal thresholds — tune these as we gather performance data
  */
 const SIGNAL_THRESHOLDS = {
+  // Consensus signals — multiple wallets agree
   MIN_WALLETS: 4,         // Minimum clean wallets converging on a market
   MIN_AVG_SCORE: 30,      // Minimum average wallet score
   MIN_CONVICTION: 50,     // Minimum raw conviction (wallets × avgScore)
   CONSENSUS_RATIO: 0.6,   // 60%+ must agree on direction for a signal
   STALE_SCANS: 28,        // Close signal if no wallet activity for 28 scans (~7 days)
+
+  // Solo signals — single high-performing wallet, no consensus required
+  SOLO_MIN_SCORE: 55,            // Wallet must score 55+ to generate solo signals
+  SOLO_MIN_WIN_RATE: 0.70,       // 70%+ win rate
+  SOLO_MIN_RESOLVED: 40,         // At least 40 resolved positions (proven track record)
+  SOLO_MIN_PNL: 5000,            // $5k+ realized PnL
+  SOLO_MIN_POSITION_VALUE: 50,   // Position must be worth $50+ (not dust)
+  SOLO_STALE_SCANS: 20,          // Solo signals go stale faster (20 scans ≈ 5 days)
 };
 
 /**
@@ -1481,28 +1490,193 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     }
   }
 
+  // --- Phase 1b: Solo signals — high-performing individual wallets ---
+  let soloOpened = 0;
+  for (const [address, wallet] of walletData) {
+    const stats = wallet.stats;
+    if (!stats || !wallet.positions) continue;
+
+    // Wallet must meet elite solo thresholds
+    const qualifiesForSolo =
+      (wallet.score || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_SCORE &&
+      (stats.wr || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_WIN_RATE &&
+      (stats.resolved || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_RESOLVED &&
+      (stats.realizedPnl || stats.totalPnl || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_PNL;
+
+    if (!qualifiesForSolo) continue;
+
+    // Check each active position for solo signal potential
+    for (const pos of wallet.positions) {
+      if (pos.amount <= 0.01) continue; // Only active positions
+
+      const tokenId = pos.tokenId;
+      const marketInfo = marketLookup.get(tokenId) || {};
+      const groupKey = marketInfo.groupId || marketInfo.slug || tokenId;
+      const outcome = marketInfo.outcome || 'Unknown';
+      if (outcome === 'Unknown') continue;
+
+      // Skip if this market already has a consensus signal
+      const consensusSignalId = `sig_${marketInfo.slug || tokenId}`;
+      if (active[consensusSignalId]) continue;
+      if (seenGroups.has(groupKey)) continue; // Already covered by consensus
+
+      // Check position value
+      const entryPrice = pos.avgPrice || (pos.amount > 0 ? Math.min(1, pos.totalBought / pos.amount) : 0);
+      const positionValue = pos.amount * entryPrice;
+      if (positionValue < SIGNAL_THRESHOLDS.SOLO_MIN_POSITION_VALUE) continue;
+
+      const soloSignalId = `solo_${groupKey}_${address.slice(0, 10)}`;
+
+      if (active[soloSignalId]) {
+        // Update existing solo signal
+        const signal = active[soloSignalId];
+        signal.lastUpdatedScan = scanIndex;
+        signal.lastUpdatedAt = now;
+        signal.scansSinceUpdate = 0;
+        signal.positionValue = +positionValue.toFixed(2);
+        signal.currentPnl = +(pos.pnl || 0).toFixed(2);
+        signal.walletScore = +(wallet.score || 0).toFixed(2);
+        signal.confidence = computeSoloConfidence(wallet, pos, positionValue);
+        signal.tier = getSignalTier(signal.confidence);
+        signal.peakConfidence = Math.max(signal.peakConfidence || 0, signal.confidence);
+        signal.currentWallets = [{
+          address,
+          score: wallet.score || 0,
+          outcome,
+          pnl: pos.pnl || 0,
+        }];
+        updated++;
+      } else {
+        // Open new solo signal
+        const confidence = computeSoloConfidence(wallet, pos, positionValue);
+
+        active[soloSignalId] = {
+          signalId: soloSignalId,
+          signalType: 'solo',
+          marketTitle: marketInfo.title || `Market ${tokenId}`,
+          slug: marketInfo.slug || '',
+          tokenId,
+          groupKey,
+
+          // Timing
+          openedAt: now,
+          openedScan: scanIndex,
+          lastUpdatedAt: now,
+          lastUpdatedScan: scanIndex,
+          scansSinceUpdate: 0,
+          scansActive: 1,
+
+          // Direction — solo signal is whatever the wallet holds
+          direction: outcome.toLowerCase(),
+          topOutcome: outcome,
+          outcomeCounts: { [outcome]: 1 },
+          directionChanges: 0,
+
+          // Metrics
+          walletCount: 1,
+          avgScore: +(wallet.score || 0).toFixed(2),
+          conviction: +(wallet.score || 0).toFixed(2), // Solo = just the wallet score
+          avgPnl: +(pos.pnl || 0).toFixed(2),
+
+          // Solo-specific fields
+          soloWallet: address,
+          walletScore: +(wallet.score || 0).toFixed(2),
+          walletWinRate: +(stats.wr || 0).toFixed(3),
+          walletResolved: stats.resolved || 0,
+          walletPnl: +(stats.realizedPnl || stats.totalPnl || 0).toFixed(2),
+          positionValue: +positionValue.toFixed(2),
+          positionShares: +pos.amount.toFixed(2),
+          entryPrice: +entryPrice.toFixed(4),
+          currentPnl: +(pos.pnl || 0).toFixed(2),
+
+          // Confidence & tier
+          confidence: +confidence.toFixed(1),
+          tier: getSignalTier(confidence),
+
+          // Peak tracking
+          peakWallets: 1,
+          peakConviction: wallet.score || 0,
+          peakConfidence: confidence,
+
+          // Status
+          status: 'active',
+          outcome: null,
+          closedAt: null,
+          closedScan: null,
+          closeReason: null,
+
+          // Wallet snapshot
+          currentWallets: [{
+            address,
+            score: wallet.score || 0,
+            outcome,
+            pnl: pos.pnl || 0,
+          }],
+        };
+
+        soloOpened++;
+        opened++;
+      }
+    }
+  }
+
   // --- Phase 2: Check existing signals not in current consensus → stale/close ---
   for (const [signalId, signal] of Object.entries(active)) {
     const groupKey = signal.groupKey;
     signal.scansActive = (signal.scansActive || 0) + 1;
 
-    if (!seenGroups.has(groupKey)) {
-      // Signal's market no longer in consensus — wallets may have exited
+    // Determine stale threshold based on signal type
+    const staleThreshold = signal.signalType === 'solo'
+      ? SIGNAL_THRESHOLDS.SOLO_STALE_SCANS
+      : SIGNAL_THRESHOLDS.STALE_SCANS;
+
+    const isConsensusSignal = !signal.signalType || signal.signalType === 'consensus';
+
+    if (isConsensusSignal && !seenGroups.has(groupKey)) {
+      // Consensus signal's market no longer in consensus — wallets may have exited
       signal.scansSinceUpdate = (signal.scansSinceUpdate || 0) + 1;
 
-      if (signal.scansSinceUpdate >= SIGNAL_THRESHOLDS.STALE_SCANS) {
-        // Close as stale
+      if (signal.scansSinceUpdate >= staleThreshold) {
         closeSignal(active, history, signalId, 'stale', scanIndex, now);
         closed++;
+        continue;
+      }
+    } else if (signal.signalType === 'solo') {
+      // Solo signal: check if the wallet still holds the position
+      const wallet = walletData.get(signal.soloWallet);
+      if (!wallet || !wallet.positions) {
+        signal.scansSinceUpdate = (signal.scansSinceUpdate || 0) + 1;
+      } else {
+        const stillHolding = wallet.positions.some(p => {
+          const mi = marketLookup.get(p.tokenId) || {};
+          const gk = mi.groupId || mi.slug || p.tokenId;
+          return gk === groupKey && p.amount > 0.01;
+        });
+        if (!stillHolding) {
+          signal.scansSinceUpdate = (signal.scansSinceUpdate || 0) + 1;
+        }
+      }
+
+      if (signal.scansSinceUpdate >= staleThreshold) {
+        closeSignal(active, history, signalId, 'stale', scanIndex, now);
+        closed++;
+        continue;
+      }
+
+      // Check if solo signal should be upgraded to consensus
+      // If a consensus signal now covers this market, close the solo one
+      const consensusId = `sig_${signal.slug || signal.tokenId}`;
+      if (active[consensusId] && active[consensusId] !== signal) {
+        closeSignal(active, history, signalId, 'upgraded_to_consensus', scanIndex, now);
+        closed++;
+        continue;
       }
     }
 
     // Check if market resolved by looking at positions
-    // If all wallets holding this market have amount ≈ 0 (resolved), close as resolved
     if (signal.currentWallets && signal.currentWallets.length > 0) {
       const allResolved = checkIfMarketResolved(signal, walletData, marketLookup);
       if (allResolved) {
-        // Determine if signal was correct based on PnL of backing wallets
         const totalPnl = signal.currentWallets.reduce((s, w) => s + (w.pnl || 0), 0);
         const signalOutcome = totalPnl > 0 ? 'win' : totalPnl < 0 ? 'loss' : 'push';
         closeSignal(active, history, signalId, 'resolved', scanIndex, now, signalOutcome, totalPnl);
@@ -1521,8 +1695,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
   const hitRate = resolved > 0 ? +(wins / resolved * 100).toFixed(1) : 0;
   const totalHistoryPnl = allHistory.reduce((s, sig) => s + (sig.closedPnl || 0), 0);
 
+  const consensusSignals = activeSignals.filter(s => !s.signalType || s.signalType === 'consensus');
+  const soloSignals = activeSignals.filter(s => s.signalType === 'solo');
+
   const stats = {
     activeCount: activeSignals.length,
+    consensusCount: consensusSignals.length,
+    soloCount: soloSignals.length,
     historyCount: allHistory.length,
     totalResolved: resolved,
     wins,
@@ -1537,7 +1716,12 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       pro: activeSignals.filter(s => s.tier === 'pro').length,
       starter: activeSignals.filter(s => s.tier === 'starter').length,
     },
+    typeBreakdown: {
+      consensus: consensusSignals.length,
+      solo: soloSignals.length,
+    },
     openedThisScan: opened,
+    soloOpenedThisScan: soloOpened,
     updatedThisScan: updated,
     closedThisScan: closed,
   };
@@ -1568,6 +1752,31 @@ function computeSignalConfidence(signal) {
   const stabilityFactor = Math.max(0, 1 - changes * 0.3) * 15;
 
   return Math.min(100, walletFactor + scoreFactor + convictionFactor + stabilityFactor);
+}
+
+/**
+ * Compute confidence for solo signals (0-100)
+ * Different weighting: heavily relies on wallet track record since there's no crowd validation
+ */
+function computeSoloConfidence(wallet, position, positionValue) {
+  const stats = wallet.stats || {};
+  const score = wallet.score || 0;
+
+  // Wallet score factor (35 pts): the wallet's overall score is the primary signal
+  const scoreFactor = Math.min(1, score / 70) * 35;
+
+  // Win rate factor (25 pts): higher WR = more reliable solo picks
+  const wr = stats.wr || 0;
+  const wrFactor = Math.min(1, (wr - 0.5) / 0.4) * 25; // 50% → 0pts, 90% → 25pts
+
+  // Track record depth (20 pts): more resolved = more confidence in the pattern
+  const resolved = stats.resolved || 0;
+  const depthFactor = Math.min(1, Math.log10(1 + resolved) / 2.5) * 20;
+
+  // Position size factor (20 pts): bigger position = more conviction from the wallet
+  const sizeFactor = Math.min(1, Math.log10(1 + positionValue) / 3.5) * 20;
+
+  return Math.min(100, Math.max(0, scoreFactor + wrFactor + depthFactor + sizeFactor));
 }
 
 /**

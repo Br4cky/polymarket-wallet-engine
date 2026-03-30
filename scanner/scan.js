@@ -512,8 +512,9 @@ async function runScan() {
   }
 
   const ss = signals.stats || {};
-  console.log(`  Active signals: ${ss.activeCount || 0} (${ss.tierBreakdown?.elite || 0} elite, ${ss.tierBreakdown?.pro || 0} pro, ${ss.tierBreakdown?.starter || 0} starter)`);
-  if (ss.openedThisScan) console.log(`  📈 ${ss.openedThisScan} new signals opened`);
+  console.log(`  Active signals: ${ss.activeCount || 0} (${ss.consensusCount || 0} consensus, ${ss.soloCount || 0} solo)`);
+  console.log(`  Tiers: ${ss.tierBreakdown?.elite || 0} elite, ${ss.tierBreakdown?.pro || 0} pro, ${ss.tierBreakdown?.starter || 0} starter`);
+  if (ss.openedThisScan) console.log(`  📈 ${ss.openedThisScan} new signals opened (${ss.soloOpenedThisScan || 0} solo)`);
   if (ss.closedThisScan) console.log(`  📉 ${ss.closedThisScan} signals closed`);
   if (ss.totalResolved > 0) console.log(`  🎯 Track record: ${ss.wins}W/${ss.losses}L (${ss.hitRate}% hit rate, ${ss.totalPnl >= 0 ? '+' : ''}$${ss.totalPnl.toFixed(0)} PnL)`);
   console.log();
