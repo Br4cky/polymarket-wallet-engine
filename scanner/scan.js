@@ -343,6 +343,13 @@ async function runScan() {
     // Also exclude wallets inactive for 90+ days — stale wallets aren't useful for signals
     const daysSinceActive = lastActiveTs ? (Date.now() - new Date(lastActiveTs).getTime()) / (24 * 60 * 60 * 1000) : Infinity;
     const isActive = daysSinceActive <= MAX_INACTIVE_DAYS;
+    // Hard exclude bots and market makers — they pollute all signal data
+    if (stats.isContaminated) {
+      wallet.status = 'contaminated';
+      wallet.contaminationType = stats.contaminationType || (stats.suspiciousWinRate ? 'market_maker' : 'bot');
+      continue; // Skip entirely — don't include in scored wallets at all
+    }
+
     const passesFilters = isActive && (stats.realizedPnl || stats.totalPnl) >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE;
 
     if (passesFilters) {
@@ -386,8 +393,21 @@ async function runScan() {
   // Keeps a lightweight record so we don't re-discover and re-process them
   const topAddresses = new Set(topWallets.map(w => w.address));
   let removedCount = 0;
+  let contaminatedCount = 0;
   for (const address of Object.keys(wallets)) {
-    if (wallets[address].status === 'removed') {
+    if (wallets[address].status === 'contaminated') {
+      // Tombstone contaminated wallets — keep minimal record so we don't re-discover them
+      const type = wallets[address].contaminationType || 'unknown';
+      wallets[address] = {
+        status: 'contaminated',
+        contaminationType: type,
+        removedAt: state.scanCount,
+        removedTimestamp: new Date().toISOString(),
+        previousScore: wallets[address].score || 0,
+        positions: [],
+      };
+      contaminatedCount++;
+    } else if (wallets[address].status === 'removed') {
       // Tombstone: keep address and removal metadata, drop positions to save space
       wallets[address] = {
         status: 'removed',
@@ -402,6 +422,7 @@ async function runScan() {
       delete wallets[address];
     }
   }
+  if (contaminatedCount > 0) console.log(`  🤖 Purged ${contaminatedCount} contaminated wallets (bots/MMs)`);
   if (removedCount > 0) console.log(`  Removed ${removedCount} wallets after probation (tombstoned)`);
 
   const topScore = topWallets[0]?.score || 0;
@@ -457,28 +478,19 @@ async function runScan() {
 
   // ===== Step 6: Compute Analytics =====
   console.log('📊 Computing analytics...');
-  const walletMap = new Map(Object.entries(wallets));
-  const marketMap = new Map(Object.entries(marketLookup));
-
-  // Build a clean wallet map excluding contaminated wallets (bots + market makers)
-  // These pollute consensus signals and distort pattern analysis
-  const cleanWalletMap = new Map();
-  let contaminatedCount = 0;
-  for (const [addr, w] of walletMap) {
-    if (w.stats && w.stats.isContaminated) {
-      contaminatedCount++;
-    } else {
-      cleanWalletMap.set(addr, w);
-    }
+  // Only include active/probation wallets — contaminated and removed are excluded
+  const walletMap = new Map();
+  for (const [addr, w] of Object.entries(wallets)) {
+    if (w.status === 'contaminated' || w.status === 'removed') continue;
+    walletMap.set(addr, w);
   }
-  console.log(`  Filtered ${contaminatedCount} contaminated wallets (bots/MMs) from signal pool — ${cleanWalletMap.size} clean wallets remain`);
+  const marketMap = new Map(Object.entries(marketLookup));
+  console.log(`  ${walletMap.size} clean wallets in analytics pool`);
 
   let consensus = [], winPatterns = {}, activePositions = [], biggestWins = [], resolvedPositions = {};
 
-  // Use clean wallet map for consensus and patterns — these drive signal quality
-  try { consensus = computeConsensus(cleanWalletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
-  try { winPatterns = computeWinPatterns(cleanWalletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
-  // Active positions and biggest wins use all wallets — informational, not signal-driving
+  try { consensus = computeConsensus(walletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
+  try { winPatterns = computeWinPatterns(walletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
   try { activePositions = computeActivePositions(walletMap, marketMap); } catch (e) { console.error(`  Active positions error: ${e.message}`); }
   try { biggestWins = findBiggestWins(walletMap, marketMap, 200); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
   try { resolvedPositions = computeResolvedPositions(walletMap, marketMap, scanTimestampMap); } catch (e) { console.error(`  Resolved positions error: ${e.message}`); }

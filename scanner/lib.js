@@ -608,19 +608,13 @@ function computeScore(stats, lastActiveTimestamp) {
     stats.daysSinceActive = Math.round(daysSince);
   }
 
-  // Contamination penalties — market makers, bots, and suspicious wallets
+  // Contaminated wallets (bots/MMs) are excluded entirely in scan.js
+  // Set contaminationType for downstream use but no score penalty needed —
+  // they'll be purged before scoring matters
   if (stats.isContaminated) {
-    if (stats.suspiciousWinRate && stats.isBotLike) {
-      rawScore *= 0.1; // 90% penalty for MM + bot combo — almost certainly not a real trader
-      stats.contaminationType = 'mm_bot';
-    } else if (stats.suspiciousWinRate) {
-      rawScore *= 0.2; // 80% penalty for market makers / arbitrageurs
-      stats.contaminationType = 'market_maker';
-    } else if (stats.isBotLike) {
-      rawScore *= 0.3; // 70% penalty for bots — high frequency but may still have signal
-      stats.contaminationType = 'bot';
-    }
-    stats.suspiciousPenalty = true;
+    if (stats.suspiciousWinRate && stats.isBotLike) stats.contaminationType = 'mm_bot';
+    else if (stats.suspiciousWinRate) stats.contaminationType = 'market_maker';
+    else if (stats.isBotLike) stats.contaminationType = 'bot';
   }
 
   return rawScore * recencyMultiplier;
