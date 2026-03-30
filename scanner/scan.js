@@ -421,13 +421,9 @@ async function runScan() {
       };
       removedCount++;
     } else if (!topAddresses.has(address)) {
-      // Wallet not in top set this scan — but keep if it has a status or positions
-      // (cursor-based scanning means most wallets won't appear in every scan batch)
-      if (!wallets[address].status && (!wallets[address].positions || wallets[address].positions.length === 0)) {
-        // Truly new wallet with no data that didn't qualify — safe to remove
-        delete wallets[address];
-      }
-      // Otherwise keep it — it'll be re-evaluated when the cursor cycles back
+      // Not in top scored set — remove to keep pool lean
+      // The wipeout was caused by bot detection purging good wallets, not by this pruning
+      delete wallets[address];
     }
   }
   if (contaminatedCount > 0) console.log(`  🤖 Purged ${contaminatedCount} contaminated wallets (bots/MMs)`);
