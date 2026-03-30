@@ -781,6 +781,7 @@ function renderConsensus() {
       topOutcome: m.topOutcome || null,
       topOutcomeCount: m.topOutcomeCount || 0,
       outcomeCounts: m.outcomeCounts || {},
+      consensusStrength: m.consensusStrength || 0,
       avgScore: as,
       totalPnl: m.avgPnl || m.totalPnl || 0,
       rawConviction: m.conviction || wc * as,
@@ -828,6 +829,11 @@ function renderConsensus() {
           <span>${v}</span>
         </div>
       `;
+    }},
+    { field: 'consensusStrength', render: v => {
+      const pct = (v * 100).toFixed(0);
+      const cls = v >= 0.8 ? 'badge-high' : v >= 0.6 ? 'badge-mid' : 'badge-low';
+      return `<span class="badge ${cls}">${pct}%</span>`;
     }},
     { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
     { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },

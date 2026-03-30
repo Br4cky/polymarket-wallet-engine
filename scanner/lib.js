@@ -853,29 +853,56 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
 
     const avgScore = market.wallets.reduce((sum, w) => sum + w.score, 0) / market.wallets.length;
     const avgPnl = market.pnlSum / market.wallets.length;
-    const conviction = market.wallets.length * avgScore;
 
-    // Determine consensus direction from ALL outcome types
-    const outcomes = Object.entries(market.outcomeCounts)
-      .sort((a, b) => b[1] - a[1]); // Sort by count descending
+    // --- Score-weighted consensus direction ---
+    // Instead of just counting heads, weight each wallet's vote by their score.
+    // This means 3 elite wallets on Yes outweigh 5 mediocre wallets on No.
+    const scoreByOutcome = {};
+    const countByOutcome = {};
+    let totalScoreWeight = 0;
+
+    for (const w of market.wallets) {
+      const oc = w.outcome || 'Unknown';
+      if (oc === 'Unknown') continue;
+      scoreByOutcome[oc] = (scoreByOutcome[oc] || 0) + (w.score || 0);
+      countByOutcome[oc] = (countByOutcome[oc] || 0) + 1;
+      totalScoreWeight += (w.score || 0);
+    }
+
+    // Sort outcomes by score weight (not headcount)
+    const outcomesByWeight = Object.entries(scoreByOutcome)
+      .sort((a, b) => b[1] - a[1]);
 
     let direction = 'mixed';
     let topOutcome = null;
+    let topOutcomeScore = 0;
     let topCount = 0;
-    let totalVotes = 0;
+    let totalVotes = Object.values(countByOutcome).reduce((s, c) => s + c, 0);
 
-    if (outcomes.length > 0) {
-      topOutcome = outcomes[0][0];
-      topCount = outcomes[0][1];
-      totalVotes = outcomes.reduce((sum, [, count]) => sum + count, 0);
+    // Consensus strength: what % of total score weight does the top outcome hold
+    let consensusStrength = 0;
 
-      // Consensus if dominant outcome has >60% of votes, or is the only outcome
-      if (outcomes.length === 1) {
-        direction = topOutcome.toLowerCase(); // "yes", "no", "lakers", etc.
-      } else if (topCount / totalVotes > 0.6) {
+    if (outcomesByWeight.length > 0) {
+      topOutcome = outcomesByWeight[0][0];
+      topOutcomeScore = outcomesByWeight[0][1];
+      topCount = countByOutcome[topOutcome] || 0;
+      consensusStrength = totalScoreWeight > 0 ? topOutcomeScore / totalScoreWeight : 0;
+
+      // Direction is set if:
+      // 1. Only one outcome exists, OR
+      // 2. Top outcome holds >60% of total score weight
+      if (outcomesByWeight.length === 1) {
+        direction = topOutcome.toLowerCase();
+        consensusStrength = 1.0;
+      } else if (consensusStrength > 0.6) {
         direction = topOutcome.toLowerCase();
       }
     }
+
+    // Conviction now uses score-weighted direction strength
+    // Strong consensus: all wallets agree → conviction = walletCount × avgScore
+    // Weak consensus: split wallets → conviction is reduced by how split they are
+    const conviction = market.wallets.length * avgScore * consensusStrength;
 
     // Backwards-compatible yesCount/noCount + new generic fields
     const yesCount = market.outcomeCounts['Yes'] || 0;
@@ -891,12 +918,14 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
       direction,
       topOutcome: topOutcome || 'Unknown',
       topOutcomeCount: topCount,
+      topOutcomeScore: +topOutcomeScore.toFixed(1),
       totalOutcomeVotes: totalVotes,
-      outcomeCounts: market.outcomeCounts, // Full breakdown for frontend
+      consensusStrength: +consensusStrength.toFixed(3),  // 0.0 to 1.0
+      outcomeCounts: market.outcomeCounts,
       wallets: market.wallets,
       avgScore,
       avgPnl,
-      conviction,
+      conviction: +conviction.toFixed(2),
     });
   }
 
@@ -1408,6 +1437,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       signal.topOutcome = entry.topOutcome || signal.topOutcome;
       signal.outcomeCounts = entry.outcomeCounts || signal.outcomeCounts;
       signal.avgPnl = +(entry.avgPnl || 0).toFixed(2);
+      signal.consensusStrength = +(entry.consensusStrength || 0).toFixed(3);
 
       // Recompute confidence
       signal.confidence = computeSignalConfidence(signal);
@@ -1430,8 +1460,9 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
 
     } else if (meetsThresholds) {
       // --- OPEN new signal ---
+      const consensusStr = entry.consensusStrength || 0;
       const confidence = computeSignalConfidence({
-        walletCount, avgScore, conviction, direction,
+        walletCount, avgScore, conviction, direction, consensusStrength: consensusStr,
       });
 
       active[signalId] = {
@@ -1459,6 +1490,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         walletCount,
         avgScore: +avgScore.toFixed(2),
         conviction: +conviction.toFixed(2),
+        consensusStrength: +consensusStr.toFixed(3),
         avgPnl: +(entry.avgPnl || 0).toFixed(2),
 
         // Confidence & tier
@@ -1737,21 +1769,26 @@ function computeSignalConfidence(signal) {
   const wc = signal.walletCount || 0;
   const as = signal.avgScore || 0;
   const conv = signal.conviction || 0;
+  const cs = signal.consensusStrength || 0;
 
-  // Wallet count factor (30 pts): more wallets = more confidence, diminishing returns
-  const walletFactor = Math.min(1, Math.log2(1 + wc) / 4) * 30;
+  // Wallet count factor (25 pts): more wallets = more confidence, diminishing returns
+  const walletFactor = Math.min(1, Math.log2(1 + wc) / 4) * 25;
 
-  // Avg score factor (30 pts): higher avg wallet score = better traders backing this
-  const scoreFactor = Math.min(1, as / 60) * 30;
+  // Avg score factor (25 pts): higher avg wallet score = better traders backing this
+  const scoreFactor = Math.min(1, as / 60) * 25;
 
-  // Conviction factor (25 pts): raw conviction strength
-  const convictionFactor = Math.min(1, Math.log10(1 + conv) / 3) * 25;
+  // Conviction factor (20 pts): raw conviction strength (already score-weighted)
+  const convictionFactor = Math.min(1, Math.log10(1 + conv) / 3) * 20;
 
-  // Stability factor (15 pts): penalize signals that flip direction
+  // Consensus strength factor (20 pts): how aligned are the wallets?
+  // 60% agreement → ~12pts, 80% → ~16pts, 100% → 20pts
+  const alignmentFactor = cs * 20;
+
+  // Stability factor (10 pts): penalize signals that flip direction
   const changes = signal.directionChanges || 0;
-  const stabilityFactor = Math.max(0, 1 - changes * 0.3) * 15;
+  const stabilityFactor = Math.max(0, 1 - changes * 0.3) * 10;
 
-  return Math.min(100, walletFactor + scoreFactor + convictionFactor + stabilityFactor);
+  return Math.min(100, walletFactor + scoreFactor + convictionFactor + alignmentFactor + stabilityFactor);
 }
 
 /**
