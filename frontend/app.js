@@ -1121,8 +1121,246 @@ function renderTopMarketsChart(patterns) {
    Signals Tab
    ============================================================================ */
 
+/**
+ * Helper: render a direction badge that handles binary and non-binary outcomes
+ */
+function renderDirectionBadge(direction, row) {
+  const y = row.yesCount || 0;
+  const n = row.noCount || 0;
+  if (direction === 'yes') return `<span class="badge badge-high">YES ${y}</span>`;
+  if (direction === 'no') return `<span class="badge badge-low">NO ${n}</span>`;
+  // Non-binary: show top outcome
+  if (direction !== 'mixed' && row.topOutcome) {
+    const count = row.topOutcomeCount || 0;
+    return `<span class="badge badge-high">${row.topOutcome} (${count})</span>`;
+  }
+  if (row.outcomeCounts && Object.keys(row.outcomeCounts).length > 0) {
+    const sorted = Object.entries(row.outcomeCounts).sort((a, b) => b[1] - a[1]);
+    return sorted.slice(0, 2).map(([outcome, count]) => {
+      const cls = outcome === 'Yes' ? 'badge-high' : outcome === 'No' ? 'badge-low' : 'badge-mid';
+      return `<span class="badge ${cls}" style="margin-right:4px;">${outcome} ${count}</span>`;
+    }).join('');
+  }
+  return `<span class="badge badge-mid">MIXED</span>`;
+}
+
+/**
+ * Render the Signal Engine section (active signals + history + stats)
+ */
+function renderSignalEngine() {
+  const signals = data.analytics.signals || {};
+  const activeSignals = signals.active || [];
+  const signalHistory = signals.history || [];
+  const stats = signals.stats || {};
+
+  // --- Signal Engine Metrics ---
+  const el = (id) => document.getElementById(id);
+
+  const activeEl = el('metric-active-signals');
+  if (activeEl) activeEl.textContent = (stats.activeCount || activeSignals.length || 0).toString();
+
+  const tiersEl = el('metric-signal-tiers');
+  if (tiersEl) {
+    const tb = stats.tierBreakdown || {};
+    tiersEl.innerHTML = `<span class="badge badge-high" style="margin-right:4px;">${tb.elite || 0} Elite</span><span class="badge badge-mid" style="margin-right:4px;">${tb.pro || 0} Pro</span><span class="badge badge-low">${tb.starter || 0} Starter</span>`;
+  }
+
+  const hrEl = el('metric-signal-hitrate');
+  if (hrEl) {
+    const hr = stats.hitRate || 0;
+    hrEl.innerHTML = hr > 0 ? `<span style="color: ${hr >= 50 ? 'var(--green)' : 'var(--red)'}">${hr}%</span>` : '-';
+  }
+
+  const recordEl = el('metric-signal-record');
+  if (recordEl) recordEl.textContent = stats.totalResolved > 0 ? `${stats.wins || 0}W / ${stats.losses || 0}L` : 'No resolved signals yet';
+
+  const pnlEl = el('metric-signal-pnl');
+  if (pnlEl) {
+    const pnl = stats.totalPnl || 0;
+    pnlEl.innerHTML = pnl !== 0 ? `<span style="color: ${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtDollars(pnl)}</span>` : '-';
+  }
+
+  const avgConfEl = el('metric-signal-avg-conf');
+  if (avgConfEl) avgConfEl.textContent = stats.avgConfidence > 0 ? `Avg confidence: ${stats.avgConfidence}` : '';
+
+  const confEl = el('metric-signal-confidence');
+  if (confEl) confEl.textContent = stats.avgConfidence > 0 ? stats.avgConfidence.toFixed(1) : '-';
+
+  const scanActEl = el('metric-signal-scan-activity');
+  if (scanActEl) {
+    const parts = [];
+    if (stats.openedThisScan) parts.push(`+${stats.openedThisScan} new`);
+    if (stats.closedThisScan) parts.push(`-${stats.closedThisScan} closed`);
+    scanActEl.textContent = parts.length > 0 ? parts.join(', ') + ' this scan' : 'No changes this scan';
+  }
+
+  // --- Active Signals Table ---
+  const tierClass = (tier) => {
+    if (tier === 'elite') return 'badge-high';
+    if (tier === 'pro') return 'badge-mid';
+    return 'badge-low';
+  };
+
+  const signalData = activeSignals.map(s => ({
+    marketTitle: s.marketTitle || 'Unknown',
+    slug: s.slug || '',
+    tier: s.tier || 'starter',
+    direction: s.direction || 'mixed',
+    topOutcome: s.topOutcome || null,
+    topOutcomeCount: s.topOutcomeCount || 0,
+    outcomeCounts: s.outcomeCounts || {},
+    walletCount: s.walletCount || 0,
+    confidence: s.confidence || 0,
+    avgScore: s.avgScore || 0,
+    avgPnl: s.avgPnl || 0,
+    scansActive: s.scansActive || 0,
+    peakConfidence: s.peakConfidence || 0,
+    currentWallets: s.currentWallets || [],
+    signalId: s.signalId || '',
+    openedAt: s.openedAt || null,
+  }));
+
+  const signalColumns = [
+    { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'tier', render: v => `<span class="badge ${tierClass(v)}">${v.toUpperCase()}</span>` },
+    { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
+    { field: 'walletCount', render: v => String(v) },
+    { field: 'confidence', render: v => {
+      const cls = v >= 80 ? 'badge-high' : v >= 55 ? 'badge-mid' : 'badge-low';
+      return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
+    }},
+    { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
+    { field: 'avgPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'scansActive', render: v => {
+      const hours = v * 6; // each scan is ~6 hours
+      if (hours < 24) return `${hours}h`;
+      return `${(hours / 24).toFixed(1)}d`;
+    }},
+  ];
+
+  createSortableTable('active-signals-table', signalColumns, signalData, (row) => {
+    showSignalDetail(row);
+  });
+
+  // --- Tier filter buttons ---
+  document.querySelectorAll('.signal-filter').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.signal-filter').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const tier = btn.dataset.tier;
+      const filtered = tier === 'all' ? signalData : signalData.filter(s => s.tier === tier);
+      createSortableTable('active-signals-table', signalColumns, filtered, (row) => {
+        showSignalDetail(row);
+      });
+    };
+  });
+
+  // --- Signal History Table ---
+  const historyData = signalHistory.slice().reverse().map(s => ({
+    marketTitle: s.marketTitle || 'Unknown',
+    slug: s.slug || '',
+    outcome: s.outcome || 'unknown',
+    direction: s.direction || 'mixed',
+    topOutcome: s.topOutcome || null,
+    outcomeCounts: s.outcomeCounts || {},
+    peakConfidence: s.peakConfidence || 0,
+    peakWallets: s.peakWallets || 0,
+    closedPnl: s.closedPnl || 0,
+    duration: s.duration || 0,
+    closeReason: s.closeReason || 'unknown',
+  }));
+
+  const historyColumns = [
+    { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
+    { field: 'outcome', render: v => {
+      if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
+      if (v === 'loss') return `<span class="badge badge-low">LOSS</span>`;
+      if (v === 'push') return `<span class="badge badge-mid">PUSH</span>`;
+      return `<span class="badge badge-mid">${v.toUpperCase()}</span>`;
+    }},
+    { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
+    { field: 'peakConfidence', render: v => {
+      const cls = v >= 80 ? 'badge-high' : v >= 55 ? 'badge-mid' : 'badge-low';
+      return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
+    }},
+    { field: 'peakWallets', render: v => String(v) },
+    { field: 'closedPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'duration', render: v => {
+      const hours = v * 6;
+      if (hours < 24) return `${hours}h`;
+      return `${(hours / 24).toFixed(1)}d`;
+    }},
+    { field: 'closeReason', render: v => `<span class="badge badge-mid">${v}</span>` },
+  ];
+
+  createSortableTable('signal-history-table', historyColumns, historyData);
+}
+
+/**
+ * Show detail panel for a signal
+ */
+function showSignalDetail(signal) {
+  const wallets = (signal.currentWallets || []).map((w, idx) => {
+    const sideClass = w.outcome === 'Yes' ? 'badge-high' : w.outcome === 'No' ? 'badge-low' : 'badge-mid';
+    return `
+      <div class="detail-list-item">
+        <div class="detail-list-item-label">${idx + 1}. <span class="address-link" onclick="openPolymarketProfile('${w.address}')">${truncAddr(w.address)}</span></div>
+        <div class="detail-list-item-value">
+          <span class="badge ${sideClass}" style="margin-right:4px;">${w.outcome || 'Unknown'}</span>
+          <span class="badge ${scoreClass(w.score || 0)}">${(w.score || 0).toFixed(1)}</span>
+          <span class="${pnlClass(w.pnl || 0)}">${fmtDollars(w.pnl || 0)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const tierClass = signal.tier === 'elite' ? 'badge-high' : signal.tier === 'pro' ? 'badge-mid' : 'badge-low';
+  const confClass = signal.confidence >= 80 ? 'badge-high' : signal.confidence >= 55 ? 'badge-mid' : 'badge-low';
+
+  const html = `
+    <div class="detail-grid">
+      <div class="detail-item">
+        <div class="detail-item-label">Market</div>
+        <div class="detail-item-value" style="font-size: 14px;">${signal.slug ? `<a href="${polymarketUrl(signal.slug)}" target="_blank" style="color: var(--accent-light);">${signal.marketTitle}</a>` : signal.marketTitle}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Tier</div>
+        <div class="detail-item-value"><span class="badge ${tierClass}">${(signal.tier || 'starter').toUpperCase()}</span></div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Confidence</div>
+        <div class="detail-item-value"><span class="badge ${confClass}">${(signal.confidence || 0).toFixed(1)}</span> (peak: ${(signal.peakConfidence || 0).toFixed(1)})</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Backing Wallets</div>
+        <div class="detail-item-value">${signal.walletCount}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Avg PnL</div>
+        <div class="detail-item-value"><span class="${pnlClass(signal.avgPnl || 0)}">${fmtDollars(signal.avgPnl || 0)}</span></div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Signal Age</div>
+        <div class="detail-item-value">${signal.openedAt ? relativeTime(signal.openedAt) : `${signal.scansActive} scans`}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Backing Wallets</h3>
+      <div class="detail-list">
+        ${wallets || '<div class="empty-state">No wallet data available</div>'}
+      </div>
+    </div>
+  `;
+
+  showDetailPanel('signals', html);
+}
+
 function renderSignals() {
   if (!data.analytics) return;
+
+  // === Signal Engine Stats & Tables ===
+  renderSignalEngine();
 
   // === Estate Performance Summary ===
   const rp = data.analytics.resolvedPositions || {};
@@ -1236,13 +1474,7 @@ function renderSignals() {
 
   const emergingColumns = [
     { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
-    { field: 'direction', render: (v, row) => {
-      const y = row.yesCount || 0;
-      const n = row.noCount || 0;
-      if (v === 'yes') return `<span class="badge badge-high">YES ${y}</span>`;
-      if (v === 'no') return `<span class="badge badge-low">NO ${n}</span>`;
-      return `<span class="badge badge-high" style="margin-right:4px;">YES ${y}</span><span class="badge badge-low">NO ${n}</span>`;
-    }},
+    { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
     { field: 'walletCount', render: v => String(v) },
     { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` }
   ];

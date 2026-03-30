@@ -286,7 +286,88 @@
     <div id="tab-signals" class="tab-content">
       <div class="tab-header">
         <h1>Signals</h1>
-        <p class="subtitle">Recent Wins & Signal Opportunities</p>
+        <p class="subtitle">Curated Trading Signals from Smart Wallet Consensus</p>
+      </div>
+
+      <!-- Signal Engine Stats -->
+      <div class="section">
+        <h2>Signal Engine</h2>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-label">Active Signals</div>
+            <div class="metric-value" id="metric-active-signals">-</div>
+            <div class="metric-sub" id="metric-signal-tiers">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Hit Rate</div>
+            <div class="metric-value" id="metric-signal-hitrate">-</div>
+            <div class="metric-sub" id="metric-signal-record">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Signal PnL</div>
+            <div class="metric-value" id="metric-signal-pnl">-</div>
+            <div class="metric-sub" id="metric-signal-avg-conf">-</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Avg Confidence</div>
+            <div class="metric-value" id="metric-signal-confidence">-</div>
+            <div class="metric-sub" id="metric-signal-scan-activity">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Signals Table -->
+      <div class="section">
+        <h2>Active Signals</h2>
+        <div class="signal-tier-filters" style="margin-bottom: 12px;">
+          <button class="btn btn-sm signal-filter active" data-tier="all">All</button>
+          <button class="btn btn-sm signal-filter" data-tier="elite">Elite</button>
+          <button class="btn btn-sm signal-filter" data-tier="pro">Pro</button>
+          <button class="btn btn-sm signal-filter" data-tier="starter">Starter</button>
+        </div>
+        <div class="table-wrapper">
+          <table id="active-signals-table" class="data-table sortable">
+            <thead>
+              <tr>
+                <th data-field="marketTitle">Market</th>
+                <th data-field="tier">Tier</th>
+                <th data-field="direction">Direction</th>
+                <th data-field="walletCount" class="sortable">Wallets</th>
+                <th data-field="confidence" class="sortable">Confidence</th>
+                <th data-field="avgScore" class="sortable">Avg Score</th>
+                <th data-field="avgPnl" class="sortable">Avg PnL</th>
+                <th data-field="scansActive" class="sortable">Age (scans)</th>
+              </tr>
+            </thead>
+            <tbody id="active-signals-tbody">
+              <tr><td colspan="8" class="empty-state">Loading signals...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Signal History / Track Record -->
+      <div class="section">
+        <h2>Signal Track Record</h2>
+        <div class="table-wrapper">
+          <table id="signal-history-table" class="data-table sortable">
+            <thead>
+              <tr>
+                <th data-field="marketTitle">Market</th>
+                <th data-field="outcome">Result</th>
+                <th data-field="direction">Direction</th>
+                <th data-field="peakConfidence" class="sortable">Peak Confidence</th>
+                <th data-field="peakWallets" class="sortable">Peak Wallets</th>
+                <th data-field="closedPnl" class="sortable">PnL</th>
+                <th data-field="duration" class="sortable">Duration</th>
+                <th data-field="closeReason">Close Reason</th>
+              </tr>
+            </thead>
+            <tbody id="signal-history-tbody">
+              <tr><td colspan="8" class="empty-state">No signal history yet</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- Estate Performance Summary -->

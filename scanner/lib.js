@@ -1310,6 +1310,325 @@ function saveGzJSON(filepath, data) {
 }
 
 // ============================================================================
+// Signal Engine
+// ============================================================================
+
+/**
+ * Signal thresholds — tune these as we gather performance data
+ */
+const SIGNAL_THRESHOLDS = {
+  MIN_WALLETS: 4,         // Minimum clean wallets converging on a market
+  MIN_AVG_SCORE: 30,      // Minimum average wallet score
+  MIN_CONVICTION: 50,     // Minimum raw conviction (wallets × avgScore)
+  CONSENSUS_RATIO: 0.6,   // 60%+ must agree on direction for a signal
+  STALE_SCANS: 28,        // Close signal if no wallet activity for 28 scans (~7 days)
+};
+
+/**
+ * Signal confidence tiers — determines subscription tier visibility
+ */
+function getSignalTier(confidence) {
+  if (confidence >= 80) return 'elite';    // High conviction, many wallets, strong scores
+  if (confidence >= 55) return 'pro';      // Solid signal, good backing
+  return 'starter';                        // Emerging signal, worth watching
+}
+
+/**
+ * Generate, update, and close signals based on current consensus data.
+ *
+ * Signal lifecycle:
+ *   1. OPEN — consensus crosses thresholds → new signal created
+ *   2. ACTIVE — updated each scan with latest wallet count, scores, direction
+ *   3. CLOSED — market resolves OR wallets exit OR goes stale → outcome recorded
+ *
+ * @param {Array} consensus - Current consensus data from computeConsensus()
+ * @param {object} existingSignals - Previous signals keyed by signalId {active: {}, history: []}
+ * @param {Map} walletData - Clean wallet map
+ * @param {Map} marketLookup - Market lookup map
+ * @param {number} scanIndex - Current scan number
+ * @returns {object} Updated signals {active: {}, history: [], stats: {}}
+ */
+function processSignals(consensus, existingSignals, walletData, marketLookup, scanIndex) {
+  const active = { ...(existingSignals.active || {}) };
+  const history = [...(existingSignals.history || [])];
+  const now = new Date().toISOString();
+
+  // Track what consensus entries we see this scan
+  const seenGroups = new Set();
+
+  let opened = 0, updated = 0, closed = 0;
+
+  // --- Phase 1: Process current consensus → open or update signals ---
+  for (const entry of consensus) {
+    const groupKey = entry.slug || entry.tokenId;
+    if (!groupKey) continue;
+    seenGroups.add(groupKey);
+
+    const walletCount = entry.walletCount || 0;
+    const avgScore = entry.avgScore || 0;
+    const conviction = entry.conviction || walletCount * avgScore;
+    const direction = entry.direction || 'mixed';
+
+    // Check if this consensus entry meets signal thresholds
+    const meetsThresholds =
+      walletCount >= SIGNAL_THRESHOLDS.MIN_WALLETS &&
+      avgScore >= SIGNAL_THRESHOLDS.MIN_AVG_SCORE &&
+      conviction >= SIGNAL_THRESHOLDS.MIN_CONVICTION &&
+      direction !== 'mixed';
+
+    const signalId = `sig_${groupKey}`;
+
+    if (active[signalId]) {
+      // --- UPDATE existing signal ---
+      const signal = active[signalId];
+      signal.lastUpdatedScan = scanIndex;
+      signal.lastUpdatedAt = now;
+      signal.scansSinceUpdate = 0;
+
+      // Track direction changes
+      if (direction !== signal.direction && direction !== 'mixed') {
+        signal.directionChanges = (signal.directionChanges || 0) + 1;
+        signal.previousDirection = signal.direction;
+        signal.direction = direction;
+      }
+
+      // Update metrics
+      signal.walletCount = walletCount;
+      signal.avgScore = +avgScore.toFixed(2);
+      signal.conviction = +conviction.toFixed(2);
+      signal.topOutcome = entry.topOutcome || signal.topOutcome;
+      signal.outcomeCounts = entry.outcomeCounts || signal.outcomeCounts;
+      signal.avgPnl = +(entry.avgPnl || 0).toFixed(2);
+
+      // Recompute confidence
+      signal.confidence = computeSignalConfidence(signal);
+      signal.tier = getSignalTier(signal.confidence);
+
+      // Track peak values
+      signal.peakWallets = Math.max(signal.peakWallets || 0, walletCount);
+      signal.peakConviction = Math.max(signal.peakConviction || 0, conviction);
+      signal.peakConfidence = Math.max(signal.peakConfidence || 0, signal.confidence);
+
+      // Store wallet snapshot
+      signal.currentWallets = (entry.wallets || []).map(w => ({
+        address: w.address,
+        score: w.score,
+        outcome: w.outcome,
+        pnl: w.pnl,
+      }));
+
+      updated++;
+
+    } else if (meetsThresholds) {
+      // --- OPEN new signal ---
+      const confidence = computeSignalConfidence({
+        walletCount, avgScore, conviction, direction,
+      });
+
+      active[signalId] = {
+        signalId,
+        marketTitle: entry.marketTitle || 'Unknown',
+        slug: entry.slug || '',
+        tokenId: entry.tokenId || '',
+        groupKey,
+
+        // Timing
+        openedAt: now,
+        openedScan: scanIndex,
+        lastUpdatedAt: now,
+        lastUpdatedScan: scanIndex,
+        scansSinceUpdate: 0,
+        scansActive: 1,
+
+        // Direction
+        direction,
+        topOutcome: entry.topOutcome || direction,
+        outcomeCounts: entry.outcomeCounts || {},
+        directionChanges: 0,
+
+        // Metrics at open
+        walletCount,
+        avgScore: +avgScore.toFixed(2),
+        conviction: +conviction.toFixed(2),
+        avgPnl: +(entry.avgPnl || 0).toFixed(2),
+
+        // Confidence & tier
+        confidence: +confidence.toFixed(1),
+        tier: getSignalTier(confidence),
+
+        // Peak tracking
+        peakWallets: walletCount,
+        peakConviction: conviction,
+        peakConfidence: confidence,
+
+        // Status
+        status: 'active',
+        outcome: null,
+        closedAt: null,
+        closedScan: null,
+        closeReason: null,
+
+        // Wallet snapshot
+        currentWallets: (entry.wallets || []).map(w => ({
+          address: w.address,
+          score: w.score,
+          outcome: w.outcome,
+          pnl: w.pnl,
+        })),
+      };
+
+      opened++;
+    }
+  }
+
+  // --- Phase 2: Check existing signals not in current consensus → stale/close ---
+  for (const [signalId, signal] of Object.entries(active)) {
+    const groupKey = signal.groupKey;
+    signal.scansActive = (signal.scansActive || 0) + 1;
+
+    if (!seenGroups.has(groupKey)) {
+      // Signal's market no longer in consensus — wallets may have exited
+      signal.scansSinceUpdate = (signal.scansSinceUpdate || 0) + 1;
+
+      if (signal.scansSinceUpdate >= SIGNAL_THRESHOLDS.STALE_SCANS) {
+        // Close as stale
+        closeSignal(active, history, signalId, 'stale', scanIndex, now);
+        closed++;
+      }
+    }
+
+    // Check if market resolved by looking at positions
+    // If all wallets holding this market have amount ≈ 0 (resolved), close as resolved
+    if (signal.currentWallets && signal.currentWallets.length > 0) {
+      const allResolved = checkIfMarketResolved(signal, walletData, marketLookup);
+      if (allResolved) {
+        // Determine if signal was correct based on PnL of backing wallets
+        const totalPnl = signal.currentWallets.reduce((s, w) => s + (w.pnl || 0), 0);
+        const signalOutcome = totalPnl > 0 ? 'win' : totalPnl < 0 ? 'loss' : 'push';
+        closeSignal(active, history, signalId, 'resolved', scanIndex, now, signalOutcome, totalPnl);
+        closed++;
+      }
+    }
+  }
+
+  // --- Phase 3: Compute aggregate stats ---
+  const activeSignals = Object.values(active);
+  const allHistory = history;
+
+  const wins = allHistory.filter(s => s.outcome === 'win').length;
+  const losses = allHistory.filter(s => s.outcome === 'loss').length;
+  const resolved = wins + losses;
+  const hitRate = resolved > 0 ? +(wins / resolved * 100).toFixed(1) : 0;
+  const totalHistoryPnl = allHistory.reduce((s, sig) => s + (sig.closedPnl || 0), 0);
+
+  const stats = {
+    activeCount: activeSignals.length,
+    historyCount: allHistory.length,
+    totalResolved: resolved,
+    wins,
+    losses,
+    hitRate,
+    totalPnl: +totalHistoryPnl.toFixed(2),
+    avgConfidence: activeSignals.length > 0
+      ? +(activeSignals.reduce((s, sig) => s + sig.confidence, 0) / activeSignals.length).toFixed(1)
+      : 0,
+    tierBreakdown: {
+      elite: activeSignals.filter(s => s.tier === 'elite').length,
+      pro: activeSignals.filter(s => s.tier === 'pro').length,
+      starter: activeSignals.filter(s => s.tier === 'starter').length,
+    },
+    openedThisScan: opened,
+    updatedThisScan: updated,
+    closedThisScan: closed,
+  };
+
+  return { active, history, stats };
+}
+
+/**
+ * Compute signal confidence score (0-100)
+ * Factors: wallet count, avg score, conviction, direction stability
+ */
+function computeSignalConfidence(signal) {
+  const wc = signal.walletCount || 0;
+  const as = signal.avgScore || 0;
+  const conv = signal.conviction || 0;
+
+  // Wallet count factor (30 pts): more wallets = more confidence, diminishing returns
+  const walletFactor = Math.min(1, Math.log2(1 + wc) / 4) * 30;
+
+  // Avg score factor (30 pts): higher avg wallet score = better traders backing this
+  const scoreFactor = Math.min(1, as / 60) * 30;
+
+  // Conviction factor (25 pts): raw conviction strength
+  const convictionFactor = Math.min(1, Math.log10(1 + conv) / 3) * 25;
+
+  // Stability factor (15 pts): penalize signals that flip direction
+  const changes = signal.directionChanges || 0;
+  const stabilityFactor = Math.max(0, 1 - changes * 0.3) * 15;
+
+  return Math.min(100, walletFactor + scoreFactor + convictionFactor + stabilityFactor);
+}
+
+/**
+ * Close a signal and move it to history
+ */
+function closeSignal(active, history, signalId, reason, scanIndex, timestamp, outcome = null, pnl = 0) {
+  const signal = active[signalId];
+  if (!signal) return;
+
+  signal.status = 'closed';
+  signal.closedAt = timestamp;
+  signal.closedScan = scanIndex;
+  signal.closeReason = reason;
+  signal.outcome = outcome;
+  signal.closedPnl = +pnl.toFixed(2);
+  signal.duration = scanIndex - (signal.openedScan || scanIndex);
+
+  // Strip wallet snapshot to save space in history
+  delete signal.currentWallets;
+
+  history.push(signal);
+  delete active[signalId];
+
+  // Keep history at a manageable size (last 500 signals)
+  if (history.length > 500) {
+    history.splice(0, history.length - 500);
+  }
+}
+
+/**
+ * Check if a signal's market has resolved by checking if all backing wallets
+ * now have ~0 shares (meaning positions closed/resolved)
+ */
+function checkIfMarketResolved(signal, walletData, marketLookup) {
+  if (!signal.currentWallets || signal.currentWallets.length === 0) return false;
+
+  let resolvedCount = 0;
+  let checkedCount = 0;
+
+  for (const sw of signal.currentWallets) {
+    const wallet = walletData.get(sw.address);
+    if (!wallet || !wallet.positions) continue;
+
+    // Find this wallet's position in the signal's market
+    const pos = wallet.positions.find(p => {
+      const mi = marketLookup.get(p.tokenId);
+      const gk = mi?.groupId || p.tokenId;
+      return gk === signal.groupKey || (mi?.slug && mi.slug === signal.slug);
+    });
+
+    if (pos) {
+      checkedCount++;
+      if (pos.amount <= 0.01) resolvedCount++; // Position closed
+    }
+  }
+
+  // Consider resolved if we checked at least 2 wallets and all positions are closed
+  return checkedCount >= 2 && resolvedCount === checkedCount;
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -1331,6 +1650,8 @@ export {
   computeActivePositions,
   findBiggestWins,
   computeResolvedPositions,
+  processSignals,
+  SIGNAL_THRESHOLDS,
   refreshTrackedWallets,
   loadJSON,
   saveJSON,

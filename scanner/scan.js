@@ -19,6 +19,7 @@ import {
   computeActivePositions,
   findBiggestWins,
   computeResolvedPositions,
+  processSignals,
   refreshTrackedWallets,
   loadJSON,
   saveJSON,
@@ -495,7 +496,27 @@ async function runScan() {
   try { biggestWins = findBiggestWins(walletMap, marketMap, 200); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
   try { resolvedPositions = computeResolvedPositions(walletMap, marketMap, scanTimestampMap); } catch (e) { console.error(`  Resolved positions error: ${e.message}`); }
 
-  console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}, Resolved: ${resolvedPositions.positions?.length || 0}\n`);
+  console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}, Resolved: ${resolvedPositions.positions?.length || 0}`);
+
+  // ===== Step 6b: Process Signals =====
+  console.log('\n📡 Processing signals...');
+  const signalsFile = path.join(DATA_DIR, 'signals.json.gz');
+  let existingSignals = loadGzJSON(signalsFile) || { active: {}, history: [], stats: {} };
+
+  let signals;
+  try {
+    signals = processSignals(consensus, existingSignals, walletMap, marketMap, state.scanCount);
+  } catch (e) {
+    console.error(`  Signal processing error: ${e.message}`);
+    signals = existingSignals; // Fall back to previous state
+  }
+
+  const ss = signals.stats || {};
+  console.log(`  Active signals: ${ss.activeCount || 0} (${ss.tierBreakdown?.elite || 0} elite, ${ss.tierBreakdown?.pro || 0} pro, ${ss.tierBreakdown?.starter || 0} starter)`);
+  if (ss.openedThisScan) console.log(`  📈 ${ss.openedThisScan} new signals opened`);
+  if (ss.closedThisScan) console.log(`  📉 ${ss.closedThisScan} signals closed`);
+  if (ss.totalResolved > 0) console.log(`  🎯 Track record: ${ss.wins}W/${ss.losses}L (${ss.hitRate}% hit rate, ${ss.totalPnl >= 0 ? '+' : ''}$${ss.totalPnl.toFixed(0)} PnL)`);
+  console.log();
 
   // ===== Step 7: Build Leaderboard =====
   const leaderboard = topWallets.map((w, i) => ({
@@ -578,6 +599,13 @@ async function runScan() {
   analytics.biggestWins = biggestWins;
   analytics.resolvedPositions = resolvedPositions;
 
+  // Signal data for frontend
+  analytics.signals = {
+    active: Object.values(signals.active || {}),
+    history: (signals.history || []).slice(-100), // Last 100 for frontend
+    stats: signals.stats || {},
+  };
+
   if (!Array.isArray(analytics.trendline)) analytics.trendline = [];
   analytics.trendline.push({ scanIndex: state.scanCount, timestamp: analytics.lastUpdated, avgScore, topScore, walletCount: topAddresses.size, totalPnl: analytics.summary.totalPnl });
   if (analytics.trendline.length > 100) analytics.trendline = analytics.trendline.slice(-100);
@@ -588,6 +616,10 @@ async function runScan() {
     try { fs.unlinkSync(analyticsFilePlain); } catch {}
   }
   console.log(`  ✓ analytics.json.gz`);
+
+  // Save full signals state (active + complete history)
+  saveGzJSON(signalsFile, signals);
+  console.log(`  ✓ signals.json.gz (${Object.keys(signals.active || {}).length} active, ${(signals.history || []).length} history)`);
 
   // ===== Done =====
   const duration = Math.round((Date.now() - scanStart) / 1000);
