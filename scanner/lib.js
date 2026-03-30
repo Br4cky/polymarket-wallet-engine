@@ -1351,18 +1351,29 @@ function saveGzJSON(filepath, data) {
  */
 const SIGNAL_THRESHOLDS = {
   // Consensus signals — multiple wallets agree
-  MIN_WALLETS: 4,         // Minimum clean wallets converging on a market
-  MIN_AVG_SCORE: 40,      // Minimum average wallet score (was 30 — too permissive)
-  MIN_CONVICTION: 100,    // Minimum raw conviction (was 50 — allowed weak signals through)
+  // Calibrated against scan #52: 1424 wallets, targeting ~50-70 consensus signals
+  MIN_WALLETS: 12,        // 12+ wallets = real convergence (was 4 — too easy with 1400 wallets)
+  MIN_AVG_SCORE: 60,      // Avg score 60+ = genuinely skilled pool (was 40)
+  MIN_CONVICTION: 500,    // Raw conviction 500+ = strong signal (was 100)
   CONSENSUS_RATIO: 0.6,   // 60%+ score-weighted must agree on direction
   STALE_SCANS: 16,        // Close signal if no wallet activity for 16 scans (~4 days)
 
+  // Cluster signals — small group of strong wallets (3-11), bridges gap between solo and consensus
+  // Higher per-wallet quality than consensus since fewer wallets to validate
+  CLUSTER_MIN_WALLETS: 3,        // At least 3 wallets agreeing
+  CLUSTER_MAX_WALLETS: 11,       // Below consensus threshold (consensus starts at 12)
+  CLUSTER_MIN_AVG_SCORE: 70,     // Higher bar than consensus (60) — fewer wallets need to be better
+  CLUSTER_MIN_CONVICTION: 250,   // Lower absolute conviction (fewer wallets) but score-weighted
+  CLUSTER_STALE_SCANS: 14,       // Between solo (12) and consensus (16)
+
   // Solo signals — single high-performing wallet, no consensus required
-  SOLO_MIN_SCORE: 55,            // Wallet must score 55+ to generate solo signals
-  SOLO_MIN_WIN_RATE: 0.72,       // 72%+ win rate
-  SOLO_MIN_RESOLVED: 50,         // At least 50 resolved positions (was 40 — more proven track record needed)
-  SOLO_MIN_PNL: 10000,           // $10k+ realized PnL (was $5k — raises the bar)
-  SOLO_MIN_POSITION_VALUE: 100,  // Position must be worth $100+ (was $50 — filter more dust)
+  // Calibrated: 95 wallets were generating 4100 signals (43 each). Target ~20-40 solo signals.
+  SOLO_MIN_SCORE: 75,            // Top-tier wallet only (was 55)
+  SOLO_MIN_WIN_RATE: 0.85,       // 85%+ win rate — truly elite (was 0.72)
+  SOLO_MIN_RESOLVED: 100,        // 100+ resolved = deep track record (was 50)
+  SOLO_MIN_PNL: 50000,           // $50k+ realized PnL (was $10k)
+  SOLO_MIN_POSITION_VALUE: 500,  // $500+ position = real conviction (was $100)
+  SOLO_MAX_PER_WALLET: 3,        // Max 3 solo signals per wallet (prevents portfolio flooding)
   SOLO_STALE_SCANS: 12,          // Solo signals go stale faster (12 scans ≈ 3 days)
 };
 
@@ -1528,8 +1539,128 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     }
   }
 
+  // --- Phase 1a: Cluster signals — small groups of strong wallets (3-11) ---
+  let clusterOpened = 0, clusterUpdated = 0;
+  for (const entry of consensus) {
+    const groupKey = entry.groupKey || entry.slug || entry.tokenId;
+    if (!groupKey) continue;
+
+    const walletCount = entry.walletCount || 0;
+    const avgScore = entry.avgScore || 0;
+    const conviction = entry.conviction || walletCount * avgScore;
+    const direction = entry.direction || 'mixed';
+    const signalId = `sig_${groupKey}`;
+
+    // Skip if already handled as a consensus signal (12+)
+    if (active[signalId] && active[signalId].signalType !== 'cluster') continue;
+
+    // Cluster range: 3-11 wallets
+    if (walletCount < SIGNAL_THRESHOLDS.CLUSTER_MIN_WALLETS ||
+        walletCount > SIGNAL_THRESHOLDS.CLUSTER_MAX_WALLETS) continue;
+
+    const meetsClusterThresholds =
+      avgScore >= SIGNAL_THRESHOLDS.CLUSTER_MIN_AVG_SCORE &&
+      conviction >= SIGNAL_THRESHOLDS.CLUSTER_MIN_CONVICTION &&
+      direction !== 'mixed';
+
+    if (active[signalId]) {
+      // Update existing cluster signal
+      const signal = active[signalId];
+      signal.lastUpdatedScan = scanIndex;
+      signal.lastUpdatedAt = now;
+      signal.scansSinceUpdate = 0;
+
+      if (direction !== signal.direction && direction !== 'mixed') {
+        signal.directionChanges = (signal.directionChanges || 0) + 1;
+        signal.previousDirection = signal.direction;
+        signal.direction = direction;
+      }
+
+      signal.walletCount = walletCount;
+      signal.avgScore = +avgScore.toFixed(2);
+      signal.conviction = +conviction.toFixed(2);
+      signal.topOutcome = entry.topOutcome || signal.topOutcome;
+      signal.outcomeCounts = entry.outcomeCounts || {};
+      signal.avgPnl = +(entry.avgPnl || 0).toFixed(2);
+      signal.consensusStrength = +(entry.consensusStrength || 0).toFixed(3);
+
+      // If it grew past cluster range into consensus territory, upgrade type
+      if (walletCount >= SIGNAL_THRESHOLDS.MIN_WALLETS) {
+        signal.signalType = 'consensus';
+        signal.confidence = computeSignalConfidence(signal);
+      } else {
+        signal.confidence = computeClusterConfidence(signal);
+      }
+      signal.tier = getSignalTier(signal.confidence);
+
+      signal.peakWallets = Math.max(signal.peakWallets || 0, walletCount);
+      signal.peakConviction = Math.max(signal.peakConviction || 0, conviction);
+      signal.peakConfidence = Math.max(signal.peakConfidence || 0, signal.confidence);
+
+      signal.currentWallets = (entry.wallets || []).map(w => ({
+        address: w.address, score: w.score, outcome: w.outcome, pnl: w.pnl,
+      }));
+
+      clusterUpdated++;
+
+    } else if (meetsClusterThresholds) {
+      // Open new cluster signal
+      const consensusStr = entry.consensusStrength || 0;
+      const confidence = computeClusterConfidence({
+        walletCount, avgScore, conviction, direction, consensusStrength: consensusStr,
+      });
+
+      active[signalId] = {
+        signalId,
+        signalType: 'cluster',
+        marketTitle: entry.marketTitle || 'Unknown',
+        slug: entry.slug || '',
+        tokenId: entry.tokenId || '',
+        groupKey,
+        openedAt: now,
+        openedScan: scanIndex,
+        lastUpdatedAt: now,
+        lastUpdatedScan: scanIndex,
+        scansSinceUpdate: 0,
+        scansActive: 1,
+        direction,
+        topOutcome: entry.topOutcome || direction,
+        outcomeCounts: entry.outcomeCounts || {},
+        directionChanges: 0,
+        walletCount,
+        avgScore: +avgScore.toFixed(2),
+        conviction: +conviction.toFixed(2),
+        consensusStrength: +consensusStr.toFixed(3),
+        avgPnl: +(entry.avgPnl || 0).toFixed(2),
+        confidence: +confidence.toFixed(1),
+        tier: getSignalTier(confidence),
+        peakWallets: walletCount,
+        peakConviction: conviction,
+        peakConfidence: confidence,
+        status: 'active',
+        outcome: null,
+        closedAt: null,
+        closedScan: null,
+        closeReason: null,
+        currentWallets: (entry.wallets || []).map(w => ({
+          address: w.address, score: w.score, outcome: w.outcome, pnl: w.pnl,
+        })),
+      };
+
+      clusterOpened++;
+    }
+  }
+
   // --- Phase 1b: Solo signals — high-performing individual wallets ---
   let soloOpened = 0;
+  const soloCountPerWallet = new Map(); // Track per-wallet solo signal count
+  // Pre-count existing solo signals per wallet
+  for (const [sid, sig] of Object.entries(active)) {
+    if (sig.signalType === 'solo' && sig.soloWallet) {
+      soloCountPerWallet.set(sig.soloWallet, (soloCountPerWallet.get(sig.soloWallet) || 0) + 1);
+    }
+  }
+
   for (const [address, wallet] of walletData) {
     const stats = wallet.stats;
     if (!stats || !wallet.positions) continue;
@@ -1543,9 +1674,23 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
 
     if (!qualifiesForSolo) continue;
 
+    // Per-wallet cap — only top N positions become signals
+    const maxPerWallet = SIGNAL_THRESHOLDS.SOLO_MAX_PER_WALLET || 3;
+    const currentCount = soloCountPerWallet.get(address) || 0;
+    if (currentCount >= maxPerWallet) continue;
+
+    // Sort positions by value (highest first) so we pick the best ones
+    const activePositions = wallet.positions
+      .filter(p => p.amount > 0.01)
+      .map(p => {
+        const ep = p.avgPrice || (p.amount > 0 ? Math.min(1, p.totalBought / p.amount) : 0);
+        return { ...p, _value: p.amount * ep };
+      })
+      .sort((a, b) => b._value - a._value);
+
     // Check each active position for solo signal potential
-    for (const pos of wallet.positions) {
-      if (pos.amount <= 0.01) continue; // Only active positions
+    for (const pos of activePositions) {
+      if ((soloCountPerWallet.get(address) || 0) >= maxPerWallet) break;
 
       const tokenId = pos.tokenId;
       const marketInfo = marketLookup.get(tokenId) || {};
@@ -1655,6 +1800,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
 
         soloOpened++;
         opened++;
+        soloCountPerWallet.set(address, (soloCountPerWallet.get(address) || 0) + 1);
       }
     }
   }
@@ -1667,12 +1813,14 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     // Determine stale threshold based on signal type
     const staleThreshold = signal.signalType === 'solo'
       ? SIGNAL_THRESHOLDS.SOLO_STALE_SCANS
-      : SIGNAL_THRESHOLDS.STALE_SCANS;
+      : signal.signalType === 'cluster'
+        ? SIGNAL_THRESHOLDS.CLUSTER_STALE_SCANS
+        : SIGNAL_THRESHOLDS.STALE_SCANS;
 
-    const isConsensusSignal = !signal.signalType || signal.signalType === 'consensus';
+    const isGroupSignal = !signal.signalType || signal.signalType === 'consensus' || signal.signalType === 'cluster';
 
-    if (isConsensusSignal && !seenGroups.has(groupKey)) {
-      // Consensus signal's market no longer in consensus — wallets may have exited
+    if (isGroupSignal && !seenGroups.has(groupKey)) {
+      // Consensus/cluster signal's market no longer in consensus — wallets may have exited
       signal.scansSinceUpdate = (signal.scansSinceUpdate || 0) + 1;
 
       if (signal.scansSinceUpdate >= staleThreshold) {
@@ -1779,11 +1927,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
   const totalHistoryPnl = allHistory.reduce((s, sig) => s + (sig.closedPnl || 0), 0);
 
   const consensusSignals = activeSignals.filter(s => !s.signalType || s.signalType === 'consensus');
+  const clusterSignals = activeSignals.filter(s => s.signalType === 'cluster');
   const soloSignals = activeSignals.filter(s => s.signalType === 'solo');
 
   const stats = {
     activeCount: activeSignals.length,
     consensusCount: consensusSignals.length,
+    clusterCount: clusterSignals.length,
     soloCount: soloSignals.length,
     historyCount: allHistory.length,
     totalResolved: resolved,
@@ -1801,9 +1951,11 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     },
     typeBreakdown: {
       consensus: consensusSignals.length,
+      cluster: clusterSignals.length,
       solo: soloSignals.length,
     },
     openedThisScan: opened,
+    clusterOpenedThisScan: clusterOpened,
     soloOpenedThisScan: soloOpened,
     updatedThisScan: updated,
     closedThisScan: closed,
@@ -1814,7 +1966,10 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
 
 /**
  * Compute signal confidence score (0-100)
- * Factors: wallet count, avg score, conviction, direction stability
+ * Calibrated so minimum-qualifying signals score ~30-40 (starter),
+ * strong signals score ~55-75 (pro), and only exceptional signals hit 80+ (elite).
+ *
+ * Target distribution: ~50-60% starter, ~25-35% pro, ~10-15% elite
  */
 function computeSignalConfidence(signal) {
   const wc = signal.walletCount || 0;
@@ -1822,49 +1977,97 @@ function computeSignalConfidence(signal) {
   const conv = signal.conviction || 0;
   const cs = signal.consensusStrength || 0;
 
-  // Wallet count factor (25 pts): more wallets = more confidence, diminishing returns
-  const walletFactor = Math.min(1, Math.log2(1 + wc) / 4) * 25;
+  // Wallet count factor (25 pts): 12 wallets (min) → ~8pts, 30 → ~16pts, 80+ → ~23pts
+  // Steeper curve: need 50+ wallets for full points
+  const walletFactor = Math.min(1, Math.pow(wc / 80, 0.7)) * 25;
 
-  // Avg score factor (25 pts): higher avg wallet score = better traders backing this
-  const scoreFactor = Math.min(1, as / 60) * 25;
+  // Avg score factor (25 pts): 60 (min) → ~10pts, 75 → ~17pts, 90+ → ~24pts
+  // Shifted reference to 95 so minimum threshold gets ~40% of points
+  const scoreFactor = Math.min(1, Math.pow(Math.max(0, as - 40) / 55, 1.3)) * 25;
 
-  // Conviction factor (20 pts): raw conviction strength (already score-weighted)
-  const convictionFactor = Math.min(1, Math.log10(1 + conv) / 3) * 20;
+  // Conviction factor (20 pts): 500 (min) → ~5pts, 2000 → ~11pts, 10000+ → ~18pts
+  // Much steeper: need log10(10001)≈4.0 / 5.0 = 80% for near-max
+  const convictionFactor = Math.min(1, Math.pow(Math.log10(1 + conv) / 5.0, 1.5)) * 20;
 
-  // Consensus strength factor (20 pts): how aligned are the wallets?
-  // 60% agreement → ~12pts, 80% → ~16pts, 100% → 20pts
-  const alignmentFactor = cs * 20;
+  // Consensus strength factor (20 pts): 0.6 (min) → ~6pts, 0.8 → ~12pts, 0.95+ → ~19pts
+  // Quadratic curve so median consensus (~0.7-0.8) doesn't max out
+  const alignmentFactor = Math.pow(Math.max(0, cs - 0.4) / 0.6, 1.8) * 20;
 
   // Stability factor (10 pts): penalize signals that flip direction
   const changes = signal.directionChanges || 0;
   const stabilityFactor = Math.max(0, 1 - changes * 0.3) * 10;
 
-  return Math.min(100, walletFactor + scoreFactor + convictionFactor + alignmentFactor + stabilityFactor);
+  return Math.min(100, Math.round(walletFactor + scoreFactor + convictionFactor + alignmentFactor + stabilityFactor));
+}
+
+/**
+ * Compute confidence for cluster signals (0-100)
+ * Cluster = 3-11 wallets — a small group of strong traders converging on a market.
+ * Weighs per-wallet quality more heavily than full consensus since the crowd is smaller.
+ *
+ * Calibrated: 3 wallets avg70 → ~35, 6 wallets avg78 → ~55, 10 wallets avg85 → ~75
+ * Target: ~45-55% starter, ~30-40% pro, ~10-15% elite
+ */
+function computeClusterConfidence(signal) {
+  const wc = signal.walletCount || 0;
+  const as = signal.avgScore || 0;
+  const conv = signal.conviction || 0;
+  const cs = signal.consensusStrength || 0;
+
+  // Wallet count factor (20 pts): 3 → ~5pts, 6 → ~12pts, 10+ → ~19pts
+  // Steeper per-wallet curve since the range is narrow (3-11)
+  const walletFactor = Math.min(1, Math.pow((wc - 2) / 9, 0.8)) * 20;
+
+  // Avg score factor (30 pts): higher weight than consensus — quality over quantity
+  // 70 (min) → ~10pts, 80 → ~19pts, 90+ → ~28pts
+  const scoreFactor = Math.min(1, Math.pow(Math.max(0, as - 50) / 45, 1.4)) * 30;
+
+  // Conviction factor (20 pts): same as consensus but scaled for smaller groups
+  // 250 (min) → ~4pts, 1000 → ~10pts, 5000+ → ~17pts
+  const convictionFactor = Math.min(1, Math.pow(Math.log10(1 + conv) / 4.5, 1.5)) * 20;
+
+  // Alignment factor (20 pts): even more important with small groups
+  const alignmentFactor = Math.pow(Math.max(0, cs - 0.4) / 0.6, 1.8) * 20;
+
+  // Stability factor (10 pts)
+  const changes = signal.directionChanges || 0;
+  const stabilityFactor = Math.max(0, 1 - changes * 0.3) * 10;
+
+  return Math.min(100, Math.round(walletFactor + scoreFactor + convictionFactor + alignmentFactor + stabilityFactor));
 }
 
 /**
  * Compute confidence for solo signals (0-100)
- * Different weighting: heavily relies on wallet track record since there's no crowd validation
+ * Different weighting: heavily relies on wallet track record since there's no crowd validation.
+ *
+ * Calibrated so minimum-qualifying solos score ~25-40 (starter),
+ * strong solos ~55-75 (pro), only legendary wallets with huge positions hit 80+ (elite).
+ *
+ * Target: ~55-65% starter, ~25-30% pro, ~5-10% elite
  */
 function computeSoloConfidence(wallet, position, positionValue) {
   const stats = wallet.stats || {};
   const score = wallet.score || 0;
 
-  // Wallet score factor (35 pts): the wallet's overall score is the primary signal
-  const scoreFactor = Math.min(1, score / 70) * 35;
+  // Wallet score factor (35 pts): 75 (min) → ~10pts, 85 → ~20pts, 95+ → ~33pts
+  // Reference shifted to 98 with steeper curve — need truly elite wallets for full points
+  const scoreFactor = Math.min(1, Math.pow(Math.max(0, score - 60) / 38, 1.5)) * 35;
 
-  // Win rate factor (25 pts): higher WR = more reliable solo picks
+  // Win rate factor (25 pts): 0.85 (min) → ~5pts, 0.90 → ~12pts, 0.95+ → ~23pts
+  // Steep curve above 0.80 baseline — the last few % of WR are what separate great from elite
   const wr = stats.wr || 0;
-  const wrFactor = Math.min(1, (wr - 0.5) / 0.4) * 25; // 50% → 0pts, 90% → 25pts
+  const wrFactor = Math.min(1, Math.pow(Math.max(0, wr - 0.80) / 0.18, 2.0)) * 25;
 
-  // Track record depth (20 pts): more resolved = more confidence in the pattern
+  // Track record depth (20 pts): 100 (min) → ~5pts, 300 → ~11pts, 1000+ → ~18pts
+  // Steeper log curve — need hundreds of resolved markets for full credit
   const resolved = stats.resolved || 0;
-  const depthFactor = Math.min(1, Math.log10(1 + resolved) / 2.5) * 20;
+  const depthFactor = Math.min(1, Math.pow(Math.log10(1 + resolved) / 3.5, 1.8)) * 20;
 
-  // Position size factor (20 pts): bigger position = more conviction from the wallet
-  const sizeFactor = Math.min(1, Math.log10(1 + positionValue) / 3.5) * 20;
+  // Position size factor (20 pts): $500 (min) → ~4pts, $2000 → ~10pts, $10000+ → ~18pts
+  // Need serious capital deployed for full points
+  const sizeFactor = Math.min(1, Math.pow(Math.log10(1 + positionValue) / 4.5, 1.5)) * 20;
 
-  return Math.min(100, Math.max(0, scoreFactor + wrFactor + depthFactor + sizeFactor));
+  return Math.min(100, Math.max(0, Math.round(scoreFactor + wrFactor + depthFactor + sizeFactor)));
 }
 
 /**
@@ -1936,6 +2139,7 @@ function checkIfMarketResolved(signal, walletData, marketLookup) {
 const PAPER_TRADE_CONFIG = {
   STARTING_BALANCE: 10000,   // $10k per portfolio
   TRADE_SIZE: 100,           // $100 per trade
+  MAX_OPEN_TRADES: 25,       // Cap per portfolio — only highest confidence signals
   PORTFOLIOS: ['combined', 'elite', 'pro', 'starter'],
 };
 
@@ -2004,7 +2208,13 @@ function processPaperTrades(signals, paperState, scanIndex) {
   }
 
   // --- Step 1: Open trades for newly active signals ---
-  for (const [signalId, signal] of Object.entries(signals.active || {})) {
+  // Sort candidates by confidence (highest first) so we fill slots with the best signals
+  const maxOpen = PAPER_TRADE_CONFIG.MAX_OPEN_TRADES || 25;
+  const candidates = Object.entries(signals.active || {})
+    .filter(([, sig]) => sig.openedScan === scanIndex || isFirstRun)
+    .sort((a, b) => (b[1].confidence || 0) - (a[1].confidence || 0));
+
+  for (const [signalId, signal] of candidates) {
     // Determine which portfolios this signal belongs to
     const tier = signal.tier || 'starter';
     const targetPortfolios = ['combined'];
@@ -2019,12 +2229,11 @@ function processPaperTrades(signals, paperState, scanIndex) {
       // Skip if already have a trade for this signal
       if (portfolio.openTrades[signalId]) continue;
 
+      // Skip if at max open trades capacity
+      if (Object.keys(portfolio.openTrades).length >= maxOpen) continue;
+
       // Skip if not enough balance
       if (portfolio.balance < tradeSize) continue;
-
-      // Only open trade on the scan the signal was created
-      // Exception: on first paper trader run, bootstrap all existing signals
-      if (signal.openedScan !== scanIndex && !isFirstRun) continue;
 
       // Open the trade
       portfolio.balance -= tradeSize;

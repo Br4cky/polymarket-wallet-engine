@@ -1172,7 +1172,7 @@ function renderSignalEngine() {
   if (tiersEl) {
     const tb = stats.tierBreakdown || {};
     const tt = stats.typeBreakdown || {};
-    tiersEl.innerHTML = `${tb.elite || 0} Elite / ${tb.pro || 0} Pro / ${tb.starter || 0} Starter &middot; ${tt.consensus || 0} consensus, ${tt.solo || 0} solo`;
+    tiersEl.innerHTML = `${tb.elite || 0} Elite / ${tb.pro || 0} Pro / ${tb.starter || 0} Starter &middot; ${tt.consensus || 0} consensus, ${tt.cluster || 0} cluster, ${tt.solo || 0} solo`;
   }
 
   const hrEl = el('metric-signal-hitrate');
@@ -1241,8 +1241,9 @@ function renderSignalEngine() {
   const signalColumns = [
     { field: 'marketTitle', render: (v, row) => row.slug ? `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${v}</a>` : `<span style="color: var(--accent-light);">${v}</span>` },
     { field: 'signalType', render: v => {
-      if (v === 'solo') return `<span class="badge" style="background: var(--purple, #9b59b6); color: white;">SOLO</span>`;
-      return `<span class="badge badge-mid">CONSENSUS</span>`;
+      if (v === 'solo') return `<span class="badge badge-solo">SOLO</span>`;
+      if (v === 'cluster') return `<span class="badge badge-cluster">CLUSTER</span>`;
+      return `<span class="badge badge-consensus">CONSENSUS</span>`;
     }},
     { field: 'tier', render: v => `<span class="badge ${tierClass(v)}">${v.toUpperCase()}</span>` },
     { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
@@ -1968,7 +1969,7 @@ function renderPaperTrader() {
       const latestScan = data.analytics?.scanCount || 0;
       const age = latestScan - (t.openedScan || 0);
       const typeLabel = (t.signalType || 'consensus').toUpperCase();
-      const typeClass = t.signalType === 'solo' ? 'badge-solo' : 'badge-consensus';
+      const typeClass = t.signalType === 'solo' ? 'badge-solo' : t.signalType === 'cluster' ? 'badge-cluster' : 'badge-consensus';
       return `<tr>
         <td title="${t.marketTitle}">${truncate(t.marketTitle, 50)}</td>
         <td><span class="badge ${typeClass}">${typeLabel}</span></td>
@@ -1991,7 +1992,7 @@ function renderPaperTrader() {
   } else {
     closedTbody.innerHTML = closedTrades.map(t => {
       const typeLabel = (t.signalType || 'consensus').toUpperCase();
-      const typeClass = t.signalType === 'solo' ? 'badge-solo' : 'badge-consensus';
+      const typeClass = t.signalType === 'solo' ? 'badge-solo' : t.signalType === 'cluster' ? 'badge-cluster' : 'badge-consensus';
       const outcomeClass = t.outcome === 'win' ? 'badge-positive' :
         t.outcome === 'loss' ? 'badge-negative' : 'badge-neutral';
       const outcomeLabel = (t.outcome || 'unknown').toUpperCase();
