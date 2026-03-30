@@ -1215,9 +1215,47 @@ function loadGzJSON(filepath) {
  * @param {any} data - Data to write
  */
 function saveGzJSON(filepath, data) {
-  const json = JSON.stringify(data);
-  const compressed = zlib.gzipSync(json, { level: 9 });
-  fs.writeFileSync(filepath, compressed);
+  try {
+    const json = JSON.stringify(data);
+    const compressed = zlib.gzipSync(json, { level: 9 });
+    fs.writeFileSync(filepath, compressed);
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    // Data too large for single JSON.stringify — serialize in chunks via Buffers
+    // to bypass V8's ~512MB string length limit
+    const chunks = [];
+    if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
+      chunks.push(Buffer.from('{'));
+      const keys = Object.keys(data);
+      for (let i = 0; i < keys.length; i++) {
+        if (i > 0) chunks.push(Buffer.from(','));
+        chunks.push(Buffer.from(JSON.stringify(keys[i]) + ':'));
+        const val = data[keys[i]];
+        try {
+          chunks.push(Buffer.from(JSON.stringify(val)));
+        } catch (e2) {
+          // Value itself too large (e.g. the wallets object) — go one level deeper
+          if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+            chunks.push(Buffer.from('{'));
+            const vkeys = Object.keys(val);
+            for (let j = 0; j < vkeys.length; j++) {
+              if (j > 0) chunks.push(Buffer.from(','));
+              chunks.push(Buffer.from(JSON.stringify(vkeys[j]) + ':' + JSON.stringify(val[vkeys[j]])));
+            }
+            chunks.push(Buffer.from('}'));
+          } else {
+            throw e2;
+          }
+        }
+      }
+      chunks.push(Buffer.from('}'));
+    } else {
+      throw err;
+    }
+    const jsonBuffer = Buffer.concat(chunks);
+    const compressed = zlib.gzipSync(jsonBuffer, { level: 9 });
+    fs.writeFileSync(filepath, compressed);
+  }
 }
 
 // ============================================================================
