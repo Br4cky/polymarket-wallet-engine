@@ -24,6 +24,7 @@
       <button class="tab" data-tab="portfolio">Portfolio</button>
       <button class="tab" data-tab="patterns">Patterns</button>
       <button class="tab" data-tab="signals">Signals</button>
+      <button class="tab" data-tab="paper">Paper Trader</button>
       <button class="tab" data-tab="screener">Screener</button>
     </div>
   </nav>
@@ -498,7 +499,139 @@
       </div>
     </div>
 
-    <!-- Tab 6: Screener -->
+    <!-- Tab 6: Paper Trader -->
+    <div id="tab-paper" class="tab-content">
+      <div class="tab-header">
+        <h1>Paper Trader</h1>
+        <p class="subtitle">Hypothetical Performance Trading Our Signals</p>
+        <p class="description">$10,000 starting balance · $100 per trade · Auto-trades every signal</p>
+      </div>
+
+      <!-- Portfolio Selector -->
+      <div class="signal-tier-filters" style="margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="btn btn-sm paper-portfolio-filter active" data-portfolio="combined">Combined</button>
+        <button class="btn btn-sm paper-portfolio-filter" data-portfolio="elite">Elite Only</button>
+        <button class="btn btn-sm paper-portfolio-filter" data-portfolio="pro">Pro Only</button>
+        <button class="btn btn-sm paper-portfolio-filter" data-portfolio="starter">Starter Only</button>
+      </div>
+
+      <!-- Performance Summary -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">Portfolio Value</div>
+          <div class="metric-value" id="paper-equity">$10,000</div>
+          <div class="metric-sub" id="paper-return">0.00%</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Cash Balance</div>
+          <div class="metric-value" id="paper-balance">$10,000</div>
+          <div class="metric-sub" id="paper-deployed">$0 deployed</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Win Rate</div>
+          <div class="metric-value" id="paper-winrate">-</div>
+          <div class="metric-sub" id="paper-record">0W / 0L</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Total PnL</div>
+          <div class="metric-value" id="paper-pnl">$0</div>
+          <div class="metric-sub" id="paper-streaks">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Max Drawdown</div>
+          <div class="metric-value" id="paper-drawdown">0%</div>
+          <div class="metric-sub" id="paper-peak">Peak: $10,000</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Avg Trade</div>
+          <div class="metric-value" id="paper-avg-trade">-</div>
+          <div class="metric-sub" id="paper-best-worst">-</div>
+        </div>
+      </div>
+
+      <!-- Equity Curve Chart -->
+      <div class="charts-section">
+        <div class="chart-container" style="grid-column: 1 / -1;">
+          <h3>Equity Curve</h3>
+          <div style="position: relative; height: 300px;">
+            <canvas id="chart-equity-curve"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Open Trades -->
+      <div class="section">
+        <h2>Open Trades <span id="paper-open-count" style="color: var(--text-muted); font-weight: normal; font-size: 0.85em;">(0)</span></h2>
+        <div class="table-wrapper">
+          <table id="paper-open-table" class="data-table sortable">
+            <thead>
+              <tr>
+                <th data-field="marketTitle">Market</th>
+                <th data-field="signalType">Type</th>
+                <th data-field="tier">Tier</th>
+                <th data-field="direction">Direction</th>
+                <th data-field="confidence" class="sortable">Confidence</th>
+                <th data-field="tradeSize">Size</th>
+                <th data-field="openedScan" class="sortable">Age (scans)</th>
+              </tr>
+            </thead>
+            <tbody id="paper-open-tbody">
+              <tr><td colspan="7" class="empty-state">No open trades yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Closed Trades -->
+      <div class="section">
+        <h2>Trade History <span id="paper-closed-count" style="color: var(--text-muted); font-weight: normal; font-size: 0.85em;">(0)</span></h2>
+        <div class="table-wrapper">
+          <table id="paper-closed-table" class="data-table sortable">
+            <thead>
+              <tr>
+                <th data-field="marketTitle">Market</th>
+                <th data-field="signalType">Type</th>
+                <th data-field="tier">Tier</th>
+                <th data-field="direction">Direction</th>
+                <th data-field="outcome">Result</th>
+                <th data-field="pnl" class="sortable">PnL</th>
+                <th data-field="returnPct" class="sortable">Return %</th>
+                <th data-field="duration" class="sortable">Duration</th>
+                <th data-field="closeReason">Close Reason</th>
+              </tr>
+            </thead>
+            <tbody id="paper-closed-tbody">
+              <tr><td colspan="9" class="empty-state">No closed trades yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tier Comparison -->
+      <div class="section">
+        <h2>Tier Comparison</h2>
+        <div class="table-wrapper">
+          <table id="paper-comparison-table" class="data-table">
+            <thead>
+              <tr>
+                <th>Portfolio</th>
+                <th>Equity</th>
+                <th>Return %</th>
+                <th>Trades</th>
+                <th>Win Rate</th>
+                <th>PnL</th>
+                <th>Max Drawdown</th>
+              </tr>
+            </thead>
+            <tbody id="paper-comparison-tbody">
+              <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 7: Screener -->
     <div id="tab-screener" class="tab-content">
       <div class="tab-header">
         <h1>Manual Screener</h1>

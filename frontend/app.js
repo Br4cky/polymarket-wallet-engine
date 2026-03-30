@@ -280,6 +280,9 @@ function switchTab(tabName) {
     case 'signals':
       renderSignals();
       break;
+    case 'paper':
+      renderPaperTrader();
+      break;
     case 'screener':
       initScreener();
       break;
@@ -1897,6 +1900,213 @@ function exportResults() {
   URL.revokeObjectURL(url);
 }
 
+/* ============================================================================
+   Paper Trader Tab
+   ============================================================================ */
+
+let currentPaperPortfolio = 'combined';
+
+function renderPaperTrader() {
+  const pt = data.analytics?.paperTrading;
+  if (!pt) {
+    document.getElementById('paper-open-tbody').innerHTML =
+      '<tr><td colspan="7" class="empty-state">No paper trading data yet. Run the scanner with signals enabled.</td></tr>';
+    return;
+  }
+
+  const portfolio = pt[currentPaperPortfolio];
+  if (!portfolio) return;
+
+  const stats = portfolio.stats || {};
+  const equity = portfolio.equity || 0;
+  const startBal = portfolio.startingBalance || 10000;
+  const totalReturn = ((equity / startBal - 1) * 100).toFixed(2);
+  const deployed = portfolio.openTrades.reduce((s, t) => s + t.tradeSize, 0);
+  const totalTrades = stats.wins + stats.losses + (stats.pushes || 0);
+  const winRate = totalTrades > 0 ? ((stats.wins / totalTrades) * 100).toFixed(1) : '-';
+  const avgTrade = totalTrades > 0 ? (stats.totalPnl / totalTrades).toFixed(2) : '-';
+
+  // Update metric cards
+  const el = id => document.getElementById(id);
+  el('paper-equity').textContent = fmtDollars(equity);
+  el('paper-equity').className = `metric-value ${equity >= startBal ? '' : 'text-negative'}`;
+  el('paper-return').textContent = `${totalReturn >= 0 ? '+' : ''}${totalReturn}%`;
+  el('paper-return').style.color = totalReturn >= 0 ? 'var(--green)' : 'var(--red)';
+
+  el('paper-balance').textContent = fmtDollars(portfolio.balance);
+  el('paper-deployed').textContent = `$${deployed.toFixed(0)} deployed`;
+
+  el('paper-winrate').textContent = winRate === '-' ? '-' : winRate + '%';
+  el('paper-record').textContent = `${stats.wins}W / ${stats.losses}L` + (stats.pushes ? ` / ${stats.pushes}P` : '');
+
+  el('paper-pnl').textContent = fmtDollars(stats.totalPnl);
+  el('paper-pnl').className = `metric-value ${stats.totalPnl >= 0 ? '' : 'text-negative'}`;
+  const streakText = stats.currentStreak > 0 ? `${stats.currentStreak}W streak` :
+    stats.currentStreak < 0 ? `${Math.abs(stats.currentStreak)}L streak` : '-';
+  el('paper-streaks').textContent = streakText;
+
+  el('paper-drawdown').textContent = (stats.maxDrawdown || 0).toFixed(1) + '%';
+  el('paper-peak').textContent = `Peak: ${fmtDollars(stats.peakEquity)}`;
+
+  el('paper-avg-trade').textContent = avgTrade === '-' ? '-' : fmtDollars(+avgTrade);
+  el('paper-best-worst').textContent = totalTrades > 0
+    ? `Best: +$${(stats.biggestWin || 0).toFixed(0)} / Worst: $${(stats.biggestLoss || 0).toFixed(0)}`
+    : '-';
+
+  // Render equity curve chart
+  renderEquityCurve(portfolio.equityCurve || []);
+
+  // Render open trades table
+  const openTrades = portfolio.openTrades || [];
+  el('paper-open-count').textContent = `(${openTrades.length})`;
+  const openTbody = el('paper-open-tbody');
+
+  if (openTrades.length === 0) {
+    openTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No open trades</td></tr>';
+  } else {
+    openTbody.innerHTML = openTrades.map(t => {
+      const latestScan = data.analytics?.scanCount || 0;
+      const age = latestScan - (t.openedScan || 0);
+      const typeLabel = (t.signalType || 'consensus').toUpperCase();
+      const typeClass = t.signalType === 'solo' ? 'badge-solo' : 'badge-consensus';
+      return `<tr>
+        <td title="${t.marketTitle}">${truncate(t.marketTitle, 50)}</td>
+        <td><span class="badge ${typeClass}">${typeLabel}</span></td>
+        <td><span class="tier-badge tier-${t.tier || 'starter'}">${(t.tier || 'starter').toUpperCase()}</span></td>
+        <td>${renderDirectionBadge(t.direction, t)}</td>
+        <td>${(t.confidence || 0).toFixed(1)}</td>
+        <td>$${t.tradeSize}</td>
+        <td>${age}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Render closed trades table
+  const closedTrades = [...(portfolio.closedTrades || [])].reverse(); // Most recent first
+  el('paper-closed-count').textContent = `(${closedTrades.length})`;
+  const closedTbody = el('paper-closed-tbody');
+
+  if (closedTrades.length === 0) {
+    closedTbody.innerHTML = '<tr><td colspan="9" class="empty-state">No closed trades yet</td></tr>';
+  } else {
+    closedTbody.innerHTML = closedTrades.map(t => {
+      const typeLabel = (t.signalType || 'consensus').toUpperCase();
+      const typeClass = t.signalType === 'solo' ? 'badge-solo' : 'badge-consensus';
+      const outcomeClass = t.outcome === 'win' ? 'badge-positive' :
+        t.outcome === 'loss' ? 'badge-negative' : 'badge-neutral';
+      const outcomeLabel = (t.outcome || 'unknown').toUpperCase();
+      return `<tr>
+        <td title="${t.marketTitle}">${truncate(t.marketTitle, 45)}</td>
+        <td><span class="badge ${typeClass}">${typeLabel}</span></td>
+        <td><span class="tier-badge tier-${t.tier || 'starter'}">${(t.tier || 'starter').toUpperCase()}</span></td>
+        <td>${renderDirectionBadge(t.direction, t)}</td>
+        <td><span class="badge ${outcomeClass}">${outcomeLabel}</span></td>
+        <td class="${t.pnl >= 0 ? 'text-positive' : 'text-negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</td>
+        <td class="${t.returnPct >= 0 ? 'text-positive' : 'text-negative'}">${t.returnPct >= 0 ? '+' : ''}${t.returnPct}%</td>
+        <td>${t.duration || 0} scans</td>
+        <td>${(t.closeReason || '').replace(/_/g, ' ')}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Render tier comparison table
+  renderTierComparison(pt);
+}
+
+function renderEquityCurve(equityCurve) {
+  const canvas = document.getElementById('chart-equity-curve');
+  if (!canvas) return;
+
+  // Destroy existing chart
+  if (chartInstances['equity-curve']) {
+    chartInstances['equity-curve'].destroy();
+  }
+
+  if (equityCurve.length < 2) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#666';
+    ctx.textAlign = 'center';
+    ctx.fillText('Not enough data points yet', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+
+  const labels = equityCurve.map(p => `Scan ${p.scan}`);
+  const equityData = equityCurve.map(p => p.equity);
+  const startBal = equityCurve[0]?.equity || 10000;
+
+  chartInstances['equity-curve'] = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Portfolio Equity',
+        data: equityData,
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: equityCurve.length > 50 ? 0 : 3,
+      }, {
+        label: 'Starting Balance',
+        data: equityCurve.map(() => startBal),
+        borderColor: 'rgba(255,255,255,0.2)',
+        borderDash: [5, 5],
+        pointRadius: 0,
+        fill: false,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#ccc' } },
+      },
+      scales: {
+        x: { ticks: { color: '#888', maxTicksLimit: 10 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y: {
+          ticks: { color: '#888', callback: v => '$' + v.toLocaleString() },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+        },
+      },
+    },
+  });
+}
+
+function renderTierComparison(pt) {
+  const tbody = document.getElementById('paper-comparison-tbody');
+  if (!tbody) return;
+
+  const rows = ['combined', 'elite', 'pro', 'starter'].map(name => {
+    const p = pt[name];
+    if (!p) return '';
+    const s = p.stats || {};
+    const equity = p.equity || 0;
+    const startBal = p.startingBalance || 10000;
+    const ret = ((equity / startBal - 1) * 100).toFixed(2);
+    const total = s.wins + s.losses + (s.pushes || 0);
+    const wr = total > 0 ? ((s.wins / total) * 100).toFixed(1) + '%' : '-';
+    const label = name.charAt(0).toUpperCase() + name.slice(1);
+
+    return `<tr>
+      <td><strong>${label}</strong></td>
+      <td>${fmtDollars(equity)}</td>
+      <td class="${ret >= 0 ? 'text-positive' : 'text-negative'}">${ret >= 0 ? '+' : ''}${ret}%</td>
+      <td>${total}</td>
+      <td>${wr}</td>
+      <td class="${s.totalPnl >= 0 ? 'text-positive' : 'text-negative'}">${fmtDollars(s.totalPnl)}</td>
+      <td>${(s.maxDrawdown || 0).toFixed(1)}%</td>
+    </tr>`;
+  });
+
+  tbody.innerHTML = rows.join('');
+}
+
+function truncate(str, max) {
+  if (!str) return '';
+  return str.length > max ? str.slice(0, max) + '...' : str;
+}
+
 function initScreener() {
   const runBtn = document.getElementById('runScreener');
   const loadBtn = document.getElementById('loadPreviousBtn');
@@ -1948,6 +2158,16 @@ async function init() {
     btn.addEventListener('click', () => {
       const tabName = btn.dataset.tab;
       switchTab(tabName);
+    });
+  });
+
+  // Paper trader portfolio filter buttons
+  document.querySelectorAll('.paper-portfolio-filter').forEach(btn => {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.paper-portfolio-filter').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      currentPaperPortfolio = this.dataset.portfolio;
+      renderPaperTrader();
     });
   });
 

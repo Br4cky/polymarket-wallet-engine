@@ -20,6 +20,8 @@ import {
   findBiggestWins,
   computeResolvedPositions,
   processSignals,
+  initPaperTrading,
+  processPaperTrades,
   refreshTrackedWallets,
   loadJSON,
   saveJSON,
@@ -519,6 +521,27 @@ async function runScan() {
   if (ss.totalResolved > 0) console.log(`  🎯 Track record: ${ss.wins}W/${ss.losses}L (${ss.hitRate}% hit rate, ${ss.totalPnl >= 0 ? '+' : ''}$${ss.totalPnl.toFixed(0)} PnL)`);
   console.log();
 
+  // ===== Step 6c: Paper Trading =====
+  console.log('📝 Processing paper trades...');
+  const paperFile = path.join(DATA_DIR, 'paper-trades.json.gz');
+  let paperState = loadGzJSON(paperFile) || initPaperTrading();
+
+  try {
+    paperState = processPaperTrades(signals, paperState, state.scanCount);
+  } catch (e) {
+    console.error(`  Paper trading error: ${e.message}`);
+  }
+
+  const cp = paperState.portfolios?.combined;
+  if (cp) {
+    const openCount = Object.keys(cp.openTrades).length;
+    const closedCount = cp.closedTrades.length;
+    const equity = +(cp.balance + Object.values(cp.openTrades).reduce((s, t) => s + t.tradeSize, 0)).toFixed(2);
+    const totalReturn = +((equity / cp.startingBalance - 1) * 100).toFixed(2);
+    console.log(`  Combined: $${equity.toLocaleString()} (${totalReturn >= 0 ? '+' : ''}${totalReturn}%) | ${openCount} open, ${closedCount} closed | ${cp.stats.wins}W/${cp.stats.losses}L`);
+  }
+  console.log();
+
   // ===== Step 7: Build Leaderboard =====
   const leaderboard = topWallets.map((w, i) => ({
     rank: i + 1,
@@ -607,6 +630,21 @@ async function runScan() {
     stats: signals.stats || {},
   };
 
+  // Paper trading data for frontend
+  analytics.paperTrading = {};
+  for (const [pName, portfolio] of Object.entries(paperState.portfolios || {})) {
+    const openTradeValue = Object.values(portfolio.openTrades).reduce((s, t) => s + t.tradeSize, 0);
+    analytics.paperTrading[pName] = {
+      balance: portfolio.balance,
+      startingBalance: portfolio.startingBalance,
+      equity: +(portfolio.balance + openTradeValue).toFixed(2),
+      openTrades: Object.values(portfolio.openTrades),
+      closedTrades: (portfolio.closedTrades || []).slice(-100), // Last 100 for frontend
+      equityCurve: (portfolio.equity || []).slice(-100),
+      stats: portfolio.stats,
+    };
+  }
+
   if (!Array.isArray(analytics.trendline)) analytics.trendline = [];
   analytics.trendline.push({ scanIndex: state.scanCount, timestamp: analytics.lastUpdated, avgScore, topScore, walletCount: topAddresses.size, totalPnl: analytics.summary.totalPnl });
   if (analytics.trendline.length > 100) analytics.trendline = analytics.trendline.slice(-100);
@@ -621,6 +659,10 @@ async function runScan() {
   // Save full signals state (active + complete history)
   saveGzJSON(signalsFile, signals);
   console.log(`  ✓ signals.json.gz (${Object.keys(signals.active || {}).length} active, ${(signals.history || []).length} history)`);
+
+  // Save paper trading state
+  saveGzJSON(paperFile, paperState);
+  console.log(`  ✓ paper-trades.json.gz (${Object.keys(cp?.openTrades || {}).length} open trades)`);
 
   // ===== Done =====
   const duration = Math.round((Date.now() - scanStart) / 1000);

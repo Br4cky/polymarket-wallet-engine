@@ -1924,6 +1924,238 @@ function checkIfMarketResolved(signal, walletData, marketLookup) {
 }
 
 // ============================================================================
+// Paper Trading Engine
+// ============================================================================
+
+/**
+ * Paper trader config
+ */
+const PAPER_TRADE_CONFIG = {
+  STARTING_BALANCE: 10000,   // $10k per portfolio
+  TRADE_SIZE: 100,           // $100 per trade
+  PORTFOLIOS: ['combined', 'elite', 'pro', 'starter'],
+};
+
+/**
+ * Initialize a fresh paper trading state
+ */
+function initPaperTrading() {
+  const portfolios = {};
+  for (const name of PAPER_TRADE_CONFIG.PORTFOLIOS) {
+    portfolios[name] = {
+      balance: PAPER_TRADE_CONFIG.STARTING_BALANCE,
+      startingBalance: PAPER_TRADE_CONFIG.STARTING_BALANCE,
+      openTrades: {},     // keyed by signalId
+      closedTrades: [],   // history of closed trades
+      equity: [],         // equity curve snapshots [{scan, timestamp, equity, openTradeValue}]
+      stats: {
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        pushes: 0,
+        totalPnl: 0,
+        biggestWin: 0,
+        biggestLoss: 0,
+        winStreak: 0,
+        lossStreak: 0,
+        currentStreak: 0,     // positive = wins, negative = losses
+        maxDrawdown: 0,
+        peakEquity: PAPER_TRADE_CONFIG.STARTING_BALANCE,
+      },
+    };
+  }
+  return { portfolios, createdAt: new Date().toISOString(), version: 1 };
+}
+
+/**
+ * Process paper trades based on current signal state.
+ *
+ * Called each scan AFTER processSignals(). Logic:
+ *   1. Check for newly opened signals → open paper trades
+ *   2. Check for closed signals (in history) → close paper trades + compute PnL
+ *   3. Snapshot equity curve
+ *
+ * @param {object} signals - Current signal state {active, history, stats}
+ * @param {object} paperState - Existing paper trading state
+ * @param {number} scanIndex - Current scan number
+ * @returns {object} Updated paper trading state
+ */
+function processPaperTrades(signals, paperState, scanIndex) {
+  if (!paperState || !paperState.portfolios) {
+    paperState = initPaperTrading();
+  }
+  const now = new Date().toISOString();
+  const portfolios = paperState.portfolios;
+  const tradeSize = PAPER_TRADE_CONFIG.TRADE_SIZE;
+
+  // On first run, allow all existing active signals to open trades
+  const isFirstRun = !paperState.lastProcessedScan;
+  paperState.lastProcessedScan = scanIndex;
+
+  // Build set of signals that closed this scan (they're now in history)
+  const closedThisScan = new Map();
+  for (const hist of (signals.history || [])) {
+    if (hist.closedScan === scanIndex) {
+      closedThisScan.set(hist.signalId, hist);
+    }
+  }
+
+  // --- Step 1: Open trades for newly active signals ---
+  for (const [signalId, signal] of Object.entries(signals.active || {})) {
+    // Determine which portfolios this signal belongs to
+    const tier = signal.tier || 'starter';
+    const targetPortfolios = ['combined'];
+    if (tier === 'elite') targetPortfolios.push('elite');
+    else if (tier === 'pro') targetPortfolios.push('pro');
+    else targetPortfolios.push('starter');
+
+    for (const pName of targetPortfolios) {
+      const portfolio = portfolios[pName];
+      if (!portfolio) continue;
+
+      // Skip if already have a trade for this signal
+      if (portfolio.openTrades[signalId]) continue;
+
+      // Skip if not enough balance
+      if (portfolio.balance < tradeSize) continue;
+
+      // Only open trade on the scan the signal was created
+      // Exception: on first paper trader run, bootstrap all existing signals
+      if (signal.openedScan !== scanIndex && !isFirstRun) continue;
+
+      // Open the trade
+      portfolio.balance -= tradeSize;
+      portfolio.openTrades[signalId] = {
+        signalId,
+        marketTitle: signal.marketTitle || 'Unknown',
+        direction: signal.direction || 'unknown',
+        tier: signal.tier || 'starter',
+        signalType: signal.signalType || 'consensus',
+        confidence: signal.confidence || 0,
+        tradeSize,
+        openedAt: now,
+        openedScan: scanIndex,
+        signalOpenedScan: signal.openedScan,
+      };
+      portfolio.stats.totalTrades++;
+    }
+  }
+
+  // --- Step 2: Close trades for signals that closed this scan ---
+  for (const [signalId, closedSignal] of closedThisScan) {
+    for (const pName of PAPER_TRADE_CONFIG.PORTFOLIOS) {
+      const portfolio = portfolios[pName];
+      if (!portfolio) continue;
+
+      const trade = portfolio.openTrades[signalId];
+      if (!trade) continue;
+
+      // Compute paper PnL based on signal outcome
+      let tradePnl = 0;
+      const outcome = closedSignal.outcome;
+      const closeReason = closedSignal.closeReason;
+
+      if (closeReason === 'resolved' && outcome === 'win') {
+        // Signal was right — estimate return based on prediction market mechanics
+        // Typical Polymarket payout: if you buy at ~0.60 and win, you get 1.00 per share
+        // ROI ≈ (1/entryPrice - 1) × tradeSize. We'll use a conservative estimate.
+        // Use consensus strength as a proxy for entry price (higher consensus = likely higher price)
+        const entryPrice = Math.max(0.3, Math.min(0.85, (closedSignal.consensusStrength || 0.6)));
+        tradePnl = trade.tradeSize * (1 / entryPrice - 1);
+      } else if (closeReason === 'resolved' && outcome === 'loss') {
+        // Signal was wrong — lose the trade amount
+        tradePnl = -trade.tradeSize;
+      } else if (closeReason === 'stale' || closeReason === 'deduplicated' || closeReason === 'upgraded_to_consensus') {
+        // Signal closed without resolution — return capital with small friction cost
+        tradePnl = -trade.tradeSize * 0.02; // 2% slippage/friction for exit
+      } else if (outcome === 'push') {
+        tradePnl = 0; // Break even
+      } else {
+        // Unknown outcome — small loss for friction
+        tradePnl = -trade.tradeSize * 0.02;
+      }
+
+      tradePnl = +tradePnl.toFixed(2);
+
+      // Return capital + PnL to balance
+      portfolio.balance += trade.tradeSize + tradePnl;
+      portfolio.balance = +portfolio.balance.toFixed(2);
+
+      // Record closed trade
+      const closedTrade = {
+        ...trade,
+        closedAt: now,
+        closedScan: scanIndex,
+        outcome: outcome || 'unknown',
+        closeReason,
+        pnl: tradePnl,
+        returnPct: +((tradePnl / trade.tradeSize) * 100).toFixed(2),
+        duration: scanIndex - trade.openedScan,
+      };
+      portfolio.closedTrades.push(closedTrade);
+
+      // Update stats
+      const stats = portfolio.stats;
+      stats.totalPnl = +(stats.totalPnl + tradePnl).toFixed(2);
+
+      if (tradePnl > 0) {
+        stats.wins++;
+        stats.biggestWin = Math.max(stats.biggestWin, tradePnl);
+        stats.currentStreak = stats.currentStreak > 0 ? stats.currentStreak + 1 : 1;
+        stats.winStreak = Math.max(stats.winStreak, stats.currentStreak);
+      } else if (tradePnl < 0) {
+        stats.losses++;
+        stats.biggestLoss = Math.min(stats.biggestLoss, tradePnl);
+        stats.currentStreak = stats.currentStreak < 0 ? stats.currentStreak - 1 : -1;
+        stats.lossStreak = Math.max(stats.lossStreak, Math.abs(stats.currentStreak));
+      } else {
+        stats.pushes++;
+      }
+
+      // Remove from open trades
+      delete portfolio.openTrades[signalId];
+
+      // Keep closed trades list manageable
+      if (portfolio.closedTrades.length > 500) {
+        portfolio.closedTrades.splice(0, portfolio.closedTrades.length - 500);
+      }
+    }
+  }
+
+  // --- Step 3: Snapshot equity curve ---
+  for (const pName of PAPER_TRADE_CONFIG.PORTFOLIOS) {
+    const portfolio = portfolios[pName];
+    if (!portfolio) continue;
+
+    // Equity = cash balance + value of open trades (at cost basis)
+    const openTradeValue = Object.values(portfolio.openTrades).reduce((s, t) => s + t.tradeSize, 0);
+    const equity = +(portfolio.balance + openTradeValue).toFixed(2);
+
+    portfolio.equity.push({
+      scan: scanIndex,
+      timestamp: now,
+      equity,
+      balance: portfolio.balance,
+      openTrades: Object.keys(portfolio.openTrades).length,
+      openTradeValue,
+    });
+
+    // Track peak equity and drawdown
+    const stats = portfolio.stats;
+    if (equity > stats.peakEquity) stats.peakEquity = equity;
+    const drawdown = stats.peakEquity > 0 ? +((1 - equity / stats.peakEquity) * 100).toFixed(2) : 0;
+    if (drawdown > stats.maxDrawdown) stats.maxDrawdown = drawdown;
+
+    // Keep equity curve manageable (last 200 snapshots)
+    if (portfolio.equity.length > 200) {
+      portfolio.equity.splice(0, portfolio.equity.length - 200);
+    }
+  }
+
+  return paperState;
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -1948,6 +2180,9 @@ export {
   processSignals,
   SIGNAL_THRESHOLDS,
   refreshTrackedWallets,
+  initPaperTrading,
+  processPaperTrades,
+  PAPER_TRADE_CONFIG,
   loadJSON,
   saveJSON,
   loadGzJSON,

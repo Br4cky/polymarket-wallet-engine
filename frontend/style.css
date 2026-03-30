@@ -426,6 +426,58 @@ button {
   color: var(--red);
 }
 
+.badge-neutral {
+  color: var(--text-muted);
+}
+
+.badge-solo {
+  background: rgba(155, 89, 182, 0.15);
+  color: #9b59b6;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge-consensus {
+  background: rgba(52, 152, 219, 0.15);
+  color: #3498db;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tier-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tier-elite {
+  background: rgba(241, 196, 15, 0.15);
+  color: #f1c40f;
+}
+
+.tier-pro {
+  background: rgba(52, 152, 219, 0.15);
+  color: #3498db;
+}
+
+.tier-starter {
+  background: rgba(149, 165, 166, 0.15);
+  color: #95a5a6;
+}
+
+.text-positive {
+  color: var(--green);
+}
+
+.text-negative {
+  color: var(--red);
+}
+
 .address-link {
   font-family: 'Monaco', 'Courier New', monospace;
   font-size: 12px;
