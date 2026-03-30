@@ -175,17 +175,29 @@ async function fetchGzJSON(url) {
 
 async function loadData() {
   try {
-    const [analytics, wallets, markets] = await Promise.all([
-      fetchGzJSON(DATA_BASE + 'analytics.json.gz'),
-      fetchGzJSON(DATA_BASE + 'wallets.json.gz'),
-      fetchGzJSON(DATA_BASE + 'markets.json.gz'),
-    ]);
-
-    return { analytics, wallets, markets };
+    // Only load analytics on startup (~20MB) — wallets (80MB) and markets (38MB)
+    // are lazy-loaded when specific features need them
+    const analytics = await fetchGzJSON(DATA_BASE + 'analytics.json.gz');
+    return { analytics, wallets: null, markets: null };
   } catch (error) {
     console.error('Data load error:', error);
     return { analytics: null, wallets: null, markets: null };
   }
+}
+
+let _walletsLoading = null;
+async function ensureWalletsLoaded() {
+  if (walletsData) return walletsData;
+  if (_walletsLoading) return _walletsLoading;
+  _walletsLoading = fetchGzJSON(DATA_BASE + 'wallets.json.gz').then(d => {
+    walletsData = d;
+    _walletsLoading = null;
+    return d;
+  }).catch(() => {
+    _walletsLoading = null;
+    return null;
+  });
+  return _walletsLoading;
 }
 
 function updateStatusBar() {
@@ -1601,10 +1613,7 @@ async function init() {
   data = await loadData();
   updateStatusBar();
 
-  // Pre-load wallets data for time filtering (has per-position data)
-  try {
-    walletsData = await fetchGzJSON(DATA_BASE + 'wallets.json.gz');
-  } catch { /* ok — time filtering just won't recompute stats */ }
+  // Wallets data is now lazy-loaded only when time filtering or screener needs it
 
   // Attach tab listeners
   document.querySelectorAll('.tab').forEach(btn => {
@@ -1614,12 +1623,15 @@ async function init() {
     });
   });
 
-  // Time filter buttons
+  // Time filter buttons — lazy-load wallets data when a non-'all' filter is selected
   document.querySelectorAll('.time-btn').forEach(btn => {
-    btn.addEventListener('click', function() {
+    btn.addEventListener('click', async function() {
       document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
       this.classList.add('active');
       currentTimeRange = this.dataset.range;
+      if (currentTimeRange !== 'all' && !walletsData) {
+        await ensureWalletsLoaded();
+      }
       if (currentTab === 'dashboard') renderDashboard();
     });
   });
