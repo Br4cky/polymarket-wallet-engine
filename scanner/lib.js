@@ -909,6 +909,7 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
     const noCount = market.outcomeCounts['No'] || 0;
 
     consensus.push({
+      groupKey: market.groupId,  // The canonical key used for signal deduplication
       marketTitle: marketInfo.title,
       slug: marketInfo.slug || market.tokenId,
       tokenId: market.tokenId,
@@ -1348,18 +1349,18 @@ function saveGzJSON(filepath, data) {
 const SIGNAL_THRESHOLDS = {
   // Consensus signals — multiple wallets agree
   MIN_WALLETS: 4,         // Minimum clean wallets converging on a market
-  MIN_AVG_SCORE: 30,      // Minimum average wallet score
-  MIN_CONVICTION: 50,     // Minimum raw conviction (wallets × avgScore)
-  CONSENSUS_RATIO: 0.6,   // 60%+ must agree on direction for a signal
-  STALE_SCANS: 28,        // Close signal if no wallet activity for 28 scans (~7 days)
+  MIN_AVG_SCORE: 40,      // Minimum average wallet score (was 30 — too permissive)
+  MIN_CONVICTION: 100,    // Minimum raw conviction (was 50 — allowed weak signals through)
+  CONSENSUS_RATIO: 0.6,   // 60%+ score-weighted must agree on direction
+  STALE_SCANS: 16,        // Close signal if no wallet activity for 16 scans (~4 days)
 
   // Solo signals — single high-performing wallet, no consensus required
   SOLO_MIN_SCORE: 55,            // Wallet must score 55+ to generate solo signals
-  SOLO_MIN_WIN_RATE: 0.70,       // 70%+ win rate
-  SOLO_MIN_RESOLVED: 40,         // At least 40 resolved positions (proven track record)
-  SOLO_MIN_PNL: 5000,            // $5k+ realized PnL
-  SOLO_MIN_POSITION_VALUE: 50,   // Position must be worth $50+ (not dust)
-  SOLO_STALE_SCANS: 20,          // Solo signals go stale faster (20 scans ≈ 5 days)
+  SOLO_MIN_WIN_RATE: 0.72,       // 72%+ win rate
+  SOLO_MIN_RESOLVED: 50,         // At least 50 resolved positions (was 40 — more proven track record needed)
+  SOLO_MIN_PNL: 10000,           // $10k+ realized PnL (was $5k — raises the bar)
+  SOLO_MIN_POSITION_VALUE: 100,  // Position must be worth $100+ (was $50 — filter more dust)
+  SOLO_STALE_SCANS: 12,          // Solo signals go stale faster (12 scans ≈ 3 days)
 };
 
 /**
@@ -1398,7 +1399,9 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
 
   // --- Phase 1: Process current consensus → open or update signals ---
   for (const entry of consensus) {
-    const groupKey = entry.slug || entry.tokenId;
+    // Use the canonical groupKey from computeConsensus (groupId || tokenId)
+    // This is the stable market identifier that doesn't change between scans
+    const groupKey = entry.groupKey || entry.slug || entry.tokenId;
     if (!groupKey) continue;
     seenGroups.add(groupKey);
 
@@ -1543,12 +1546,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
 
       const tokenId = pos.tokenId;
       const marketInfo = marketLookup.get(tokenId) || {};
-      const groupKey = marketInfo.groupId || marketInfo.slug || tokenId;
+      // Use same groupKey derivation as computeConsensus for consistency
+      const groupKey = marketInfo.groupId || tokenId;
       const outcome = marketInfo.outcome || 'Unknown';
       if (outcome === 'Unknown') continue;
 
-      // Skip if this market already has a consensus signal
-      const consensusSignalId = `sig_${marketInfo.slug || tokenId}`;
+      // Skip if this market already has a consensus signal (using canonical groupKey)
+      const consensusSignalId = `sig_${groupKey}`;
       if (active[consensusSignalId]) continue;
       if (seenGroups.has(groupKey)) continue; // Already covered by consensus
 
@@ -1697,7 +1701,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
 
       // Check if solo signal should be upgraded to consensus
       // If a consensus signal now covers this market, close the solo one
-      const consensusId = `sig_${signal.slug || signal.tokenId}`;
+      const consensusId = `sig_${signal.groupKey || signal.slug || signal.tokenId}`;
       if (active[consensusId] && active[consensusId] !== signal) {
         closeSignal(active, history, signalId, 'upgraded_to_consensus', scanIndex, now);
         closed++;
@@ -1709,11 +1713,55 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     if (signal.currentWallets && signal.currentWallets.length > 0) {
       const allResolved = checkIfMarketResolved(signal, walletData, marketLookup);
       if (allResolved) {
-        const totalPnl = signal.currentWallets.reduce((s, w) => s + (w.pnl || 0), 0);
-        const signalOutcome = totalPnl > 0 ? 'win' : totalPnl < 0 ? 'loss' : 'push';
+        // Per-wallet outcome attribution — majority wins determines signal outcome
+        const walletOutcomes = signal.currentWallets.map(w => ({
+          address: w.address,
+          pnl: w.pnl || 0,
+          won: (w.pnl || 0) > 0,
+        }));
+        const walletsWon = walletOutcomes.filter(w => w.won).length;
+        const walletsLost = walletOutcomes.filter(w => !w.won && w.pnl < 0).length;
+        const totalPnl = walletOutcomes.reduce((s, w) => s + w.pnl, 0);
+
+        // Signal outcome based on majority of wallets, not aggregate PnL
+        // If 4/5 wallets won but 1 had a huge loss, signal was still "right"
+        let signalOutcome;
+        if (walletsWon > walletsLost) signalOutcome = 'win';
+        else if (walletsLost > walletsWon) signalOutcome = 'loss';
+        else signalOutcome = totalPnl >= 0 ? 'push' : 'loss'; // Tiebreak by PnL
+
         closeSignal(active, history, signalId, 'resolved', scanIndex, now, signalOutcome, totalPnl);
+        // Store per-wallet breakdown in history for detailed track record
+        const lastHistoryEntry = history[history.length - 1];
+        if (lastHistoryEntry && lastHistoryEntry.signalId === signalId) {
+          lastHistoryEntry.walletsWon = walletsWon;
+          lastHistoryEntry.walletsLost = walletsLost;
+          lastHistoryEntry.walletHitRate = walletsWon + walletsLost > 0
+            ? +((walletsWon / (walletsWon + walletsLost)) * 100).toFixed(1)
+            : 0;
+        }
         closed++;
       }
+    }
+  }
+
+  // --- Phase 2b: Deduplicate — no two active signals for the same market ---
+  // Build a map of groupKey → signals, keep highest-confidence if conflicts found
+  const groupToSignals = new Map();
+  for (const [signalId, signal] of Object.entries(active)) {
+    const gk = signal.groupKey;
+    if (!gk) continue;
+    if (!groupToSignals.has(gk)) groupToSignals.set(gk, []);
+    groupToSignals.get(gk).push({ signalId, signal });
+  }
+  for (const [gk, signals] of groupToSignals) {
+    if (signals.length <= 1) continue;
+    // Multiple signals for same market — keep the one with highest confidence
+    signals.sort((a, b) => (b.signal.confidence || 0) - (a.signal.confidence || 0));
+    for (let i = 1; i < signals.length; i++) {
+      const dup = signals[i];
+      closeSignal(active, history, dup.signalId, 'deduplicated', scanIndex, now);
+      closed++;
     }
   }
 
@@ -1857,11 +1905,12 @@ function checkIfMarketResolved(signal, walletData, marketLookup) {
     const wallet = walletData.get(sw.address);
     if (!wallet || !wallet.positions) continue;
 
-    // Find this wallet's position in the signal's market
+    // Find this wallet's position in the signal's market using canonical groupKey
+    const signalGroupKey = signal.groupKey;
     const pos = wallet.positions.find(p => {
       const mi = marketLookup.get(p.tokenId);
       const gk = mi?.groupId || p.tokenId;
-      return gk === signal.groupKey || (mi?.slug && mi.slug === signal.slug);
+      return gk === signalGroupKey;
     });
 
     if (pos) {
