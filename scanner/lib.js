@@ -1362,7 +1362,7 @@ const SIGNAL_THRESHOLDS = {
   // Higher per-wallet quality than consensus since fewer wallets to validate
   CLUSTER_MIN_WALLETS: 3,        // At least 3 wallets agreeing
   CLUSTER_MAX_WALLETS: 11,       // Below consensus threshold (consensus starts at 12)
-  CLUSTER_MIN_AVG_SCORE: 70,     // Higher bar than consensus (60) — fewer wallets need to be better
+  CLUSTER_MIN_AVG_SCORE: 75,     // Higher bar than consensus (60) — fewer wallets need to be better (was 70, produced 474)
   CLUSTER_MIN_CONVICTION: 250,   // Lower absolute conviction (fewer wallets) but score-weighted
   CLUSTER_STALE_SCANS: 14,       // Between solo (12) and consensus (16)
 
