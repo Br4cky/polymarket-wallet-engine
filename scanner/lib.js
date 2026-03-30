@@ -524,11 +524,14 @@ function analyzePositions(positions) {
     : +(discoveredPositions).toFixed(1);
 
   // Flag suspiciously perfect win rates — market makers / arbitrageurs
-  // Broad detection: any wallet with 100% WR (zero losses) and enough resolved positions
-  const suspiciousWinRate = (wr >= 0.99 && losses === 0 && resolved >= 10);
+  // Market maker detection: 100% WR with zero losses needs a large sample to be suspicious
+  // A wallet going 10/10 could be a skilled trader; 50/50 with 0 losses is almost certainly automated
+  const suspiciousWinRate = (wr >= 0.99 && losses === 0 && resolved >= 50);
 
   // Flag bot-like activity — wallets trading at inhuman frequency
-  const isBotLike = (positionsPerWeek > 500);
+  // 500/week = ~70/day which is aggressive but possible for active traders
+  // 1000/week = ~140/day which is almost certainly automated
+  const isBotLike = (positionsPerWeek > 1000);
 
   // Combined contamination flag
   const isContaminated = suspiciousWinRate || isBotLike;

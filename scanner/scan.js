@@ -420,9 +420,14 @@ async function runScan() {
         positions: [], // clear position data to save space
       };
       removedCount++;
-    } else if (!topAddresses.has(address) && !wallets[address].status) {
-      // New wallet that didn't make the cut — remove entirely (never qualified)
-      delete wallets[address];
+    } else if (!topAddresses.has(address)) {
+      // Wallet not in top set this scan — but keep if it has a status or positions
+      // (cursor-based scanning means most wallets won't appear in every scan batch)
+      if (!wallets[address].status && (!wallets[address].positions || wallets[address].positions.length === 0)) {
+        // Truly new wallet with no data that didn't qualify — safe to remove
+        delete wallets[address];
+      }
+      // Otherwise keep it — it'll be re-evaluated when the cursor cycles back
     }
   }
   if (contaminatedCount > 0) console.log(`  🤖 Purged ${contaminatedCount} contaminated wallets (bots/MMs)`);
