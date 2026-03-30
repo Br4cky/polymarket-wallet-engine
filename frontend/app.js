@@ -1134,22 +1134,27 @@ function renderTopMarketsChart(patterns) {
  * Helper: render a direction badge that handles binary and non-binary outcomes
  */
 function renderDirectionBadge(direction, row) {
-  const y = row.yesCount || 0;
-  const n = row.noCount || 0;
-  if (direction === 'yes') return `<span class="badge badge-high">YES ${y}</span>`;
-  if (direction === 'no') return `<span class="badge badge-low">NO ${n}</span>`;
-  // Non-binary: show top outcome
-  if (direction !== 'mixed' && row.topOutcome) {
-    const count = row.topOutcomeCount || 0;
-    return `<span class="badge badge-high">${row.topOutcome} (${count})</span>`;
-  }
-  if (row.outcomeCounts && Object.keys(row.outcomeCounts).length > 0) {
-    const sorted = Object.entries(row.outcomeCounts).sort((a, b) => b[1] - a[1]);
+  const oc = row.outcomeCounts || {};
+
+  // Use outcomeCounts for wallet tallies (always populated on signals)
+  if (direction === 'yes') return `<span class="badge badge-high">YES ${oc['Yes'] || ''}</span>`;
+  if (direction === 'no') return `<span class="badge badge-low">NO ${oc['No'] || ''}</span>`;
+
+  // Non-binary with outcomeCounts: show top 2 outcomes with counts
+  if (direction !== 'mixed' && Object.keys(oc).length > 0) {
+    const sorted = Object.entries(oc).sort((a, b) => b[1] - a[1]);
     return sorted.slice(0, 2).map(([outcome, count]) => {
-      const cls = outcome === 'Yes' ? 'badge-high' : outcome === 'No' ? 'badge-low' : 'badge-mid';
+      const cls = outcome === 'Yes' ? 'badge-high' : outcome === 'No' ? 'badge-low' : 'badge-high';
       return `<span class="badge ${cls}" style="margin-right:4px;">${outcome} ${count}</span>`;
     }).join('');
   }
+
+  // Fallback for paper trades / contexts without outcomeCounts — just show direction
+  if (direction && direction !== 'mixed' && direction !== 'unknown') {
+    const label = direction.charAt(0).toUpperCase() + direction.slice(1);
+    return `<span class="badge badge-high">${label}</span>`;
+  }
+
   return `<span class="badge badge-mid">MIXED</span>`;
 }
 
