@@ -1454,6 +1454,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       signal.topOutcome = entry.topOutcome || signal.topOutcome;
       signal.outcomeCounts = entry.outcomeCounts || signal.outcomeCounts;
       signal.avgPnl = +(entry.avgPnl || 0).toFixed(2);
+      signal.avgEntryPrice = +(entry.avgEntryPrice || 0).toFixed(4);
       signal.consensusStrength = +(entry.consensusStrength || 0).toFixed(3);
 
       // Recompute confidence
@@ -1509,6 +1510,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         conviction: +conviction.toFixed(2),
         consensusStrength: +consensusStr.toFixed(3),
         avgPnl: +(entry.avgPnl || 0).toFixed(2),
+        avgEntryPrice: +(entry.avgEntryPrice || 0).toFixed(4),
 
         // Confidence & tier
         confidence: +confidence.toFixed(1),
@@ -1582,6 +1584,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       signal.topOutcome = entry.topOutcome || signal.topOutcome;
       signal.outcomeCounts = entry.outcomeCounts || {};
       signal.avgPnl = +(entry.avgPnl || 0).toFixed(2);
+      signal.avgEntryPrice = +(entry.avgEntryPrice || 0).toFixed(4);
       signal.consensusStrength = +(entry.consensusStrength || 0).toFixed(3);
 
       // If it grew past cluster range into consensus territory, upgrade type
@@ -1632,6 +1635,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         conviction: +conviction.toFixed(2),
         consensusStrength: +consensusStr.toFixed(3),
         avgPnl: +(entry.avgPnl || 0).toFixed(2),
+        avgEntryPrice: +(entry.avgEntryPrice || 0).toFixed(4),
         confidence: +confidence.toFixed(1),
         tier: getSignalTier(confidence),
         peakWallets: walletCount,
@@ -1718,6 +1722,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         signal.lastUpdatedAt = now;
         signal.scansSinceUpdate = 0;
         signal.positionValue = +positionValue.toFixed(2);
+        signal.avgEntryPrice = +(pos.avgPrice || entryPrice).toFixed(4);
         signal.currentPnl = +(pos.pnl || 0).toFixed(2);
         signal.walletScore = +(wallet.score || 0).toFixed(2);
         signal.confidence = computeSoloConfidence(wallet, pos, positionValue);
@@ -1771,6 +1776,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
           positionValue: +positionValue.toFixed(2),
           positionShares: +pos.amount.toFixed(2),
           entryPrice: +entryPrice.toFixed(4),
+          avgEntryPrice: +entryPrice.toFixed(4),
           currentPnl: +(pos.pnl || 0).toFixed(2),
 
           // Confidence & tier
@@ -2244,6 +2250,7 @@ function processPaperTrades(signals, paperState, scanIndex) {
         tier: signal.tier || 'starter',
         signalType: signal.signalType || 'consensus',
         confidence: signal.confidence || 0,
+        avgEntryPrice: signal.avgEntryPrice || 0,
         tradeSize,
         openedAt: now,
         openedScan: scanIndex,
@@ -2268,11 +2275,13 @@ function processPaperTrades(signals, paperState, scanIndex) {
       const closeReason = closedSignal.closeReason;
 
       if (closeReason === 'resolved' && outcome === 'win') {
-        // Signal was right — estimate return based on prediction market mechanics
-        // Typical Polymarket payout: if you buy at ~0.60 and win, you get 1.00 per share
-        // ROI ≈ (1/entryPrice - 1) × tradeSize. We'll use a conservative estimate.
-        // Use consensus strength as a proxy for entry price (higher consensus = likely higher price)
-        const entryPrice = Math.max(0.3, Math.min(0.85, (closedSignal.consensusStrength || 0.6)));
+        // Signal was right — payout based on real avg entry price from wallets' positions
+        // Polymarket payout: buy at entryPrice, win pays $1.00 per share
+        // ROI = (1/entryPrice - 1) × tradeSize
+        // Use real avgEntryPrice from signal; fall back to consensusStrength proxy if missing
+        const entryPrice = closedSignal.avgEntryPrice > 0
+          ? Math.max(0.05, Math.min(0.99, closedSignal.avgEntryPrice))
+          : Math.max(0.3, Math.min(0.85, (closedSignal.consensusStrength || 0.6)));
         tradePnl = trade.tradeSize * (1 / entryPrice - 1);
       } else if (closeReason === 'resolved' && outcome === 'loss') {
         // Signal was wrong — lose the trade amount
