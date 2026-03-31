@@ -692,12 +692,37 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
           // Use condition_id as the grouping key for Yes/No token pairs
           const groupId = market.condition_id || market.id || tokenId;
 
+          // Market resolution fields from Gamma API
+          const marketClosed = market.closed === true || market.closed === 'true';
+          const marketActive = market.active === true || market.active === 'true';
+          const endDate = market.end_date_iso || market.endDate || null;
+          const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true;
+
+          // Determine winning outcome from Gamma token prices
+          // When a market resolves, the winning token's price = 1.00 and loser = 0.00
+          let winningOutcome = null;
+          if (marketClosed && market.tokens && Array.isArray(market.tokens)) {
+            for (const token of market.tokens) {
+              const price = parseFloat(token.price || 0);
+              if (price >= 0.95) {
+                winningOutcome = token.outcome || null;
+                break;
+              }
+            }
+          }
+
           const commonFields = {
             title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
             slug: fullSlug,
             category: market.category || '',
             image: market.image || '',
             groupId,
+            // Resolution status
+            marketClosed,
+            marketActive,
+            endDate,
+            acceptingOrders,
+            winningOutcome,
           };
 
           // Parse stringified JSON arrays from Gamma API
@@ -1866,39 +1891,86 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       }
     }
 
-    // Check if market resolved by looking at positions
-    if (signal.currentWallets && signal.currentWallets.length > 0) {
-      const allResolved = checkIfMarketResolved(signal, walletData, marketLookup);
-      if (allResolved) {
-        // Per-wallet outcome attribution — majority wins determines signal outcome
-        const walletOutcomes = signal.currentWallets.map(w => ({
+    // --- Check if market resolved ---
+    // Method 1: Gamma API market status (most reliable — works even if wallets haven't redeemed)
+    // Look up any token in this signal's market to check if Gamma says it's closed
+    const signalTokenId = signal.tokenId;
+    const marketInfo = signalTokenId ? marketLookup.get(signalTokenId) : null;
+    const gammaResolved = marketInfo && marketInfo.marketClosed === true;
+
+    // Method 2: Wallet position amounts (fallback — all wallets' positions closed)
+    const walletResolved = (signal.currentWallets && signal.currentWallets.length > 0)
+      ? checkIfMarketResolved(signal, walletData, marketLookup)
+      : false;
+
+    if (gammaResolved || walletResolved) {
+      // Determine signal outcome
+      let signalOutcome;
+      let totalPnl = 0;
+      let walletsWon = 0;
+      let walletsLost = 0;
+
+      if (gammaResolved && marketInfo.winningOutcome) {
+        // Gamma tells us which outcome won — check if signal's wallets were on the right side
+        const winner = marketInfo.winningOutcome.toLowerCase().trim();
+        const signalDir = (signal.direction || '').toLowerCase().trim();
+        const signalTopOutcome = (signal.topOutcome || '').toLowerCase().trim();
+
+        // Multiple ways the signal direction can match the winning outcome:
+        // 1. Direct match: direction "celtics" === winner "celtics"
+        // 2. TopOutcome match: topOutcome "Celtics" === winner "Celtics"
+        // 3. Yes/No match: direction "yes" === winner "yes"
+        // 4. Partial match for multi-word outcomes: "trail blazers" includes "blazers"
+        const dirMatch = signalDir === winner || signalTopOutcome === winner;
+        const partialMatch = winner.length > 3 && (
+          signalDir.includes(winner) || winner.includes(signalDir) ||
+          signalTopOutcome.includes(winner) || winner.includes(signalTopOutcome)
+        );
+
+        if (dirMatch || partialMatch) {
+          signalOutcome = 'win';
+        } else {
+          signalOutcome = 'loss';
+        }
+
+        // Still compute per-wallet PnL for tracking
+        if (signal.currentWallets) {
+          for (const w of signal.currentWallets) {
+            const pnl = w.pnl || 0;
+            totalPnl += pnl;
+            if (pnl > 0) walletsWon++;
+            else if (pnl < 0) walletsLost++;
+          }
+        }
+      } else {
+        // Fallback: determine outcome from wallet PnL (original method)
+        const walletOutcomes = (signal.currentWallets || []).map(w => ({
           address: w.address,
           pnl: w.pnl || 0,
           won: (w.pnl || 0) > 0,
         }));
-        const walletsWon = walletOutcomes.filter(w => w.won).length;
-        const walletsLost = walletOutcomes.filter(w => !w.won && w.pnl < 0).length;
-        const totalPnl = walletOutcomes.reduce((s, w) => s + w.pnl, 0);
+        walletsWon = walletOutcomes.filter(w => w.won).length;
+        walletsLost = walletOutcomes.filter(w => !w.won && w.pnl < 0).length;
+        totalPnl = walletOutcomes.reduce((s, w) => s + w.pnl, 0);
 
-        // Signal outcome based on majority of wallets, not aggregate PnL
-        // If 4/5 wallets won but 1 had a huge loss, signal was still "right"
-        let signalOutcome;
         if (walletsWon > walletsLost) signalOutcome = 'win';
         else if (walletsLost > walletsWon) signalOutcome = 'loss';
-        else signalOutcome = totalPnl >= 0 ? 'push' : 'loss'; // Tiebreak by PnL
-
-        closeSignal(active, history, signalId, 'resolved', scanIndex, now, signalOutcome, totalPnl);
-        // Store per-wallet breakdown in history for detailed track record
-        const lastHistoryEntry = history[history.length - 1];
-        if (lastHistoryEntry && lastHistoryEntry.signalId === signalId) {
-          lastHistoryEntry.walletsWon = walletsWon;
-          lastHistoryEntry.walletsLost = walletsLost;
-          lastHistoryEntry.walletHitRate = walletsWon + walletsLost > 0
-            ? +((walletsWon / (walletsWon + walletsLost)) * 100).toFixed(1)
-            : 0;
-        }
-        closed++;
+        else signalOutcome = totalPnl >= 0 ? 'push' : 'loss';
       }
+
+      closeSignal(active, history, signalId, 'resolved', scanIndex, now, signalOutcome, totalPnl);
+      // Store per-wallet breakdown in history for detailed track record
+      const lastHistoryEntry = history[history.length - 1];
+      if (lastHistoryEntry && lastHistoryEntry.signalId === signalId) {
+        lastHistoryEntry.walletsWon = walletsWon;
+        lastHistoryEntry.walletsLost = walletsLost;
+        lastHistoryEntry.walletHitRate = walletsWon + walletsLost > 0
+          ? +((walletsWon / (walletsWon + walletsLost)) * 100).toFixed(1)
+          : 0;
+        lastHistoryEntry.resolvedBy = gammaResolved ? 'gamma' : 'wallet_positions';
+        if (marketInfo?.winningOutcome) lastHistoryEntry.winningOutcome = marketInfo.winningOutcome;
+      }
+      closed++;
     }
   }
 

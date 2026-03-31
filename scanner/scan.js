@@ -501,10 +501,45 @@ async function runScan() {
 
   console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}, Resolved: ${resolvedPositions.positions?.length || 0}`);
 
-  // ===== Step 6b: Process Signals =====
+  // ===== Step 6b: Re-check market status for active signals =====
+  // Markets may have resolved since we last fetched — re-resolve tokens for active signals
+  // so processSignals can detect closed markets via Gamma's `closed` field
   console.log('\n📡 Processing signals...');
   const signalsFile = path.join(DATA_DIR, 'signals.json.gz');
   let existingSignals = loadGzJSON(signalsFile) || { active: {}, history: [], stats: {} };
+
+  const signalTokensToRefresh = new Set();
+  for (const signal of Object.values(existingSignals.active || {})) {
+    if (signal.tokenId) {
+      const existing = marketLookup[signal.tokenId];
+      // Re-fetch if we don't have resolution status, or market isn't already marked closed
+      if (!existing || !existing.marketClosed) {
+        signalTokensToRefresh.add(signal.tokenId);
+      }
+    }
+  }
+
+  if (signalTokensToRefresh.size > 0) {
+    console.log(`  Re-checking market status for ${signalTokensToRefresh.size} active signal tokens...`);
+    try {
+      const refreshed = await resolveMarkets(signalTokensToRefresh);
+      let closedCount = 0;
+      for (const [id, market] of refreshed) {
+        marketLookup[id] = market;
+        if (market.marketClosed) closedCount++;
+      }
+      if (closedCount > 0) {
+        console.log(`  Found ${closedCount} resolved markets among active signals`);
+        saveGzJSON(marketsFile, marketLookup);
+      }
+      // Update the marketMap used by signal processing
+      for (const [id, market] of Object.entries(marketLookup)) {
+        marketMap.set(id, market);
+      }
+    } catch (err) {
+      console.error(`  Signal market refresh error: ${err.message}`);
+    }
+  }
 
   let signals;
   try {
