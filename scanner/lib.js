@@ -698,16 +698,46 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
           const endDate = market.end_date_iso || market.endDate || null;
           const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true;
 
-          // Determine winning outcome from Gamma token prices
+          // Determine winning outcome from Gamma data
           // When a market resolves, the winning token's price = 1.00 and loser = 0.00
           let winningOutcome = null;
-          if (marketClosed && market.tokens && Array.isArray(market.tokens)) {
-            for (const token of market.tokens) {
-              const price = parseFloat(token.price || 0);
-              if (price >= 0.95) {
-                winningOutcome = token.outcome || null;
-                break;
+          if (marketClosed) {
+            // Method 1: Check tokens array for a price near 1.0
+            if (market.tokens && Array.isArray(market.tokens)) {
+              for (const token of market.tokens) {
+                const price = parseFloat(token.price || 0);
+                if (price >= 0.95) {
+                  winningOutcome = token.outcome || null;
+                  break;
+                }
               }
+            }
+
+            // Method 2: Check outcomePrices + outcomes arrays (more reliable for resolved markets)
+            // Gamma returns outcomePrices as '["1","0"]' and outcomes as '["Yes","No"]'
+            if (!winningOutcome) {
+              let parsedPrices = market.outcomePrices;
+              if (typeof parsedPrices === 'string') {
+                try { parsedPrices = JSON.parse(parsedPrices); } catch(e) { parsedPrices = null; }
+              }
+              let parsedOutcomes = market.outcomes;
+              if (typeof parsedOutcomes === 'string') {
+                try { parsedOutcomes = JSON.parse(parsedOutcomes); } catch(e) { parsedOutcomes = null; }
+              }
+              if (Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
+                for (let pi = 0; pi < parsedPrices.length; pi++) {
+                  const price = parseFloat(parsedPrices[pi] || 0);
+                  if (price >= 0.95 && parsedOutcomes[pi]) {
+                    winningOutcome = parsedOutcomes[pi];
+                    break;
+                  }
+                }
+              }
+            }
+
+            // Method 3: Check Gamma's resolved_by or winner field directly
+            if (!winningOutcome && market.winner) {
+              winningOutcome = market.winner;
             }
           }
 
@@ -2017,6 +2047,40 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       closeSignal(active, history, dup.signalId, 'deduplicated', scanIndex, now);
       closed++;
     }
+  }
+
+  // --- Phase 2c: Fix historical push outcomes using Gamma data ---
+  // Pushes occurred when wallet PnLs were all 0 (unredeemed). Now that we have
+  // winningOutcome from Gamma, retroactively correct push → win/loss.
+  let pushesFixed = 0;
+  for (const hist of history) {
+    if (hist.outcome !== 'push') continue;
+    // Look up market data for this signal's token
+    const histToken = hist.tokenId;
+    const histMarket = histToken ? marketLookup.get(histToken) : null;
+    if (!histMarket || !histMarket.winningOutcome) continue;
+
+    const winner = histMarket.winningOutcome.toLowerCase().trim();
+    const dir = (hist.direction || '').toLowerCase().trim();
+    const topOut = (hist.topOutcome || '').toLowerCase().trim();
+
+    const dirMatch = dir === winner || topOut === winner;
+    const partialMatch = winner.length > 3 && (
+      dir.includes(winner) || winner.includes(dir) ||
+      topOut.includes(winner) || winner.includes(topOut)
+    );
+
+    if (dirMatch || partialMatch) {
+      hist.outcome = 'win';
+    } else {
+      hist.outcome = 'loss';
+    }
+    hist.resolvedBy = 'gamma_retrofix';
+    hist.winningOutcome = histMarket.winningOutcome;
+    pushesFixed++;
+  }
+  if (pushesFixed > 0) {
+    console.log(`  Fixed ${pushesFixed} historical push outcomes using Gamma data`);
   }
 
   // --- Phase 3: Compute aggregate stats ---
