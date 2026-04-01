@@ -711,6 +711,11 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
             }
           }
 
+          // Volume and liquidity
+          const volume = parseFloat(market.volume || 0);
+          const liquidity = parseFloat(market.liquidity || 0);
+          const volume24hr = parseFloat(market.volume24hr || market.volume_24hr || 0);
+
           const commonFields = {
             title: market.title || market.question || `Market ${tokenId.slice(0, 8)}...`,
             slug: fullSlug,
@@ -723,6 +728,10 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
             endDate,
             acceptingOrders,
             winningOutcome,
+            // Market depth
+            volume,
+            liquidity,
+            volume24hr,
           };
 
           // Parse stringified JSON arrays from Gamma API
@@ -736,7 +745,7 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
             try { outcomesList = JSON.parse(outcomesList); } catch(e) { outcomesList = null; }
           }
 
-          // Build per-token info with outcome from tokens array
+          // Build per-token info with outcome and current price from tokens array
           if (market.tokens && Array.isArray(market.tokens)) {
             for (const token of market.tokens) {
               const tid = token.token_id || token.tokenId;
@@ -744,9 +753,17 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
                 lookup.set(tid, {
                   ...commonFields,
                   outcome: token.outcome || 'Unknown',
+                  currentPrice: parseFloat(token.price || 0),
                 });
               }
             }
+          }
+
+          // Parse outcomePrices for current market prices per outcome
+          // Gamma returns these as a JSON string like '["0.65","0.35"]' matching clobTokenIds order
+          let outcomePrices = market.outcomePrices;
+          if (typeof outcomePrices === 'string') {
+            try { outcomePrices = JSON.parse(outcomePrices); } catch(e) { outcomePrices = null; }
           }
 
           // Use parsed clobTokenIds + outcomes to map tokens to Yes/No
@@ -759,13 +776,21 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
               const outcomeValue = (Array.isArray(outcomesList) && outcomesList[ci])
                 ? outcomesList[ci]
                 : (ci === 0 ? 'Yes' : 'No');
+              // Current price from outcomePrices array, or from tokens array if already set
+              const price = (Array.isArray(outcomePrices) && outcomePrices[ci])
+                ? parseFloat(outcomePrices[ci])
+                : (existing?.currentPrice || 0);
               // Override if not set OR if outcome is still Unknown
               if (!existing || existing.outcome === 'Unknown') {
                 lookup.set(tid, {
                   ...(existing || {}),
                   ...commonFields,
                   outcome: outcomeValue,
+                  currentPrice: price,
                 });
+              } else if (price > 0) {
+                // Update price even if outcome is already known
+                existing.currentPrice = price;
               }
             }
           }
