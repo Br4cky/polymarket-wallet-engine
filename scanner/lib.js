@@ -242,8 +242,11 @@ async function fetchPositions(endpoint, entity, fields, lastId = '', maxBatch = 
  * @returns {Promise<{refreshed: number, newPositions: number, closures: number}>}
  */
 async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scanIndex, scanTimestamp, delay = 200) {
-  // Skip tombstoned/removed wallets — don't waste API calls on them
-  const addresses = Object.keys(wallets).filter(addr => wallets[addr].status !== 'removed');
+  // Skip tombstoned/removed/contaminated wallets — don't waste API calls on them
+  const addresses = Object.keys(wallets).filter(addr => {
+    const status = wallets[addr].status;
+    return status !== 'removed' && status !== 'contaminated';
+  });
   let totalRefreshed = 0;
   let totalNew = 0;
   let totalClosures = 0;
