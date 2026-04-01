@@ -2329,7 +2329,6 @@ function initPaperTrading() {
         totalTrades: 0,
         wins: 0,
         losses: 0,
-        pushes: 0,
         totalPnl: 0,
         biggestWin: 0,
         biggestLoss: 0,
@@ -2491,8 +2490,6 @@ function processPaperTrades(signals, paperState, scanIndex) {
         stats.biggestLoss = Math.min(stats.biggestLoss, tradePnl);
         stats.currentStreak = stats.currentStreak < 0 ? stats.currentStreak - 1 : -1;
         stats.lossStreak = Math.max(stats.lossStreak, Math.abs(stats.currentStreak));
-      } else {
-        stats.pushes++;
       }
 
       // Remove from open trades

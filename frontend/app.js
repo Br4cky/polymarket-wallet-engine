@@ -1306,8 +1306,7 @@ function renderSignalEngine() {
     { field: 'outcome', render: v => {
       if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
       if (v === 'loss') return `<span class="badge badge-low">LOSS</span>`;
-      if (v === 'push') return `<span class="badge badge-mid">PUSH</span>`;
-      return `<span class="badge badge-mid">${v.toUpperCase()}</span>`;
+      return `<span class="badge badge-mid">${(v || 'unknown').toUpperCase()}</span>`;
     }},
     { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
     { field: 'peakConfidence', render: v => {
@@ -1943,7 +1942,7 @@ function renderPaperTrader() {
   el('paper-deployed').textContent = `$${deployed.toFixed(0)} deployed`;
 
   el('paper-winrate').textContent = winRate === '-' ? '-' : winRate + '%';
-  el('paper-record').textContent = `${stats.wins}W / ${stats.losses}L` + (stats.pushes ? ` / ${stats.pushes}P` : '');
+  el('paper-record').textContent = `${stats.wins}W / ${stats.losses}L`;
 
   el('paper-pnl').textContent = fmtDollars(stats.totalPnl);
   el('paper-pnl').className = `metric-value ${stats.totalPnl >= 0 ? '' : 'text-negative'}`;
@@ -2090,7 +2089,7 @@ function renderTierComparison(pt) {
     const equity = p.equity || 0;
     const startBal = p.startingBalance || 10000;
     const ret = ((equity / startBal - 1) * 100).toFixed(2);
-    const total = s.wins + s.losses + (s.pushes || 0);
+    const total = s.wins + s.losses;
     const wr = total > 0 ? ((s.wins / total) * 100).toFixed(1) + '%' : '-';
     const label = name.charAt(0).toUpperCase() + name.slice(1);
 
