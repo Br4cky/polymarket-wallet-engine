@@ -2008,9 +2008,9 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         walletsLost = walletOutcomes.filter(w => !w.won && w.pnl < 0).length;
         totalPnl = walletOutcomes.reduce((s, w) => s + w.pnl, 0);
 
-        if (walletsWon > walletsLost) signalOutcome = 'win';
-        else if (walletsLost > walletsWon) signalOutcome = 'loss';
-        else signalOutcome = totalPnl >= 0 ? 'push' : 'loss';
+        // Binary outcome only — we called a direction, it was right or wrong
+        if (walletsWon >= walletsLost) signalOutcome = 'win';
+        else signalOutcome = 'loss';
       }
 
       closeSignal(active, history, signalId, 'resolved', scanIndex, now, signalOutcome, totalPnl);
@@ -2450,8 +2450,6 @@ function processPaperTrades(signals, paperState, scanIndex) {
       } else if (closeReason === 'stale' || closeReason === 'deduplicated' || closeReason === 'upgraded_to_consensus') {
         // Signal closed without resolution — return capital with small friction cost
         tradePnl = -trade.tradeSize * 0.02; // 2% slippage/friction for exit
-      } else if (outcome === 'push') {
-        tradePnl = 0; // Break even
       } else {
         // Unknown outcome — small loss for friction
         tradePnl = -trade.tradeSize * 0.02;
