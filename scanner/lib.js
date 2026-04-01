@@ -1968,6 +1968,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       let walletsWon = 0;
       let walletsLost = 0;
 
+      // Gamma-resolved with no winningOutcome means market closed but we can't determine the winner.
+      // Only resolve if we have a clear winner OR wallet PnLs can tell us.
+      if (gammaResolved && !marketInfo.winningOutcome && !walletResolved) {
+        // Market closed per Gamma but no winner info and wallets haven't cleared — skip for now
+        continue;
+      }
+
       if (gammaResolved && marketInfo.winningOutcome) {
         // Gamma tells us which outcome won — check if signal's wallets were on the right side
         const winner = marketInfo.winningOutcome.toLowerCase().trim();
@@ -2010,6 +2017,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         walletsWon = walletOutcomes.filter(w => w.won).length;
         walletsLost = walletOutcomes.filter(w => !w.won && w.pnl < 0).length;
         totalPnl = walletOutcomes.reduce((s, w) => s + w.pnl, 0);
+
+        // Need at least one wallet with a non-zero PnL to determine outcome.
+        // If all PnLs are 0 (unredeemed shares), we can't tell who won — skip resolution.
+        if (walletsWon === 0 && walletsLost === 0) {
+          // Can't determine outcome — don't close the signal yet, wait for Gamma data or PnL updates
+          continue;
+        }
 
         // Binary outcome only — we called a direction, it was right or wrong
         if (walletsWon >= walletsLost) signalOutcome = 'win';
