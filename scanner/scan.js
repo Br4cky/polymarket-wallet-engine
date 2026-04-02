@@ -502,43 +502,69 @@ async function runScan() {
 
   console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}`);
 
-  // ===== Step 6b: Re-check market status for active signals =====
-  // Markets may have resolved since we last fetched — re-resolve tokens for active signals
-  // so processSignals can detect closed markets via Gamma's `closed` field
+  // ===== Step 6b: Verify consensus markets are still open =====
+  // On Polymarket, losing shares stay in wallets with non-zero amounts after resolution.
+  // computeConsensus filters out known-closed markets, but many markets haven't had their
+  // closed status checked yet. Before generating signals, resolve ALL consensus market tokens
+  // that don't have marketClosed set — this prevents ghost signals from dead markets.
   console.log('\n📡 Processing signals...');
   const signalsFile = path.join(DATA_DIR, 'signals.json.gz');
   let existingSignals = loadGzJSON(signalsFile) || { active: {}, history: [], stats: {} };
 
-  const signalTokensToRefresh = new Set();
-  for (const signal of Object.values(existingSignals.active || {})) {
-    if (signal.tokenId) {
-      const existing = marketLookup[signal.tokenId];
-      // Re-fetch if we don't have resolution status, or market isn't already marked closed
-      if (!existing || !existing.marketClosed) {
-        signalTokensToRefresh.add(signal.tokenId);
+  const tokensToCheck = new Set();
+
+  // Check consensus candidate tokens
+  for (const entry of consensus) {
+    const tokenId = entry.tokenId;
+    if (tokenId) {
+      const existing = marketLookup[tokenId];
+      if (!existing || !('marketClosed' in existing)) {
+        tokensToCheck.add(tokenId);
       }
     }
   }
 
-  if (signalTokensToRefresh.size > 0) {
-    console.log(`  Re-checking market status for ${signalTokensToRefresh.size} active signal tokens...`);
+  // Also check active signal tokens (existing behaviour)
+  for (const signal of Object.values(existingSignals.active || {})) {
+    if (signal.tokenId) {
+      const existing = marketLookup[signal.tokenId];
+      if (!existing || !existing.marketClosed) {
+        tokensToCheck.add(signal.tokenId);
+      }
+    }
+  }
+
+  if (tokensToCheck.size > 0) {
+    console.log(`  Checking market status for ${tokensToCheck.size} consensus/signal tokens...`);
     try {
-      const refreshed = await resolveMarkets(signalTokensToRefresh);
+      const refreshed = await resolveMarkets(tokensToCheck);
       let closedCount = 0;
       for (const [id, market] of refreshed) {
         marketLookup[id] = market;
         if (market.marketClosed) closedCount++;
       }
       if (closedCount > 0) {
-        console.log(`  Found ${closedCount} resolved markets among active signals`);
+        console.log(`  Filtered out ${closedCount} resolved markets`);
         saveGzJSON(marketsFile, marketLookup);
-      }
-      // Update the marketMap used by signal processing
-      for (const [id, market] of Object.entries(marketLookup)) {
-        marketMap.set(id, market);
+
+        // Re-run consensus with updated market data so closed markets are excluded
+        for (const [id, market] of Object.entries(marketLookup)) {
+          marketMap.set(id, market);
+        }
+        try {
+          consensus = computeConsensus(walletMap, marketMap, 3);
+          console.log(`  Consensus after filtering: ${consensus.length}`);
+        } catch (e) {
+          console.error(`  Consensus re-run error: ${e.message}`);
+        }
+      } else {
+        // Still sync marketMap even if nothing closed
+        for (const [id, market] of Object.entries(marketLookup)) {
+          marketMap.set(id, market);
+        }
       }
     } catch (err) {
-      console.error(`  Signal market refresh error: ${err.message}`);
+      console.error(`  Market status check error: ${err.message}`);
     }
   }
 

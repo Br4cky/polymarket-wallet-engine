@@ -910,6 +910,12 @@ function computeConsensus(walletData, marketLookup, minWallets = 3) {
 
       const tokenId = pos.tokenId;
       const marketInfo = marketLookup.get(tokenId) || {};
+
+      // Skip positions on markets already known to be closed/resolved.
+      // On Polymarket, losing shares remain in wallets with non-zero amounts
+      // even after market resolution — they're worthless but never redeemed.
+      if (marketInfo.marketClosed === true) continue;
+
       // Use groupId to combine all outcome sides; fall back to tokenId if no groupId
       const groupKey = marketInfo.groupId || tokenId;
       const outcome = marketInfo.outcome || 'Unknown';
@@ -1147,10 +1153,13 @@ function computeActivePositions(walletData, marketLookup) {
       if (pos.amount <= 0.01) continue; // Only active
 
       const tokenId = pos.tokenId;
+      const mInfo = marketLookup.get(tokenId) || {};
+      if (mInfo.marketClosed === true) continue; // Skip resolved markets
+
       if (!marketHoldings.has(tokenId)) {
         marketHoldings.set(tokenId, {
           tokenId,
-          market: marketLookup.get(tokenId) || { title: `Market ${tokenId}` },
+          market: mInfo.title ? mInfo : { title: `Market ${tokenId}` },
           holders: [],
           totalShares: 0,
           totalValue: 0,
