@@ -1430,6 +1430,15 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       updated++;
 
     } else if (meetsThresholds) {
+      // --- Guard: skip markets that are already resolved ---
+      // Without this, Phase 2 would immediately close a signal we just opened,
+      // producing a 0-duration open→close that pollutes the track record.
+      const openTokenId = entry.tokenId || '';
+      const openMarketInfo = openTokenId ? marketLookup.get(openTokenId) : null;
+      if (openMarketInfo && openMarketInfo.marketClosed === true) {
+        continue; // Market already settled — no point opening a signal
+      }
+
       // --- OPEN new signal ---
       const consensusStr = entry.consensusStrength || 0;
       const confidence = computeSignalConfidence({
@@ -1560,6 +1569,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       clusterUpdated++;
 
     } else if (meetsClusterThresholds) {
+      // Guard: skip already-resolved markets
+      const clOpenTokenId = entry.tokenId || '';
+      const clOpenMarketInfo = clOpenTokenId ? marketLookup.get(clOpenTokenId) : null;
+      if (clOpenMarketInfo && clOpenMarketInfo.marketClosed === true) {
+        continue;
+      }
+
       // Open new cluster signal
       const consensusStr = entry.consensusStrength || 0;
       const confidence = computeClusterConfidence({
@@ -1655,6 +1671,9 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       const groupKey = marketInfo.groupId || tokenId;
       const outcome = marketInfo.outcome || 'Unknown';
       if (outcome === 'Unknown') continue;
+
+      // Skip already-resolved markets
+      if (marketInfo.marketClosed === true) continue;
 
       // Skip if this market already has a consensus signal (using canonical groupKey)
       const consensusSignalId = `sig_${groupKey}`;
