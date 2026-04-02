@@ -430,23 +430,26 @@ function analyzePositions(positions, marketLookup = null) {
     };
   }
 
-  // --- Wins/Losses: ONLY closed positions (amount ≈ 0) count ---
-  // A "win" means the prediction was correct (market resolved in trader's favour).
-  // For closed positions, positive PnL = correct prediction, negative = wrong.
-  // Open positions are NEVER wins or losses — the prediction isn't decided yet.
+  // --- Position classification ---
+  // A position is "resolved" when we can determine the outcome:
+  //   1. amount ≤ 0.01 (wallet redeemed/sold) — use PnL to determine win/loss
+  //   2. amount > 0.01 BUT market is closed (marketClosed === true) — wallet holds
+  //      unredeemed shares. Use winningOutcome to determine if they picked correctly.
+  //      Unredeemed losing shares are worthless; unredeemed winning shares have value.
+  //      Without this check, unredeemed losses hide as "open" positions and inflate WR.
+  // A position is "open" only if amount > 0.01 AND the market is NOT closed.
   let wins = 0;
   let losses = 0;
   let winSum = 0;   // total $ won across winning resolved positions
   let lossSum = 0;  // total $ lost across losing resolved positions
 
-  // --- PnL: tracked separately for realized vs unrealized ---
   let totalPnl = 0;
-  let realizedPnl = 0;   // closed positions only
-  let unrealizedPnl = 0; // open positions only
+  let realizedPnl = 0;   // resolved positions (redeemed + unredeemed on closed markets)
+  let unrealizedPnl = 0; // genuinely open positions on live markets
   let totalVolume = 0;
   let openCount = 0;
-  let openProfitable = 0; // open positions currently in profit
-  let openLosing = 0;     // open positions currently losing
+  let openProfitable = 0;
+  let openLosing = 0;
   let maxScanIndex = 0;
 
   const uniqueTokens = new Set();
@@ -454,22 +457,29 @@ function analyzePositions(positions, marketLookup = null) {
   for (const pos of positions) {
     const { pnl, tokenId, totalBought, amount, scanIndex } = pos;
 
+    // Skip dust-level positions — sub-$1 bets are noise, not signal
+    if (totalBought < 1) continue;
+
     totalPnl += pnl;
     totalVolume += totalBought;
     uniqueTokens.add(tokenId);
 
     if (scanIndex > maxScanIndex) maxScanIndex = scanIndex;
 
-    const isOpen = (amount || 0) > 0.01;
+    const hasAmount = (amount || 0) > 0.01;
 
-    if (isOpen) {
-      // Open position — track unrealized PnL, NOT a win or loss
-      openCount++;
-      unrealizedPnl += pnl;
-      if (pnl > 0.01) openProfitable++;
-      else if (pnl < -0.01) openLosing++;
-    } else if (totalBought > 0.01) {
-      // Closed position with meaningful volume — this is a resolved prediction
+    // Look up market resolution data
+    let marketInfo = null;
+    if (marketLookup && tokenId) {
+      marketInfo = typeof marketLookup.get === 'function'
+        ? marketLookup.get(tokenId)
+        : marketLookup[tokenId];
+    }
+    const marketClosed = marketInfo && marketInfo.marketClosed === true;
+
+    if (!hasAmount && totalBought > 0.01) {
+      // Case 1: Wallet redeemed/sold — position amount is ~0
+      // Use PnL directly to determine win/loss
       realizedPnl += pnl;
       if (pnl > 0) {
         wins++;
@@ -478,6 +488,48 @@ function analyzePositions(positions, marketLookup = null) {
         losses++;
         lossSum += -pnl;
       }
+    } else if (hasAmount && marketClosed) {
+      // Case 2: Wallet still holds shares but market is resolved
+      // Determine outcome by checking if wallet's side matches the winner
+      const walletOutcome = (marketInfo.outcome || '').toLowerCase().trim();
+      const winner = (marketInfo.winningOutcome || '').toLowerCase().trim();
+
+      if (winner && walletOutcome) {
+        // Check if wallet picked the winning side
+        const isWin = walletOutcome === winner ||
+          (walletOutcome.length >= 4 && winner.length >= 4 && (
+            winner.includes(walletOutcome) || walletOutcome.includes(winner)
+          ));
+
+        if (isWin) {
+          // Unredeemed winning shares — worth $1 each minus entry cost
+          const entryPrice = pos.avgPrice || (amount > 0 ? Math.min(1, totalBought / amount) : 0.5);
+          const impliedPnl = amount * (1 - entryPrice);
+          wins++;
+          winSum += Math.max(0, impliedPnl);
+          realizedPnl += Math.max(0, impliedPnl);
+        } else {
+          // Unredeemed losing shares — worthless
+          losses++;
+          lossSum += totalBought; // Lost what they paid
+          realizedPnl -= totalBought;
+        }
+      } else if (pnl < -0.01) {
+        // Market closed but no winningOutcome data — use PnL as fallback
+        losses++;
+        lossSum += -pnl;
+        realizedPnl += pnl;
+      } else if (pnl > 0.01) {
+        wins++;
+        winSum += pnl;
+        realizedPnl += pnl;
+      }
+    } else if (hasAmount) {
+      // Case 3: Genuinely open position on a live market
+      openCount++;
+      unrealizedPnl += pnl;
+      if (pnl > 0.01) openProfitable++;
+      else if (pnl < -0.01) openLosing++;
     }
   }
 
