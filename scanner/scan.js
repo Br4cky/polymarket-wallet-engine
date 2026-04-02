@@ -502,24 +502,48 @@ async function runScan() {
 
   console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}`);
 
-  // ===== Step 6b: Verify consensus markets are still open =====
+  // ===== Step 6b: Verify ALL candidate markets are still open =====
   // On Polymarket, losing shares stay in wallets with non-zero amounts after resolution.
   // computeConsensus filters out known-closed markets, but many markets haven't had their
-  // closed status checked yet. Before generating signals, resolve ALL consensus market tokens
-  // that don't have marketClosed set — this prevents ghost signals from dead markets.
+  // closed status checked yet. Before generating signals, resolve ALL candidate market tokens
+  // (consensus, cluster, AND solo) that don't have marketClosed set — this prevents ghost
+  // signals from dead markets.
   console.log('\n📡 Processing signals...');
   const signalsFile = path.join(DATA_DIR, 'signals.json.gz');
   let existingSignals = loadGzJSON(signalsFile) || { active: {}, history: [], stats: {} };
 
   const tokensToCheck = new Set();
 
-  // Check consensus candidate tokens
+  // Check consensus/cluster candidate tokens (both come from the consensus array)
   for (const entry of consensus) {
     const tokenId = entry.tokenId;
     if (tokenId) {
       const existing = marketLookup[tokenId];
       if (!existing || !('marketClosed' in existing)) {
         tokensToCheck.add(tokenId);
+      }
+    }
+  }
+
+  // Check solo candidate tokens — any position held by a qualified wallet
+  // that doesn't already have marketClosed set. This prevents solo signals
+  // opening on dead markets that Gamma hasn't checked yet.
+  for (const [addr, w] of walletMap) {
+    const stats = w.stats;
+    if (!stats || !w.positions) continue;
+    // Mirror solo qualification thresholds from lib.js SIGNAL_THRESHOLDS
+    const qualifies = (w.score || 0) >= 75 &&
+      (stats.wr || 0) >= 0.85 &&
+      (stats.resolved || 0) >= 100 &&
+      (stats.realizedPnl || stats.totalPnl || 0) >= 50000;
+    if (!qualifies) continue;
+
+    for (const pos of w.positions) {
+      if (pos.amount > 0.01 && pos.tokenId) {
+        const existing = marketLookup[pos.tokenId];
+        if (!existing || !('marketClosed' in existing)) {
+          tokensToCheck.add(pos.tokenId);
+        }
       }
     }
   }
@@ -535,7 +559,7 @@ async function runScan() {
   }
 
   if (tokensToCheck.size > 0) {
-    console.log(`  Checking market status for ${tokensToCheck.size} consensus/signal tokens...`);
+    console.log(`  Checking market status for ${tokensToCheck.size} candidate tokens (consensus + cluster + solo + active)...`);
     try {
       const refreshed = await resolveMarkets(tokensToCheck);
       let closedCount = 0;
