@@ -293,6 +293,12 @@ button {
   font-size: 12px;
 }
 
+.metric-sub {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
 /* ============================================================================
    Charts
    ============================================================================ */
@@ -427,7 +433,7 @@ button {
 }
 
 .badge-neutral {
-  color: var(--text-muted);
+  color: var(--text-dim);
 }
 
 .badge-solo {
@@ -767,27 +773,7 @@ button {
   margin-bottom: 6px;
 }
 
-/* ============================================================================
-   Screener Styles
-   ============================================================================ */
-.screener-container {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 24px;
-  margin-bottom: 40px;
-}
-
-.screener-section {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 24px;
-}
-
-.screener-section h3 {
-  margin-bottom: 20px;
-  color: var(--text);
-}
+/* Screener styles removed — tab no longer exists */
 
 .progress-area {
   background: var(--surface);
@@ -884,9 +870,6 @@ footer {
     grid-template-columns: 1fr;
   }
 
-  .screener-container {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 768px) {
@@ -945,9 +928,6 @@ footer {
     padding: 16px;
   }
 
-  .screener-section {
-    padding: 16px;
-  }
 }
 
 @media (max-width: 480px) {
@@ -1022,10 +1002,6 @@ footer {
   }
 
   .chart-container {
-    padding: 12px;
-  }
-
-  .screener-section {
     padding: 12px;
   }
 

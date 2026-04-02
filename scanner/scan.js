@@ -17,8 +17,6 @@ import {
   computeConsensus,
   computeWinPatterns,
   computeActivePositions,
-  findBiggestWins,
-  computeResolvedPositions,
   processSignals,
   initPaperTrading,
   processPaperTrades,
@@ -43,7 +41,7 @@ const MIN_POSITIONS_STAGE1 = 20;
 const MIN_WIN_RATE = 0.50;  // 50% minimum win rate to qualify
 const MAX_INACTIVE_DAYS = 90; // Wallets with no activity in 90 days are excluded
 const MAX_WALLETS = 2000;
-const PROBATION_SCANS = 3;  // Number of scans before a demoted wallet is removed
+const PROBATION_SCANS = 12; // Number of scans (~3 days) before a demoted wallet is removed
 const USDC_DIVISOR = 1e6;
 const BATCH_SIZE = 1000;
 const DELAY = 200;
@@ -285,13 +283,19 @@ async function runScan() {
 
   // ===== Step 4: Score All Wallets =====
   console.log('⭐ Scoring wallets...');
+
+  // Pre-load market lookup from previous scan for groupId-based market counting in scoring.
+  // This will be refreshed/extended in Step 5, but the groupId mappings are stable.
+  const marketsFile = path.join(DATA_DIR, 'markets.json.gz');
+  let marketLookup = loadGzJSON(marketsFile) || {};
+
   const scoredWallets = [];
 
   for (const [address, wallet] of Object.entries(wallets)) {
     // Skip tombstoned wallets — they've been removed and shouldn't be re-scored
     if (wallet.status === 'removed') continue;
 
-    const stats = analyzePositions(wallet.positions || []);
+    const stats = analyzePositions(wallet.positions || [], marketLookup);
 
     // Compute lastActiveTimestamp from REAL activity signals:
     // 1. The most recent discoveredScan timestamp (when a NEW position appeared)
@@ -353,7 +357,7 @@ async function runScan() {
       continue; // Skip entirely — don't include in scored wallets at all
     }
 
-    const passesFilters = isActive && (stats.realizedPnl || stats.totalPnl) >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE;
+    const passesFilters = isActive && stats.realizedPnl >= MIN_PNL && stats.resolved >= MIN_POSITIONS_STAGE1 && stats.wr >= MIN_WIN_RATE;
 
     if (passesFilters) {
       // Active and qualifying — clear any probation
@@ -445,8 +449,7 @@ async function runScan() {
     }
   }
 
-  const marketsFile = path.join(DATA_DIR, 'markets.json.gz');
-  let marketLookup = loadGzJSON(marketsFile) || {};
+  // marketLookup already loaded in Step 4 for scoring; extend it here with new resolutions
 
   const toResolve = new Set();
   for (const id of tokenIds) {
@@ -491,15 +494,13 @@ async function runScan() {
   const marketMap = new Map(Object.entries(marketLookup));
   console.log(`  ${walletMap.size} clean wallets in analytics pool`);
 
-  let consensus = [], winPatterns = {}, activePositions = [], biggestWins = [], resolvedPositions = {};
+  let consensus = [], winPatterns = {}, activePositions = [];
 
   try { consensus = computeConsensus(walletMap, marketMap, 3); } catch (e) { console.error(`  Consensus error: ${e.message}`); }
   try { winPatterns = computeWinPatterns(walletMap, marketMap); } catch (e) { console.error(`  Patterns error: ${e.message}`); }
   try { activePositions = computeActivePositions(walletMap, marketMap); } catch (e) { console.error(`  Active positions error: ${e.message}`); }
-  try { biggestWins = findBiggestWins(walletMap, marketMap, 200); } catch (e) { console.error(`  Biggest wins error: ${e.message}`); }
-  try { resolvedPositions = computeResolvedPositions(walletMap, marketMap, scanTimestampMap); } catch (e) { console.error(`  Resolved positions error: ${e.message}`); }
 
-  console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}, Top wins: ${biggestWins.length}, Resolved: ${resolvedPositions.positions?.length || 0}`);
+  console.log(`  Consensus: ${consensus.length}, Active markets: ${activePositions.length}`);
 
   // ===== Step 6b: Re-check market status for active signals =====
   // Markets may have resolved since we last fetched — re-resolve tokens for active signals
@@ -656,8 +657,7 @@ async function runScan() {
   analytics.consensus = consensus;
   analytics.activePositions = activePositions;
   analytics.winPatterns = winPatterns;
-  analytics.biggestWins = biggestWins;
-  analytics.resolvedPositions = resolvedPositions;
+  // biggestWins and resolvedPositions removed — computed but never displayed in frontend
 
   // Signal data for frontend
   analytics.signals = {

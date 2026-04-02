@@ -8,7 +8,7 @@ import path from 'path';
 import zlib from 'zlib';
 
 const GOLDSKY_PNL = 'https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/pnl-subgraph/0.0.14/gn';
-const GOLDSKY_POSITIONS = 'https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/positions-subgraph/0.0.7/gn';
+// GOLDSKY_POSITIONS endpoint removed — unused, all position data comes from PNL subgraph
 const GAMMA_MARKETS = 'https://gamma-api.polymarket.com/markets';
 const USDC_DIVISOR = 1e6;
 
@@ -402,7 +402,7 @@ async function refreshTrackedWallets(endpoint, entityName, fields, wallets, scan
  * @param {Array} positions - Array of {pnl, tokenId, totalBought, amount, scanIndex}
  * @returns {object} Statistics object
  */
-function analyzePositions(positions) {
+function analyzePositions(positions, marketLookup = null) {
   if (!positions || positions.length === 0) {
     return {
       wins: 0,
@@ -486,7 +486,21 @@ function analyzePositions(positions) {
   const avgW = wins > 0 ? winSum / wins : 0;
   const avgL = losses > 0 ? lossSum / losses : 0;
   const uniqueTokenCount = uniqueTokens.size;
-  const estimatedMarkets = Math.max(1, Math.ceil(uniqueTokenCount / 2));
+  // Count unique markets using groupId when market data is available.
+  // This handles multi-outcome markets correctly (e.g. 30-team NBA market = 1 market, not 15).
+  // Falls back to ceil(tokens/2) when no market lookup is provided.
+  let estimatedMarkets;
+  if (marketLookup) {
+    const uniqueGroups = new Set();
+    for (const tokenId of uniqueTokens) {
+      const mi = typeof marketLookup.get === 'function' ? marketLookup.get(tokenId) : marketLookup[tokenId];
+      const groupId = mi?.groupId || tokenId;
+      uniqueGroups.add(groupId);
+    }
+    estimatedMarkets = Math.max(1, uniqueGroups.size);
+  } else {
+    estimatedMarkets = Math.max(1, Math.ceil(uniqueTokenCount / 2));
+  }
 
   // Efficiency: PnL per dollar traded (same as original screener)
   const efficiency = totalVolume > 0 ? totalPnl / totalVolume : 0;
@@ -1187,153 +1201,9 @@ function computeActivePositions(walletData, marketLookup) {
   return active;
 }
 
-/**
- * Find the biggest individual winning positions
- * @param {Map} walletData - Map of address → {positions, score, stats}
- * @param {Map} marketLookup - Map of tokenId → market info
- * @param {number} topN - Number of top wins to return
- * @returns {Array} Top N positions by PnL
- */
-function findBiggestWins(walletData, marketLookup, topN = 50) {
-  const allWins = [];
-
-  for (const [address, wallet] of walletData) {
-    if (!wallet.positions) continue;
-
-    for (const pos of wallet.positions) {
-      if (pos.pnl <= 0) continue; // Only winning positions
-      if ((pos.amount || 0) > 0.01) continue; // Only closed/resolved — skip unrealized gains
-
-      const market = marketLookup.get(pos.tokenId) || {
-        title: `Market ${pos.tokenId}`,
-      };
-      const roi = pos.totalBought > 0 ? (pos.pnl / pos.totalBought) * 100 : 0;
-
-      allWins.push({
-        rank: 0,
-        address,
-        walletScore: wallet.score,
-        marketTitle: market.title,
-        slug: market.slug || pos.tokenId,
-        tokenId: pos.tokenId,
-        pnl: pos.pnl,
-        totalBought: pos.totalBought,
-        roi,
-      });
-    }
-  }
-
-  // Sort by PnL descending and take top N
-  return allWins
-    .sort((a, b) => b.pnl - a.pnl)
-    .slice(0, topN)
-    .map((w, i) => ({ ...w, rank: i + 1 }));
-}
-
 // ============================================================================
 // File I/O Helpers
 // ============================================================================
-
-/**
- * Load and parse a JSON file, return null if missing
- * @param {string} filepath - Path to JSON file
- * @returns {any} Parsed JSON or null
- */
-/**
- * Compute resolved positions dataset for the signals tab.
- * Builds a list of all resolved positions (closed, non-zero PnL) with
- * per-period stats (today, 7d, 30d, 90d, all-time).
- * @param {Map} walletData - Map of address → {positions, score, stats}
- * @param {Map} marketLookup - Map of tokenId → {title, slug, ...}
- * @param {Object} scanTimestampMap - Map of scanIndex → ISO timestamp
- * @returns {Object} { positions: [...], periodStats: {...} }
- */
-function computeResolvedPositions(walletData, marketLookup, scanTimestampMap) {
-  const now = Date.now();
-  const DAY = 24 * 60 * 60 * 1000;
-  const cutoffs = {
-    today: now - 1 * DAY,
-    week: now - 7 * DAY,
-    month: now - 30 * DAY,
-    quarter: now - 90 * DAY,
-  };
-
-  const allResolved = [];
-
-  for (const [address, wallet] of walletData) {
-    if (!wallet.positions) continue;
-    const walletScore = wallet.score || 0;
-
-    for (const pos of wallet.positions) {
-      // Only resolved positions: has non-trivial PnL and not holding shares
-      if (Math.abs(pos.pnl || 0) < 0.01) continue;
-      if ((pos.amount || 0) > 0.01) continue; // still open
-
-      // Get resolved timestamp — when the position actually closed
-      // Only positions where we WITNESSED the closure (open → closed between scans)
-      // have a valid resolvedTimestamp. Positions discovered already-closed have null.
-      const ts = pos.resolvedTimestamp || null;
-      const tsMs = ts ? new Date(ts).getTime() : null;
-
-      const marketInfo = marketLookup.get(pos.tokenId) || {};
-
-      allResolved.push({
-        address,
-        walletScore: +walletScore.toFixed(1),
-        marketTitle: marketInfo.title || `Market ${(pos.tokenId || '').slice(0, 8)}...`,
-        slug: marketInfo.slug || '',
-        tokenId: pos.tokenId,
-        pnl: +(pos.pnl || 0).toFixed(2),
-        totalBought: +(pos.totalBought || 0).toFixed(2),
-        roi: pos.totalBought > 0.01 ? +((pos.pnl / pos.totalBought)).toFixed(4) : 0,
-        timestamp: ts,
-        timestampMs: tsMs,
-      });
-    }
-  }
-
-  // Sort by PnL descending (biggest wins first)
-  allResolved.sort((a, b) => b.pnl - a.pnl);
-
-  // Compute period stats
-  function periodStats(positions) {
-    let wins = 0, losses = 0, totalPnl = 0, winPnl = 0, lossPnl = 0;
-    for (const p of positions) {
-      totalPnl += p.pnl;
-      if (p.pnl > 0) { wins++; winPnl += p.pnl; }
-      else { losses++; lossPnl += Math.abs(p.pnl); }
-    }
-    const total = wins + losses;
-    return {
-      total,
-      wins,
-      losses,
-      winRate: total > 0 ? +(wins / total).toFixed(4) : 0,
-      totalPnl: +totalPnl.toFixed(2),
-      avgWin: wins > 0 ? +(winPnl / wins).toFixed(2) : 0,
-      avgLoss: losses > 0 ? +(lossPnl / losses).toFixed(2) : 0,
-    };
-  }
-
-  // Filter by period based on timestamp
-  const withTs = allResolved.filter(p => p.timestampMs);
-  const periods = {
-    today: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.today)),
-    week: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.week)),
-    month: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.month)),
-    quarter: periodStats(withTs.filter(p => p.timestampMs >= cutoffs.quarter)),
-    allTime: periodStats(allResolved),
-  };
-
-  return {
-    // Top 500 resolved positions for the table
-    positions: allResolved.slice(0, 500).map(p => {
-      const { timestampMs, ...rest } = p;
-      return rest;
-    }),
-    periodStats: periods,
-  };
-}
 
 function loadJSON(filepath) {
   try {
@@ -1981,16 +1851,31 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         const signalDir = (signal.direction || '').toLowerCase().trim();
         const signalTopOutcome = (signal.topOutcome || '').toLowerCase().trim();
 
-        // Multiple ways the signal direction can match the winning outcome:
-        // 1. Direct match: direction "celtics" === winner "celtics"
-        // 2. TopOutcome match: topOutcome "Celtics" === winner "Celtics"
-        // 3. Yes/No match: direction "yes" === winner "yes"
-        // 4. Partial match for multi-word outcomes: "trail blazers" includes "blazers"
+        // Match signal direction against winning outcome.
+        // Use exact match on full strings to avoid partial-match false positives.
+        // Direct: "celtics" === "celtics", "yes" === "yes"
         const dirMatch = signalDir === winner || signalTopOutcome === winner;
-        const partialMatch = winner.length > 3 && (
-          signalDir.includes(winner) || winner.includes(signalDir) ||
-          signalTopOutcome.includes(winner) || winner.includes(signalTopOutcome)
-        );
+
+        // Partial match for multi-word outcomes where names are subsets
+        // e.g. "trail blazers" vs "blazers", or "golden state warriors" vs "warriors"
+        // Guard: both sides must be 4+ chars to avoid "yes"/"no" matching substrings
+        let partialMatch = false;
+        if (!dirMatch && winner.length >= 4 && signalDir.length >= 4) {
+          // Only allow partial match if one string fully contains the other
+          // AND the match covers a substantial portion of the shorter string
+          const shorter = signalDir.length <= winner.length ? signalDir : winner;
+          const longer = signalDir.length <= winner.length ? winner : signalDir;
+          if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) {
+            partialMatch = true;
+          }
+        }
+        if (!dirMatch && !partialMatch && winner.length >= 4 && signalTopOutcome.length >= 4) {
+          const shorter = signalTopOutcome.length <= winner.length ? signalTopOutcome : winner;
+          const longer = signalTopOutcome.length <= winner.length ? winner : signalTopOutcome;
+          if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) {
+            partialMatch = true;
+          }
+        }
 
         if (dirMatch || partialMatch) {
           signalOutcome = 'win';
@@ -2008,15 +1893,36 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
           }
         }
       } else {
-        // Fallback: determine outcome from wallet PnL (original method)
-        const walletOutcomes = (signal.currentWallets || []).map(w => ({
-          address: w.address,
-          pnl: w.pnl || 0,
-          won: (w.pnl || 0) > 0,
-        }));
-        walletsWon = walletOutcomes.filter(w => w.won).length;
-        walletsLost = walletOutcomes.filter(w => !w.won && w.pnl < 0).length;
-        totalPnl = walletOutcomes.reduce((s, w) => s + w.pnl, 0);
+        // Fallback: determine outcome from LIVE wallet positions (not stale snapshot).
+        // signal.currentWallets may contain stale PnLs from when the signal was last updated.
+        // Read fresh PnL from the actual wallet data instead.
+        let liveWon = 0;
+        let liveLost = 0;
+        let livePnl = 0;
+
+        for (const sw of (signal.currentWallets || [])) {
+          const wallet = walletData.get(sw.address);
+          if (!wallet || !wallet.positions) continue;
+
+          // Find the wallet's position in this signal's market
+          const signalGroupKey = signal.groupKey;
+          const pos = wallet.positions.find(p => {
+            const mi = marketLookup.get(p.tokenId);
+            const gk = mi?.groupId || p.tokenId;
+            return gk === signalGroupKey;
+          });
+
+          if (pos) {
+            const pnl = pos.pnl || 0;
+            livePnl += pnl;
+            if (pnl > 0.01) liveWon++;
+            else if (pnl < -0.01) liveLost++;
+          }
+        }
+
+        walletsWon = liveWon;
+        walletsLost = liveLost;
+        totalPnl = livePnl;
 
         // Need at least one wallet with a non-zero PnL to determine outcome.
         // If all PnLs are 0 (unredeemed shares), we can't tell who won — skip resolution.
@@ -2082,10 +1988,19 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     const topOut = (hist.topOutcome || '').toLowerCase().trim();
 
     const dirMatch = dir === winner || topOut === winner;
-    const partialMatch = winner.length > 3 && (
-      dir.includes(winner) || winner.includes(dir) ||
-      topOut.includes(winner) || winner.includes(topOut)
-    );
+    // Tightened partial match: both strings must be 4+ chars and shorter must
+    // cover at least 40% of longer string to prevent spurious substring hits
+    let partialMatch = false;
+    if (!dirMatch && winner.length >= 4 && dir.length >= 4) {
+      const shorter = dir.length <= winner.length ? dir : winner;
+      const longer = dir.length <= winner.length ? winner : dir;
+      if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) partialMatch = true;
+    }
+    if (!dirMatch && !partialMatch && winner.length >= 4 && topOut.length >= 4) {
+      const shorter = topOut.length <= winner.length ? topOut : winner;
+      const longer = topOut.length <= winner.length ? winner : topOut;
+      if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) partialMatch = true;
+    }
 
     if (dirMatch || partialMatch) {
       hist.outcome = 'win';
@@ -2108,7 +2023,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
   const losses = allHistory.filter(s => s.outcome === 'loss').length;
   const resolved = wins + losses;
   const hitRate = resolved > 0 ? +(wins / resolved * 100).toFixed(1) : 0;
-  const totalHistoryPnl = allHistory.reduce((s, sig) => s + (sig.closedPnl || 0), 0);
+  const totalHistoryPnl = allHistory.reduce((s, sig) => s + (sig.walletPnl || sig.closedPnl || 0), 0);
 
   const consensusSignals = activeSignals.filter(s => !s.signalType || s.signalType === 'consensus');
   const clusterSignals = activeSignals.filter(s => s.signalType === 'cluster');
@@ -2266,13 +2181,23 @@ function closeSignal(active, history, signalId, reason, scanIndex, timestamp, ou
   signal.closedScan = scanIndex;
   signal.closeReason = reason;
   signal.outcome = outcome;
-  signal.closedPnl = +pnl.toFixed(2);
+  // walletPnl: raw sum of backing wallets' PnL (informational only — NOT the signal's win/loss result)
+  signal.walletPnl = +pnl.toFixed(2);
+  // closedPnl kept as 0 for backward compatibility — paper trader uses its own PnL calculation
+  signal.closedPnl = 0;
   signal.duration = scanIndex - (signal.openedScan || scanIndex);
 
   // Strip wallet snapshot to save space in history
   delete signal.currentWallets;
 
-  history.push(signal);
+  // Prevent duplicate history entries — don't re-add a signal that was already closed for this market
+  const groupKey = signal.groupKey;
+  const isDuplicate = groupKey && history.some(h =>
+    h.groupKey === groupKey && h.closeReason === reason && h.outcome === outcome
+  );
+  if (!isDuplicate) {
+    history.push(signal);
+  }
   delete active[signalId];
 
   // Keep history at a manageable size (last 500 signals)
@@ -2455,10 +2380,18 @@ function processPaperTrades(signals, paperState, scanIndex) {
         // Signal was right — payout based on real avg entry price from wallets' positions
         // Polymarket payout: buy at entryPrice, win pays $1.00 per share
         // ROI = (1/entryPrice - 1) × tradeSize
-        // Use real avgEntryPrice from signal; fall back to consensusStrength proxy if missing
-        const entryPrice = closedSignal.avgEntryPrice > 0
-          ? Math.max(0.05, Math.min(0.99, closedSignal.avgEntryPrice))
-          : Math.max(0.3, Math.min(0.85, (closedSignal.consensusStrength || 0.6)));
+        // Use real avgEntryPrice from signal or from the trade's stored entry price.
+        // If no real entry price is available, use a conservative default (0.65)
+        // to avoid fabricating PnL from unrelated metrics like consensusStrength.
+        const realPrice = closedSignal.avgEntryPrice > 0
+          ? closedSignal.avgEntryPrice
+          : (trade.avgEntryPrice > 0 ? trade.avgEntryPrice : 0);
+        const entryPrice = realPrice > 0
+          ? Math.max(0.05, Math.min(0.99, realPrice))
+          : 0.65; // Conservative default: roughly Polymarket's median entry
+        if (realPrice <= 0) {
+          console.log(`  ⚠ Paper trade ${signalId} in ${pName}: no real entry price, using default 0.65`);
+        }
         tradePnl = trade.tradeSize * (1 / entryPrice - 1);
       } else if (closeReason === 'resolved' && outcome === 'loss') {
         // Signal was wrong — lose the trade amount
@@ -2555,7 +2488,6 @@ function processPaperTrades(signals, paperState, scanIndex) {
 
 export {
   GOLDSKY_PNL,
-  GOLDSKY_POSITIONS,
   GAMMA_MARKETS,
   USDC_DIVISOR,
   gqlQuery,
@@ -2569,8 +2501,6 @@ export {
   computeConsensus,
   computeWinPatterns,
   computeActivePositions,
-  findBiggestWins,
-  computeResolvedPositions,
   processSignals,
   SIGNAL_THRESHOLDS,
   refreshTrackedWallets,

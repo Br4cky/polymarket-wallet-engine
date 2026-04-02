@@ -1137,13 +1137,17 @@ function renderDirectionBadge(direction, row) {
   if (direction === 'yes') return `<span class="badge badge-high">YES ${oc['Yes'] || ''}</span>`;
   if (direction === 'no') return `<span class="badge badge-low">NO ${oc['No'] || ''}</span>`;
 
-  // Non-binary with outcomeCounts: show top 2 outcomes with counts
+  // Non-binary with outcomeCounts: show only the signal's chosen direction (top outcome)
+  // Previously showed top 2 outcomes which made it look like the signal was calling both sides
   if (direction !== 'mixed' && Object.keys(oc).length > 0) {
     const sorted = Object.entries(oc).sort((a, b) => b[1] - a[1]);
-    return sorted.slice(0, 2).map(([outcome, count]) => {
-      const cls = outcome === 'Yes' ? 'badge-high' : outcome === 'No' ? 'badge-low' : 'badge-high';
-      return `<span class="badge ${cls}" style="margin-right:4px;">${outcome} ${count}</span>`;
-    }).join('');
+    const top = sorted[0];
+    if (top) {
+      const total = sorted.reduce((s, [, c]) => s + c, 0);
+      const label = top[0];
+      const pct = total > 0 ? Math.round(top[1] / total * 100) : 100;
+      return `<span class="badge badge-high">${label} <span style="opacity:0.6;font-size:11px">${pct}%</span></span>`;
+    }
   }
 
   // Fallback for paper trades / contexts without outcomeCounts — just show direction
@@ -1293,7 +1297,7 @@ function renderSignalEngine() {
     outcomeCounts: s.outcomeCounts || {},
     peakConfidence: s.peakConfidence || 0,
     peakWallets: s.peakWallets || 0,
-    closedPnl: s.closedPnl || 0,
+    walletPnl: s.walletPnl || s.closedPnl || 0,
     duration: s.duration || 0,
     closeReason: s.closeReason || 'unknown',
   }));
@@ -1311,7 +1315,7 @@ function renderSignalEngine() {
       return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
     }},
     { field: 'peakWallets', render: v => String(v) },
-    { field: 'closedPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'walletPnl', render: v => v !== 0 ? `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` : `<span style="color:var(--text-dim)">-</span>` },
     { field: 'duration', render: v => {
       const hours = v * 6;
       if (hours < 24) return `${hours}h`;
