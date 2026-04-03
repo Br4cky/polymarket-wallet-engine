@@ -1229,7 +1229,6 @@ function renderSignalEngine() {
     walletCount: s.walletCount || 0,
     confidence: s.confidence || 0,
     avgScore: s.avgScore || 0,
-    avgPnl: s.avgPnl || 0,
     scansActive: s.scansActive || 0,
     peakConfidence: s.peakConfidence || 0,
     currentWallets: s.currentWallets || [],
@@ -1277,7 +1276,14 @@ function renderSignalEngine() {
       return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
     }},
     { field: 'avgScore', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
-    { field: 'avgPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'unrealised', render: (v, row) => {
+      const open = row.openMarketPrice || 0;
+      const live = row.currentMarketPrice || 0;
+      if (!open || !live || open === live) return `<span style="color:var(--text-dim)">0.0%</span>`;
+      const pct = ((live - open) / open * 100).toFixed(1);
+      const cls = pct > 0 ? 'var(--green)' : pct < 0 ? 'var(--red)' : 'var(--text-dim)';
+      return `<span style="color:${cls};font-weight:600">${pct > 0 ? '+' : ''}${pct}%</span>`;
+    }},
     { field: 'scansActive', render: v => {
       const hours = v * 6; // each scan is ~6 hours
       if (hours < 24) return `${hours}h`;
@@ -1316,7 +1322,13 @@ function renderSignalEngine() {
     peakConfidence: s.peakConfidence || 0,
     peakWallets: s.peakWallets || 0,
     openMarketPrice: s.openMarketPrice || 0,
-    walletPnl: s.walletPnl || s.closedPnl || 0,
+    signalReturn: (() => {
+      const price = s.openMarketPrice || 0;
+      if (!price) return null;
+      if (s.outcome === 'win') return +((1 / price - 1) * 100).toFixed(1);
+      if (s.outcome === 'loss') return -100;
+      return 0;
+    })(),
     duration: s.duration || 0,
     closeReason: s.closeReason || 'unknown',
   }));
@@ -1340,7 +1352,11 @@ function renderSignalEngine() {
       return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
     }},
     { field: 'peakWallets', render: v => String(v) },
-    { field: 'walletPnl', render: v => v !== 0 ? `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` : `<span style="color:var(--text-dim)">-</span>` },
+    { field: 'signalReturn', render: v => {
+      if (v === null) return `<span style="color:var(--text-dim)">—</span>`;
+      const cls = v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text-dim)';
+      return `<span style="color:${cls};font-weight:600">${v > 0 ? '+' : ''}${v.toFixed(1)}%</span>`;
+    }},
     { field: 'duration', render: v => {
       const hours = v * 6;
       if (hours < 24) return `${hours}h`;
@@ -1438,8 +1454,15 @@ function showSignalDetail(signal) {
         })() : '<span style="color:var(--text-dim)">—</span>'}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">${isSolo ? 'Position PnL' : 'Avg PnL'}</div>
-        <div class="detail-item-value"><span class="${pnlClass(signal.avgPnl || 0)}">${fmtDollars(signal.avgPnl || 0)}</span></div>
+        <div class="detail-item-label">Unrealised</div>
+        <div class="detail-item-value">${(() => {
+          const open = signal.openMarketPrice || 0;
+          const live = signal.currentMarketPrice || 0;
+          if (!open || !live || open === live) return '<span style="color:var(--text-dim)">0.0%</span>';
+          const pct = ((live - open) / open * 100).toFixed(1);
+          const cls = pct > 0 ? 'var(--green)' : pct < 0 ? 'var(--red)' : 'var(--text-dim)';
+          return `<span style="color:${cls};font-weight:600">${pct > 0 ? '+' : ''}${pct}%</span>`;
+        })()}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">Signal Age</div>
