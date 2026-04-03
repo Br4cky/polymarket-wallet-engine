@@ -1471,6 +1471,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       signal.avgEntryPrice = +(entry.avgEntryPrice || 0).toFixed(4);
       signal.consensusStrength = +(entry.consensusStrength || 0).toFixed(3);
 
+      // Update current market price from Gamma data
+      const updateTokenId = entry.tokenId || signal.tokenId || '';
+      const updateMarketInfo = updateTokenId ? marketLookup.get(updateTokenId) : null;
+      if (updateMarketInfo && updateMarketInfo.currentPrice > 0) {
+        signal.marketPrice = +updateMarketInfo.currentPrice.toFixed(4);
+      }
+
       // Recompute confidence
       signal.confidence = computeSignalConfidence(signal);
       signal.tier = getSignalTier(signal.confidence);
@@ -1534,6 +1541,10 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         consensusStrength: +consensusStr.toFixed(3),
         avgPnl: +(entry.avgPnl || 0).toFixed(2),
         avgEntryPrice: +(entry.avgEntryPrice || 0).toFixed(4),
+
+        // Market price at signal open (from Gamma outcomePrices)
+        marketPrice: +(openMarketInfo && openMarketInfo.currentPrice || 0).toFixed(4),
+        openMarketPrice: +(openMarketInfo && openMarketInfo.currentPrice || 0).toFixed(4),
 
         // Confidence & tier
         confidence: +confidence.toFixed(1),
@@ -1610,6 +1621,13 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       signal.avgEntryPrice = +(entry.avgEntryPrice || 0).toFixed(4);
       signal.consensusStrength = +(entry.consensusStrength || 0).toFixed(3);
 
+      // Update current market price
+      const clUpdateTokenId = entry.tokenId || signal.tokenId || '';
+      const clUpdateMarketInfo = clUpdateTokenId ? marketLookup.get(clUpdateTokenId) : null;
+      if (clUpdateMarketInfo && clUpdateMarketInfo.currentPrice > 0) {
+        signal.marketPrice = +clUpdateMarketInfo.currentPrice.toFixed(4);
+      }
+
       // If it grew past cluster range into consensus territory, upgrade type
       if (walletCount >= SIGNAL_THRESHOLDS.MIN_WALLETS) {
         signal.signalType = 'consensus';
@@ -1666,6 +1684,8 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         consensusStrength: +consensusStr.toFixed(3),
         avgPnl: +(entry.avgPnl || 0).toFixed(2),
         avgEntryPrice: +(entry.avgEntryPrice || 0).toFixed(4),
+        marketPrice: +(clOpenMarketInfo && clOpenMarketInfo.currentPrice || 0).toFixed(4),
+        openMarketPrice: +(clOpenMarketInfo && clOpenMarketInfo.currentPrice || 0).toFixed(4),
         confidence: +confidence.toFixed(1),
         tier: getSignalTier(confidence),
         peakWallets: walletCount,
@@ -1758,6 +1778,9 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         signal.avgEntryPrice = +(pos.avgPrice || entryPrice).toFixed(4);
         signal.currentPnl = +(pos.pnl || 0).toFixed(2);
         signal.walletScore = +(wallet.score || 0).toFixed(2);
+        if (marketInfo.currentPrice > 0) {
+          signal.marketPrice = +marketInfo.currentPrice.toFixed(4);
+        }
         signal.confidence = computeSoloConfidence(wallet, pos, positionValue);
         signal.tier = getSignalTier(signal.confidence);
         signal.peakConfidence = Math.max(signal.peakConfidence || 0, signal.confidence);
@@ -1811,6 +1834,8 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
           entryPrice: +entryPrice.toFixed(4),
           avgEntryPrice: +entryPrice.toFixed(4),
           currentPnl: +(pos.pnl || 0).toFixed(2),
+          marketPrice: +(marketInfo.currentPrice || 0).toFixed(4),
+          openMarketPrice: +(marketInfo.currentPrice || 0).toFixed(4),
 
           // Confidence & tier
           confidence: +confidence.toFixed(1),

@@ -1235,6 +1235,9 @@ function renderSignalEngine() {
     currentWallets: s.currentWallets || [],
     signalId: s.signalId || '',
     openedAt: s.openedAt || null,
+    // Market price
+    marketPrice: s.marketPrice || 0,
+    openMarketPrice: s.openMarketPrice || 0,
     // Solo-specific fields
     soloWallet: s.soloWallet || null,
     walletScore: s.walletScore || 0,
@@ -1254,6 +1257,12 @@ function renderSignalEngine() {
     { field: 'tier', render: v => `<span class="badge ${tierClass(v)}">${v.toUpperCase()}</span>` },
     { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
     { field: 'walletCount', render: v => String(v) },
+    { field: 'marketPrice', render: v => {
+      if (!v || v === 0) return `<span style="color:var(--text-dim)">—</span>`;
+      const pct = (v * 100).toFixed(1);
+      const cls = v >= 0.85 ? 'color:var(--red)' : v >= 0.65 ? 'color:var(--orange)' : 'color:var(--green)';
+      return `<span style="${cls};font-weight:600">${pct}¢</span>`;
+    }},
     { field: 'confidence', render: v => {
       const cls = v >= 80 ? 'badge-high' : v >= 55 ? 'badge-mid' : 'badge-low';
       return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
@@ -1297,6 +1306,7 @@ function renderSignalEngine() {
     outcomeCounts: s.outcomeCounts || {},
     peakConfidence: s.peakConfidence || 0,
     peakWallets: s.peakWallets || 0,
+    openMarketPrice: s.openMarketPrice || 0,
     walletPnl: s.walletPnl || s.closedPnl || 0,
     duration: s.duration || 0,
     closeReason: s.closeReason || 'unknown',
@@ -1310,6 +1320,12 @@ function renderSignalEngine() {
       return `<span class="badge badge-mid">${(v || 'unknown').toUpperCase()}</span>`;
     }},
     { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
+    { field: 'openMarketPrice', render: v => {
+      if (!v || v === 0) return `<span style="color:var(--text-dim)">—</span>`;
+      const pct = (v * 100).toFixed(1);
+      const cls = v >= 0.85 ? 'color:var(--red)' : v >= 0.65 ? 'color:var(--orange)' : 'color:var(--green)';
+      return `<span style="${cls};font-weight:600">${pct}¢</span>`;
+    }},
     { field: 'peakConfidence', render: v => {
       const cls = v >= 80 ? 'badge-high' : v >= 55 ? 'badge-mid' : 'badge-low';
       return `<span class="badge ${cls}">${v.toFixed(1)}</span>`;
@@ -1398,6 +1414,10 @@ function showSignalDetail(signal) {
       <div class="detail-item">
         <div class="detail-item-label">${isSolo ? 'Wallet' : 'Backing Wallets'}</div>
         <div class="detail-item-value">${isSolo ? `<span class="address-link" onclick="openPolymarketProfile('${signal.soloWallet}')">${truncAddr(signal.soloWallet || '')}</span>` : signal.walletCount}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Market Price</div>
+        <div class="detail-item-value">${signal.marketPrice ? `<span style="font-weight:600;color:${signal.marketPrice >= 0.85 ? 'var(--red)' : signal.marketPrice >= 0.65 ? 'var(--orange)' : 'var(--green)'}">${(signal.marketPrice * 100).toFixed(1)}¢</span>${signal.openMarketPrice ? ` <span style="color:var(--text-dim);font-size:12px">(opened @ ${(signal.openMarketPrice * 100).toFixed(1)}¢)</span>` : ''}` : '<span style="color:var(--text-dim)">—</span>'}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">${isSolo ? 'Position PnL' : 'Avg PnL'}</div>
