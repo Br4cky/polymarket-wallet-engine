@@ -1235,8 +1235,7 @@ function renderSignalEngine() {
     currentWallets: s.currentWallets || [],
     signalId: s.signalId || '',
     openedAt: s.openedAt || null,
-    // Market price
-    marketPrice: s.marketPrice || 0,
+    // Market price at open (fixed)
     openMarketPrice: s.openMarketPrice || 0,
     // Solo-specific fields
     soloWallet: s.soloWallet || null,
@@ -1257,7 +1256,7 @@ function renderSignalEngine() {
     { field: 'tier', render: v => `<span class="badge ${tierClass(v)}">${v.toUpperCase()}</span>` },
     { field: 'direction', render: (v, row) => renderDirectionBadge(v, row) },
     { field: 'walletCount', render: v => String(v) },
-    { field: 'marketPrice', render: v => {
+    { field: 'openMarketPrice', render: v => {
       if (!v || v === 0) return `<span style="color:var(--text-dim)">—</span>`;
       const pct = (v * 100).toFixed(1);
       const cls = v >= 0.85 ? 'color:var(--red)' : v >= 0.65 ? 'color:var(--orange)' : 'color:var(--green)';
@@ -1416,8 +1415,8 @@ function showSignalDetail(signal) {
         <div class="detail-item-value">${isSolo ? `<span class="address-link" onclick="openPolymarketProfile('${signal.soloWallet}')">${truncAddr(signal.soloWallet || '')}</span>` : signal.walletCount}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Market Price</div>
-        <div class="detail-item-value">${signal.marketPrice ? `<span style="font-weight:600;color:${signal.marketPrice >= 0.85 ? 'var(--red)' : signal.marketPrice >= 0.65 ? 'var(--orange)' : 'var(--green)'}">${(signal.marketPrice * 100).toFixed(1)}¢</span>${signal.openMarketPrice ? ` <span style="color:var(--text-dim);font-size:12px">(opened @ ${(signal.openMarketPrice * 100).toFixed(1)}¢)</span>` : ''}` : '<span style="color:var(--text-dim)">—</span>'}</div>
+        <div class="detail-item-label">Market Price (at open)</div>
+        <div class="detail-item-value">${signal.openMarketPrice ? `<span style="font-weight:600;color:${signal.openMarketPrice >= 0.85 ? 'var(--red)' : signal.openMarketPrice >= 0.65 ? 'var(--orange)' : 'var(--green)'}">${(signal.openMarketPrice * 100).toFixed(1)}¢</span>` : '<span style="color:var(--text-dim)">—</span>'}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">${isSolo ? 'Position PnL' : 'Avg PnL'}</div>
@@ -1512,18 +1511,21 @@ function renderPaperTrader() {
   const openTbody = el('paper-open-tbody');
 
   if (openTrades.length === 0) {
-    openTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No open trades</td></tr>';
+    openTbody.innerHTML = '<tr><td colspan="8" class="empty-state">No open trades</td></tr>';
   } else {
     openTbody.innerHTML = openTrades.map(t => {
       const latestScan = data.analytics?.scanCount || 0;
       const age = latestScan - (t.openedScan || 0);
       const typeLabel = (t.signalType || 'consensus').toUpperCase();
       const typeClass = t.signalType === 'solo' ? 'badge-solo' : t.signalType === 'cluster' ? 'badge-cluster' : 'badge-consensus';
+      const mp = t.openMarketPrice || 0;
+      const mpStr = mp > 0 ? `<span style="font-weight:600;color:${mp >= 0.85 ? 'var(--red)' : mp >= 0.65 ? 'var(--orange)' : 'var(--green)'}">${(mp * 100).toFixed(1)}¢</span>` : '<span style="color:var(--text-dim)">—</span>';
       return `<tr>
         <td title="${t.marketTitle}">${truncate(t.marketTitle, 50)}</td>
         <td><span class="badge ${typeClass}">${typeLabel}</span></td>
         <td><span class="tier-badge tier-${t.tier || 'starter'}">${(t.tier || 'starter').toUpperCase()}</span></td>
         <td>${renderDirectionBadge(t.direction, t)}</td>
+        <td>${mpStr}</td>
         <td>${(t.confidence || 0).toFixed(1)}</td>
         <td>$${t.tradeSize}</td>
         <td>${age}</td>
@@ -1537,7 +1539,7 @@ function renderPaperTrader() {
   const closedTbody = el('paper-closed-tbody');
 
   if (closedTrades.length === 0) {
-    closedTbody.innerHTML = '<tr><td colspan="9" class="empty-state">No closed trades yet</td></tr>';
+    closedTbody.innerHTML = '<tr><td colspan="10" class="empty-state">No closed trades yet</td></tr>';
   } else {
     closedTbody.innerHTML = closedTrades.map(t => {
       const typeLabel = (t.signalType || 'consensus').toUpperCase();
@@ -1545,11 +1547,14 @@ function renderPaperTrader() {
       const outcomeClass = t.outcome === 'win' ? 'badge-positive' :
         t.outcome === 'loss' ? 'badge-negative' : 'badge-neutral';
       const outcomeLabel = (t.outcome || 'unknown').toUpperCase();
+      const mp = t.openMarketPrice || 0;
+      const mpStr = mp > 0 ? `<span style="font-weight:600;color:${mp >= 0.85 ? 'var(--red)' : mp >= 0.65 ? 'var(--orange)' : 'var(--green)'}">${(mp * 100).toFixed(1)}¢</span>` : '<span style="color:var(--text-dim)">—</span>';
       return `<tr>
         <td title="${t.marketTitle}">${truncate(t.marketTitle, 45)}</td>
         <td><span class="badge ${typeClass}">${typeLabel}</span></td>
         <td><span class="tier-badge tier-${t.tier || 'starter'}">${(t.tier || 'starter').toUpperCase()}</span></td>
         <td>${renderDirectionBadge(t.direction, t)}</td>
+        <td>${mpStr}</td>
         <td><span class="badge ${outcomeClass}">${outcomeLabel}</span></td>
         <td class="${t.pnl >= 0 ? 'text-positive' : 'text-negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</td>
         <td class="${t.returnPct >= 0 ? 'text-positive' : 'text-negative'}">${t.returnPct >= 0 ? '+' : ''}${t.returnPct}%</td>
