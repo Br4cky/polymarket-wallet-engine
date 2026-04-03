@@ -1235,8 +1235,9 @@ function renderSignalEngine() {
     currentWallets: s.currentWallets || [],
     signalId: s.signalId || '',
     openedAt: s.openedAt || null,
-    // Market price at open (fixed)
+    // Market prices
     openMarketPrice: s.openMarketPrice || 0,
+    currentMarketPrice: s.currentMarketPrice || 0,
     // Solo-specific fields
     soloWallet: s.soloWallet || null,
     walletScore: s.walletScore || 0,
@@ -1261,6 +1262,15 @@ function renderSignalEngine() {
       const pct = (v * 100).toFixed(1);
       const cls = v >= 0.85 ? 'color:var(--red)' : v >= 0.65 ? 'color:var(--orange)' : 'color:var(--green)';
       return `<span style="${cls};font-weight:600">${pct}¢</span>`;
+    }},
+    { field: 'currentMarketPrice', render: (v, row) => {
+      if (!v || v === 0) return `<span style="color:var(--text-dim)">—</span>`;
+      const pct = (v * 100).toFixed(1);
+      const open = row.openMarketPrice || 0;
+      const diff = open > 0 ? v - open : 0;
+      const arrow = diff > 0.005 ? '▲' : diff < -0.005 ? '▼' : '';
+      const diffColor = diff > 0.005 ? 'var(--green)' : diff < -0.005 ? 'var(--red)' : 'var(--text-dim)';
+      return `<span style="font-weight:600">${pct}¢</span>${arrow ? ` <span style="color:${diffColor};font-size:11px">${arrow}${Math.abs(diff * 100).toFixed(1)}</span>` : ''}`;
     }},
     { field: 'confidence', render: v => {
       const cls = v >= 80 ? 'badge-high' : v >= 55 ? 'badge-mid' : 'badge-low';
@@ -1415,8 +1425,17 @@ function showSignalDetail(signal) {
         <div class="detail-item-value">${isSolo ? `<span class="address-link" onclick="openPolymarketProfile('${signal.soloWallet}')">${truncAddr(signal.soloWallet || '')}</span>` : signal.walletCount}</div>
       </div>
       <div class="detail-item">
-        <div class="detail-item-label">Market Price (at open)</div>
+        <div class="detail-item-label">Entry Price</div>
         <div class="detail-item-value">${signal.openMarketPrice ? `<span style="font-weight:600;color:${signal.openMarketPrice >= 0.85 ? 'var(--red)' : signal.openMarketPrice >= 0.65 ? 'var(--orange)' : 'var(--green)'}">${(signal.openMarketPrice * 100).toFixed(1)}¢</span>` : '<span style="color:var(--text-dim)">—</span>'}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Live Price</div>
+        <div class="detail-item-value">${signal.currentMarketPrice ? (() => {
+          const diff = signal.openMarketPrice ? signal.currentMarketPrice - signal.openMarketPrice : 0;
+          const arrow = diff > 0.005 ? '▲' : diff < -0.005 ? '▼' : '';
+          const diffColor = diff > 0.005 ? 'var(--green)' : diff < -0.005 ? 'var(--red)' : 'var(--text-dim)';
+          return `<span style="font-weight:600">${(signal.currentMarketPrice * 100).toFixed(1)}¢</span>${arrow ? ` <span style="color:${diffColor};font-size:12px">${arrow}${Math.abs(diff * 100).toFixed(1)}¢</span>` : ''}`;
+        })() : '<span style="color:var(--text-dim)">—</span>'}</div>
       </div>
       <div class="detail-item">
         <div class="detail-item-label">${isSolo ? 'Position PnL' : 'Avg PnL'}</div>
