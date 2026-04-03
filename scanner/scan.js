@@ -18,6 +18,7 @@ import {
   computeWinPatterns,
   computeActivePositions,
   processSignals,
+  SIGNAL_THRESHOLDS,
   initPaperTrading,
   processPaperTrades,
   refreshTrackedWallets,
@@ -531,11 +532,11 @@ async function runScan() {
   for (const [addr, w] of walletMap) {
     const stats = w.stats;
     if (!stats || !w.positions) continue;
-    // Mirror solo qualification thresholds from lib.js SIGNAL_THRESHOLDS
-    const qualifies = (w.score || 0) >= 75 &&
-      (stats.wr || 0) >= 0.85 &&
-      (stats.resolved || 0) >= 100 &&
-      (stats.realizedPnl || stats.totalPnl || 0) >= 50000;
+    // Use SIGNAL_THRESHOLDS directly — no duplicated magic numbers
+    const qualifies = (w.score || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_SCORE &&
+      (stats.wr || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_WIN_RATE &&
+      (stats.resolved || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_RESOLVED &&
+      (stats.realizedPnl || stats.totalPnl || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_PNL;
     if (!qualifies) continue;
 
     for (const pos of w.positions) {
@@ -552,7 +553,7 @@ async function runScan() {
   for (const signal of Object.values(existingSignals.active || {})) {
     if (signal.tokenId) {
       const existing = marketLookup[signal.tokenId];
-      if (!existing || !existing.marketClosed) {
+      if (!existing || !('marketClosed' in existing)) {
         tokensToCheck.add(signal.tokenId);
       }
     }

@@ -1389,6 +1389,11 @@ const SIGNAL_THRESHOLDS = {
   SOLO_MIN_POSITION_VALUE: 500,  // $500+ position = real conviction (was $100)
   SOLO_MAX_PER_WALLET: 3,        // Max 3 solo signals per wallet (prevents portfolio flooding)
   SOLO_STALE_SCANS: 12,          // Solo signals go stale faster (12 scans ≈ 3 days)
+
+  // Safety valve — maximum scans any signal can remain active before forced closure.
+  // Prevents signals stuck forever when Gamma never reports resolution and wallets
+  // haven't redeemed. At ~6h/scan this is roughly 25 days.
+  MAX_SIGNAL_LIFETIME: 100,
 };
 
 /**
@@ -1398,6 +1403,41 @@ function getSignalTier(confidence) {
   if (confidence >= 80) return 'elite';    // High conviction, many wallets, strong scores
   if (confidence >= 55) return 'pro';      // Solid signal, good backing
   return 'starter';                        // Emerging signal, worth watching
+}
+
+/**
+ * Match a signal's direction/topOutcome against the winning outcome.
+ * Single source of truth for outcome matching — used by resolution, retrofix, etc.
+ *
+ * @param {string} direction - Signal direction (e.g. "Yes", "Celtics")
+ * @param {string} topOutcome - Signal top outcome label
+ * @param {string} winningOutcome - Market's winning outcome from Gamma
+ * @returns {boolean} true if the signal called the correct outcome
+ */
+function matchesWinningOutcome(direction, topOutcome, winningOutcome) {
+  const winner = (winningOutcome || '').toLowerCase().trim();
+  const dir = (direction || '').toLowerCase().trim();
+  const top = (topOutcome || '').toLowerCase().trim();
+  if (!winner) return false;
+
+  // Exact match: "celtics" === "celtics", "yes" === "yes"
+  if (dir === winner || top === winner) return true;
+
+  // Partial match for multi-word outcomes (e.g. "trail blazers" vs "blazers")
+  // Guard: both sides must be 4+ chars to avoid "yes"/"no" matching substrings
+  // Shorter string must cover at least 50% of the longer string
+  const PARTIAL_THRESHOLD = 0.50;
+  for (const candidate of [dir, top]) {
+    if (winner.length >= 4 && candidate.length >= 4) {
+      const shorter = candidate.length <= winner.length ? candidate : winner;
+      const longer = candidate.length <= winner.length ? winner : candidate;
+      if (longer.includes(shorter) && shorter.length >= longer.length * PARTIAL_THRESHOLD) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -1875,6 +1915,15 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     const groupKey = signal.groupKey;
     signal.scansActive = (signal.scansActive || 0) + 1;
 
+    // Safety valve: force-close signals that have lived too long without resolution.
+    // Prevents permanently stuck signals when Gamma and wallets both fail to report.
+    if (signal.scansActive >= SIGNAL_THRESHOLDS.MAX_SIGNAL_LIFETIME) {
+      console.log(`  ⚠ ${signalId} force-closed after ${signal.scansActive} scans (lifetime cap)`);
+      closeSignal(active, history, signalId, 'expired', scanIndex, now);
+      closed++;
+      continue;
+    }
+
     // Determine stale threshold based on signal type
     const staleThreshold = signal.signalType === 'solo'
       ? SIGNAL_THRESHOLDS.SOLO_STALE_SCANS
@@ -1906,6 +1955,9 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
         });
         if (!stillHolding) {
           signal.scansSinceUpdate = (signal.scansSinceUpdate || 0) + 1;
+        } else {
+          // Wallet still holds position — reset stale counter
+          signal.scansSinceUpdate = 0;
         }
       }
 
@@ -1952,38 +2004,8 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       }
 
       if (gammaResolved && marketInfo.winningOutcome) {
-        // Gamma tells us which outcome won — check if signal's wallets were on the right side
-        const winner = marketInfo.winningOutcome.toLowerCase().trim();
-        const signalDir = (signal.direction || '').toLowerCase().trim();
-        const signalTopOutcome = (signal.topOutcome || '').toLowerCase().trim();
-
-        // Match signal direction against winning outcome.
-        // Use exact match on full strings to avoid partial-match false positives.
-        // Direct: "celtics" === "celtics", "yes" === "yes"
-        const dirMatch = signalDir === winner || signalTopOutcome === winner;
-
-        // Partial match for multi-word outcomes where names are subsets
-        // e.g. "trail blazers" vs "blazers", or "golden state warriors" vs "warriors"
-        // Guard: both sides must be 4+ chars to avoid "yes"/"no" matching substrings
-        let partialMatch = false;
-        if (!dirMatch && winner.length >= 4 && signalDir.length >= 4) {
-          // Only allow partial match if one string fully contains the other
-          // AND the match covers a substantial portion of the shorter string
-          const shorter = signalDir.length <= winner.length ? signalDir : winner;
-          const longer = signalDir.length <= winner.length ? winner : signalDir;
-          if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) {
-            partialMatch = true;
-          }
-        }
-        if (!dirMatch && !partialMatch && winner.length >= 4 && signalTopOutcome.length >= 4) {
-          const shorter = signalTopOutcome.length <= winner.length ? signalTopOutcome : winner;
-          const longer = signalTopOutcome.length <= winner.length ? winner : signalTopOutcome;
-          if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) {
-            partialMatch = true;
-          }
-        }
-
-        if (dirMatch || partialMatch) {
+        // Gamma tells us which outcome won — check if signal called it correctly
+        if (matchesWinningOutcome(signal.direction, signal.topOutcome, marketInfo.winningOutcome)) {
           signalOutcome = 'win';
         } else {
           signalOutcome = 'loss';
@@ -2089,26 +2111,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
     const histMarket = histToken ? marketLookup.get(histToken) : null;
     if (!histMarket || !histMarket.winningOutcome) continue;
 
-    const winner = histMarket.winningOutcome.toLowerCase().trim();
-    const dir = (hist.direction || '').toLowerCase().trim();
-    const topOut = (hist.topOutcome || '').toLowerCase().trim();
-
-    const dirMatch = dir === winner || topOut === winner;
-    // Tightened partial match: both strings must be 4+ chars and shorter must
-    // cover at least 40% of longer string to prevent spurious substring hits
-    let partialMatch = false;
-    if (!dirMatch && winner.length >= 4 && dir.length >= 4) {
-      const shorter = dir.length <= winner.length ? dir : winner;
-      const longer = dir.length <= winner.length ? winner : dir;
-      if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) partialMatch = true;
-    }
-    if (!dirMatch && !partialMatch && winner.length >= 4 && topOut.length >= 4) {
-      const shorter = topOut.length <= winner.length ? topOut : winner;
-      const longer = topOut.length <= winner.length ? winner : topOut;
-      if (longer.includes(shorter) && shorter.length >= longer.length * 0.35) partialMatch = true;
-    }
-
-    if (dirMatch || partialMatch) {
+    if (matchesWinningOutcome(hist.direction, hist.topOutcome, histMarket.winningOutcome)) {
       hist.outcome = 'win';
     } else {
       hist.outcome = 'loss';
@@ -2503,7 +2506,7 @@ function processPaperTrades(signals, paperState, scanIndex) {
       } else if (closeReason === 'resolved' && outcome === 'loss') {
         // Signal was wrong — lose the trade amount
         tradePnl = -trade.tradeSize;
-      } else if (closeReason === 'stale' || closeReason === 'deduplicated' || closeReason === 'upgraded_to_consensus') {
+      } else if (closeReason === 'stale' || closeReason === 'expired' || closeReason === 'deduplicated' || closeReason === 'upgraded_to_consensus') {
         // Signal closed without resolution — return capital with small friction cost
         tradePnl = -trade.tradeSize * 0.02; // 2% slippage/friction for exit
       } else {
