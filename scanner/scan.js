@@ -64,7 +64,7 @@ const CONFIG = {
   MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
   MAX_INACTIVE_DAYS: 60,           // Must have traded within last 60 days
   DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
-  RESCORE_BATCH_SIZE: 50,          // Wallets to rescore per fast loop (background)
+  RESCORE_BATCH_SIZE: 100,         // Wallets to rescore per discovery cycle
 
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
