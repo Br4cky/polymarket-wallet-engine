@@ -275,21 +275,22 @@ function analyzeTradeHistory(trades, opts = {}) {
 
       if (pnl > 0) {
         wins++;
-      } else {
+      } else if (pnl < 0) {
         losses++;
       }
+      // pnl === 0 is break-even: counts as resolved but not win or loss
 
       if (isRecent) {
         recentResolved++;
         recentPnl += pnl;
         if (pnl > 0) recentWins++;
-        else recentLosses++;
+        else if (pnl < 0) recentLosses++;
       }
 
       marketResults.push({
         conditionId: cid,
         title: mt.title,
-        outcome: pnl > 0 ? 'win' : 'loss',
+        outcome: pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven',
         pnl,
         avgBuyPrice,
         avgSellPrice,
@@ -325,9 +326,11 @@ function analyzeTradeHistory(trades, opts = {}) {
   const tradesPerDay = allTrades.length / tradingSpanDays;
   const marketsPerDay = marketTrades.size / tradingSpanDays;
 
-  // Recent trading frequency
+  // Recent trading frequency — use actual active span, not full window
   const recentTradeCount = recentTrades.length;
-  const recentTradesPerDay = windowDays > 0 ? recentTradeCount / windowDays : 0;
+  const recentFirstTs = recentTrades.length > 0 ? Math.min(...recentTrades.map(t => t.timestamp)) : now;
+  const recentSpanDays = Math.max(1, (now - recentFirstTs) / 86400);
+  const recentTradesPerDay = recentTradeCount > 0 ? recentTradeCount / recentSpanDays : 0;
 
   // Edge ratio: average win / average loss
   const avgWin = wins > 0
@@ -364,7 +367,7 @@ function analyzeTradeHistory(trades, opts = {}) {
     // Timing
     avgHoldTimeHours: +(avgHoldTime / 3600).toFixed(1),
     firstTradeTs,
-    lastTradeTs: allTrades.length > 0 ? allTrades[0].timestamp : 0,
+    lastTradeTs: allTrades.length > 0 ? Math.max(...allTrades.map(t => t.timestamp)) : 0,
 
     // Breakdown
     categories: Object.fromEntries(categories),
@@ -398,8 +401,12 @@ function computeWalletScore(stats) {
 
   // Recent win rate (30 pts) — most important, but needs sample backing
   // Scale: 50% WR = 0pts, 100% WR = 30pts, with sample size damping
-  const recentSampleFactor = Math.min(1, Math.sqrt(stats.recentResolved) / 5); // plateaus at ~25 resolved
-  const recentWrScore = Math.max(0, (stats.recentWinRate - 0.5) * 2) * recentSampleFactor * 30;
+  // Falls back to all-time WR if no recent resolved markets (long-duration traders)
+  const effectiveRecentWR = stats.recentResolved >= 3 ? stats.recentWinRate : stats.winRate;
+  const recentSampleFactor = stats.recentResolved >= 3
+    ? Math.min(1, Math.sqrt(stats.recentResolved) / 5) // plateaus at ~25 resolved
+    : Math.min(0.6, Math.sqrt(stats.resolvedMarkets) / 10); // damped fallback from all-time
+  const recentWrScore = Math.max(0, (effectiveRecentWR - 0.5) * 2) * recentSampleFactor * 30;
 
   // All-time win rate (10 pts) — long-term verification
   const allTimeSampleFactor = Math.min(1, Math.sqrt(stats.resolvedMarkets) / 8); // plateaus at ~64 resolved
