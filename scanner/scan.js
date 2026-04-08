@@ -376,10 +376,11 @@ async function fastLoop(state, walletPool, marketLookup) {
   saveGzJSON(paperFile, paperState);
   saveGzJSON(path.join(DATA_DIR, 'markets.json.gz'), Object.fromEntries(marketLookup));
 
-  // Step 7: Update analytics
+  // Step 7: Build full analytics for frontend
   const analyticsFile = path.join(DATA_DIR, 'analytics.json.gz');
-  let analytics = loadGzJSON(analyticsFile) || { trendline: [], walletStats: {} };
+  let analytics = loadGzJSON(analyticsFile) || { trendline: [] };
 
+  // 7a: Trendline
   analytics.trendline.push({
     scanIndex,
     timestamp: new Date().toISOString(),
@@ -393,11 +394,176 @@ async function fastLoop(state, walletPool, marketLookup) {
     totalHistory: updatedSignals.stats.historyCount,
     winRate: updatedSignals.stats.winRate,
   });
-
-  // Keep trendline at a manageable size
   if (analytics.trendline.length > 2000) {
     analytics.trendline.splice(0, analytics.trendline.length - 2000);
   }
+
+  // 7b: Leaderboard — wallet list for Dashboard tab
+  const walletList = Object.values(walletPool)
+    .filter(w => w.score > 0 && w.status !== 'removed')
+    .sort((a, b) => b.score - a.score);
+
+  analytics.leaderboard = walletList.map((w, idx) => ({
+    rank: idx + 1,
+    address: w.address,
+    score: w.score,
+    lastActiveTimestamp: w.lastScored || w.discoveredScan ? new Date().toISOString() : null,
+    stats: {
+      totalPnl: w.stats?.totalPnl || 0,
+      realizedPnl: w.stats?.totalPnl || 0,
+      unrealizedPnl: 0,
+      wr: w.stats?.winRate || w.stats?.recentWinRate || 0,
+      estimatedMarkets: w.stats?.totalMarkets || w.stats?.resolvedMarkets || 0,
+      resolved: w.stats?.resolvedMarkets || 0,
+      wins: w.stats?.wins || 0,
+      losses: w.stats?.losses || 0,
+      efficiency: w.stats?.totalPnl && w.stats?.totalVolume
+        ? w.stats.totalPnl / w.stats.totalVolume : 0,
+      edgeRatio: w.stats?.avgPnlPerWin && w.stats?.avgPnlPerLoss
+        ? Math.abs(w.stats.avgPnlPerWin / w.stats.avgPnlPerLoss) : 0,
+      totalVolume: w.stats?.totalVolume || 0,
+      openCount: 0,
+      positionsPerWeek: w.stats?.tradesPerWeek || 0,
+      tradingDays: w.stats?.activeDays || 0,
+    },
+  }));
+
+  // 7c: Summary
+  const totalWallets = walletList.length;
+  const totalPnl = walletList.reduce((s, w) => s + (w.stats?.totalPnl || 0), 0);
+  const totalWins = walletList.reduce((s, w) => s + (w.stats?.wins || 0), 0);
+  const totalResolved = walletList.reduce((s, w) => s + (w.stats?.resolvedMarkets || 0), 0);
+
+  analytics.summary = {
+    totalWallets,
+    totalPnl,
+    avgScore: totalWallets > 0 ? walletList.reduce((s, w) => s + w.score, 0) / totalWallets : 0,
+    winRate: totalResolved > 0 ? totalWins / totalResolved : 0,
+    totalWins,
+    totalResolved,
+  };
+
+  // 7d: Consensus — markets where multiple tracked wallets recently bought
+  // Build from convergence candidates (already computed above)
+  analytics.consensus = candidates.map(c => ({
+    marketTitle: c.title || 'Unknown',
+    tokenId: c.conditionId,
+    slug: c.slug || c.eventSlug || '',
+    walletCount: c.walletCount,
+    avgScore: c.avgScore,
+    direction: c.direction || 'mixed',
+    consensusStrength: c.avgScore / 100,
+    conviction: c.totalBuySize,
+    totalBuySize: c.totalBuySize,
+    avgEntryPrice: c.avgEntryPrice || 0,
+    convergenceSpanHours: c.convergenceSpanHours || 0,
+    wallets: (c.wallets || []).map(w => ({
+      address: w.address,
+      score: w.score || 0,
+    })),
+  }));
+
+  // 7e: Active Positions — aggregate from recent trades for Portfolio tab
+  // Group all recent BUY trades by market
+  const marketHolders = new Map(); // conditionId → { title, holders[] }
+  for (const [address, trades] of recentTrades) {
+    const wallet = walletPool[address];
+    if (!wallet) continue;
+    for (const trade of trades) {
+      if (trade.side !== 'BUY') continue;
+      const cid = trade.conditionId || trade.asset;
+      if (!marketHolders.has(cid)) {
+        const mi = marketLookup.get(trade.asset) || marketLookup.get(cid) || {};
+        marketHolders.set(cid, {
+          marketTitle: mi.title || trade.title || 'Unknown',
+          slug: mi.slug || '',
+          tokenId: cid,
+          holders: [],
+        });
+      }
+      const entry = marketHolders.get(cid);
+      // Avoid duplicate wallet entries per market
+      if (!entry.holders.find(h => h.address === address)) {
+        entry.holders.push({
+          address,
+          score: wallet.score,
+          shares: parseFloat(trade.size) || 0,
+          entryPrice: parseFloat(trade.price) || 0,
+          positionValue: (parseFloat(trade.size) || 0) * (parseFloat(trade.price) || 0),
+          currentPnl: 0,
+        });
+      }
+    }
+  }
+
+  analytics.activePositions = [...marketHolders.values()]
+    .filter(m => m.holders.length >= 1)
+    .sort((a, b) => b.holders.length - a.holders.length)
+    .map(m => ({
+      ...m,
+      holderCount: m.holders.length,
+      totalShares: m.holders.reduce((s, h) => s + h.shares, 0),
+      totalValue: m.holders.reduce((s, h) => s + h.positionValue, 0),
+      totalPnl: m.holders.reduce((s, h) => s + h.currentPnl, 0),
+      avgEntryPrice: m.holders.length > 0
+        ? m.holders.reduce((s, h) => s + h.entryPrice, 0) / m.holders.length : 0,
+    }));
+
+  // 7f: Win Patterns — aggregate stats from wallet trade histories
+  let patternWins = 0, patternLosses = 0, patternTotalPnl = 0;
+  const sizeBuckets = {
+    small: { wins: 0, count: 0 },   // < $100
+    medium: { wins: 0, count: 0 },  // $100-$1000
+    large: { wins: 0, count: 0 },   // > $1000
+  };
+
+  for (const w of walletList) {
+    const s = w.stats || {};
+    patternWins += (s.wins || 0);
+    patternLosses += (s.losses || 0);
+    patternTotalPnl += (s.totalPnl || 0);
+
+    // Approximate size bucket distribution from wallet-level data
+    const avgSize = s.totalVolume && s.resolvedMarkets
+      ? s.totalVolume / s.resolvedMarkets : 0;
+    const resolved = s.resolvedMarkets || 0;
+    const wins = s.wins || 0;
+    if (avgSize < 100) {
+      sizeBuckets.small.count += resolved;
+      sizeBuckets.small.wins += wins;
+    } else if (avgSize < 1000) {
+      sizeBuckets.medium.count += resolved;
+      sizeBuckets.medium.wins += wins;
+    } else {
+      sizeBuckets.large.count += resolved;
+      sizeBuckets.large.wins += wins;
+    }
+  }
+
+  const patternTotal = patternWins + patternLosses;
+  analytics.winPatterns = {
+    overallStats: {
+      winRate: patternTotal > 0 ? patternWins / patternTotal : 0,
+      totalTrades: patternTotal,
+      totalPnl: patternTotalPnl,
+      avgPnl: patternTotal > 0 ? patternTotalPnl / patternTotal : 0,
+    },
+    sizeBuckets,
+    topWinningMarkets: [], // Would require per-market resolution data; placeholder for now
+  };
+
+  // 7g: Signals — embed into analytics for frontend
+  analytics.signals = {
+    active: Object.values(updatedSignals.active || {}),
+    history: updatedSignals.history || [],
+    stats: updatedSignals.stats || {},
+  };
+  analytics.scanCount = scanIndex;
+
+  // 7h: Paper trading — embed into analytics for frontend
+  analytics.paperTrading = paperState;
+
+  analytics.timestamp = new Date().toISOString();
 
   saveGzJSON(analyticsFile, analytics);
 

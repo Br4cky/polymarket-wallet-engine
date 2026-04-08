@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Polymarket Signal Engine</title>
+  <title>Polymarket Signal Engine v2</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -11,7 +11,7 @@
   <!-- Top Bar -->
   <div class="topbar">
     <div class="topbar-inner">
-      <div class="logo">⚡ Signal Engine</div>
+      <div class="logo">Signal Engine v2</div>
       <div class="status" id="statusBar">Loading data...</div>
     </div>
   </div>
@@ -19,316 +19,190 @@
   <!-- Navigation Tabs -->
   <nav class="tabs">
     <div class="tabs-inner">
-      <button class="tab active" data-tab="dashboard">Dashboard</button>
-      <button class="tab" data-tab="consensus">Consensus</button>
-      <button class="tab" data-tab="portfolio">Portfolio</button>
-      <button class="tab" data-tab="patterns">Patterns</button>
+      <button class="tab active" data-tab="wallets">Wallet Pool</button>
+      <button class="tab" data-tab="convergence">Convergence</button>
       <button class="tab" data-tab="signals">Signals</button>
       <button class="tab" data-tab="paper">Paper Trader</button>
     </div>
   </nav>
 
   <div class="container">
-    <!-- Tab 1: Dashboard -->
-    <div id="tab-dashboard" class="tab-content active">
+
+    <!-- Tab 1: Wallet Pool -->
+    <div id="tab-wallets" class="tab-content active">
       <div class="tab-header">
-        <h1>Dashboard</h1>
-        <p class="subtitle">Overview of tracked wallets and market activity</p>
+        <h1>Wallet Pool</h1>
+        <p class="subtitle">Tracked Elite Wallets Ranked by Score</p>
       </div>
 
-      <!-- Time Filter Bar -->
-      <div class="time-filter-bar">
-        <span class="filter-label">Time range:</span>
-        <button class="time-btn active" data-range="all">All Time</button>
-        <button class="time-btn" data-range="7d">7 Days</button>
-        <button class="time-btn" data-range="30d">30 Days</button>
-        <button class="time-btn" data-range="90d">90 Days</button>
-        <span class="filter-divider"></span>
-        <label class="filter-checkbox"><input type="checkbox" id="active-only"> Active wallets only</label>
-      </div>
-
-      <!-- Metric Cards -->
       <div class="metrics-grid">
         <div class="metric-card">
-          <div class="metric-label">Total Tracked Wallets</div>
-          <div class="metric-value" id="metric-wallets">0</div>
+          <div class="metric-label">Pool Size</div>
+          <div class="metric-value" id="wp-pool-size">0</div>
           <div class="metric-unit">wallets</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Average Score</div>
-          <div class="metric-value" id="metric-avg-score">0</div>
+          <div class="metric-label">Avg Score</div>
+          <div class="metric-value" id="wp-avg-score">0</div>
           <div class="metric-unit">/100</div>
         </div>
         <div class="metric-card">
           <div class="metric-label">Combined PnL</div>
-          <div class="metric-value" id="metric-pnl">$0</div>
+          <div class="metric-value" id="wp-total-pnl">$0</div>
           <div class="metric-unit">realized</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Win Rate (Resolved)</div>
-          <div class="metric-value" id="metric-win-rate">0%</div>
-          <div class="metric-unit">closed predictions</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Avg Trades/Week</div>
-          <div class="metric-value" id="metric-trades-per-week">0</div>
-          <div class="metric-unit">per wallet</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Open Positions</div>
-          <div class="metric-value" id="metric-open-total">0</div>
-          <div class="metric-unit">across all wallets</div>
+          <div class="metric-label">Avg Win Rate</div>
+          <div class="metric-value" id="wp-avg-wr">0%</div>
+          <div class="metric-unit">resolved markets</div>
         </div>
       </div>
 
-      <!-- Charts Section -->
       <div class="charts-section">
         <div class="chart-container">
           <h3>Score Distribution</h3>
           <div style="position: relative; height: 300px;">
-            <canvas id="chart-distribution"></canvas>
+            <canvas id="chart-score-dist"></canvas>
           </div>
         </div>
         <div class="chart-container">
-          <h3>Trend Over Time</h3>
+          <h3>Pool Size Over Time</h3>
           <div style="position: relative; height: 300px;">
-            <canvas id="chart-trendline"></canvas>
+            <canvas id="chart-pool-trend"></canvas>
           </div>
         </div>
       </div>
 
-      <!-- Leaderboard Table -->
       <div class="section">
-        <h2>Top Wallets by Score</h2>
+        <h2>Wallet Leaderboard</h2>
         <div class="table-wrapper">
-          <table id="leaderboard-table" class="data-table sortable">
+          <table id="wallet-table" class="data-table sortable">
             <thead>
               <tr>
-                <th data-field="rank" class="sortable">Rank</th>
+                <th data-field="rank">#</th>
                 <th data-field="score" class="sortable">Score</th>
                 <th data-field="address">Address</th>
-                <th data-field="totalPnL" class="sortable">Total PnL</th>
-                <th data-field="winRate" class="sortable" title="Win rate based on resolved (closed) predictions only">Win Rate</th>
-                <th data-field="markets" class="sortable">Markets</th>
-                <th data-field="resolved" class="sortable" title="Number of closed/resolved predictions">Resolved</th>
-                <th data-field="efficiency" class="sortable">Efficiency</th>
-                <th data-field="positionsPerWeek" class="sortable">Trades/Wk</th>
-                <th data-field="lastActive" class="sortable">Last Active</th>
-              </tr>
-            </thead>
-            <tbody id="leaderboard-tbody">
-              <tr><td colspan="9" class="empty-state">Loading wallets...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Detail Panel -->
-      <div id="detail-panel-dashboard" class="detail-panel hidden">
-        <div class="detail-close" onclick="closeDetailPanel('dashboard')">✕</div>
-        <div id="detail-content-dashboard"></div>
-      </div>
-    </div>
-
-    <!-- Tab 2: Consensus Trades -->
-    <div id="tab-consensus" class="tab-content">
-      <div class="tab-header">
-        <h1>Consensus Trades</h1>
-        <p class="subtitle">What Are Smart Wallets Betting On?</p>
-        <p class="description">Markets where 3+ tracked wallets hold active positions</p>
-      </div>
-
-      <!-- Consensus Table -->
-      <div class="section">
-        <div class="table-wrapper">
-          <table id="consensus-table" class="data-table sortable">
-            <thead>
-              <tr>
-                <th data-field="title">Market Title</th>
-                <th data-field="direction">Direction</th>
-                <th data-field="walletCount" class="sortable">Wallets</th>
-                <th data-field="consensusStrength" class="sortable">Strength</th>
-                <th data-field="avgScore" class="sortable">Avg Score</th>
-                <th data-field="totalPnL" class="sortable">Total PnL</th>
-                <th data-field="conviction" class="sortable">Conviction</th>
-              </tr>
-            </thead>
-            <tbody id="consensus-tbody">
-              <tr><td colspan="7" class="empty-state">Loading consensus data...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Detail Panel -->
-      <div id="detail-panel-consensus" class="detail-panel hidden">
-        <div class="detail-close" onclick="closeDetailPanel('consensus')">✕</div>
-        <div id="detail-content-consensus"></div>
-      </div>
-    </div>
-
-    <!-- Tab 3: Active Portfolio -->
-    <div id="tab-portfolio" class="tab-content">
-      <div class="tab-header">
-        <h1>Active Portfolio</h1>
-        <p class="subtitle">Current Holdings Across All Tracked Wallets</p>
-      </div>
-
-      <!-- Summary Cards -->
-      <div class="metrics-grid">
-        <div class="metric-card">
-          <div class="metric-label">Total Open Positions</div>
-          <div class="metric-value" id="metric-open-positions">0</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Unique Markets</div>
-          <div class="metric-value" id="metric-unique-markets">0</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Wallets with Open Positions</div>
-          <div class="metric-value" id="metric-active-wallets">0</div>
-        </div>
-      </div>
-
-      <!-- Active Positions Table -->
-      <div class="section">
-        <div class="table-wrapper">
-          <table id="portfolio-table" class="data-table sortable">
-            <thead>
-              <tr>
-                <th data-field="title">Market Title</th>
-                <th data-field="holdingCount" class="sortable">Holding Wallets</th>
-                <th data-field="totalValue" class="sortable">Total Value</th>
-                <th data-field="totalShares" class="sortable">Total Shares</th>
-                <th data-field="avgEntryPrice" class="sortable">Avg Entry Price</th>
+                <th data-field="winRate" class="sortable">Win Rate</th>
                 <th data-field="totalPnl" class="sortable">PnL</th>
+                <th data-field="resolved" class="sortable">Resolved</th>
+                <th data-field="tradesPerWeek" class="sortable">Trades/Wk</th>
               </tr>
             </thead>
-            <tbody id="portfolio-tbody">
-              <tr><td colspan="6" class="empty-state">Loading portfolio data...</td></tr>
+            <tbody id="wallet-tbody">
+              <tr><td colspan="7" class="empty-state">Loading wallets...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
-
-      <!-- Detail Panel -->
-      <div id="detail-panel-portfolio" class="detail-panel hidden">
-        <div class="detail-close" onclick="closeDetailPanel('portfolio')">✕</div>
-        <div id="detail-content-portfolio"></div>
-      </div>
     </div>
 
-    <!-- Tab 4: Win Patterns -->
-    <div id="tab-patterns" class="tab-content">
+    <!-- Tab 2: Convergence -->
+    <div id="tab-convergence" class="tab-content">
       <div class="tab-header">
-        <h1>Win Patterns</h1>
-        <p class="subtitle">Trading Patterns of Winning Wallets</p>
+        <h1>Convergence Radar</h1>
+        <p class="subtitle">Markets Where Multiple Wallets Are Buying</p>
+        <p class="description">Real-time trade convergence detected from Data API. Higher wallet counts and scores = stronger signal.</p>
       </div>
 
-      <!-- Stats Cards -->
       <div class="metrics-grid">
         <div class="metric-card">
-          <div class="metric-label">Win Rate (Resolved)</div>
-          <div class="metric-value" id="metric-overall-winrate">0%</div>
+          <div class="metric-label">Convergence Candidates</div>
+          <div class="metric-value" id="cv-total">0</div>
+          <div class="metric-unit">markets with 2+ wallets</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Avg Position Size</div>
-          <div class="metric-value" id="metric-avg-position">0</div>
-          <div class="metric-unit">shares</div>
+          <div class="metric-label">Signal-Strength (8+)</div>
+          <div class="metric-value" id="cv-consensus">0</div>
+          <div class="metric-unit">consensus threshold</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Median PnL</div>
-          <div class="metric-value" id="metric-median-pnl">$0</div>
+          <div class="metric-label">Building (3-7)</div>
+          <div class="metric-value" id="cv-cluster">0</div>
+          <div class="metric-unit">cluster range</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Total Resolved Positions</div>
-          <div class="metric-value" id="metric-resolved-count">0</div>
+          <div class="metric-label">Emerging (2)</div>
+          <div class="metric-value" id="cv-emerging">0</div>
+          <div class="metric-unit">early convergence</div>
         </div>
       </div>
 
-      <!-- Charts Section -->
-      <div class="charts-section">
-        <div class="chart-container">
-          <h3>Win Rate by Position Size</h3>
-          <div style="position: relative; height: 300px;">
-            <canvas id="chart-winrate-size"></canvas>
-          </div>
-        </div>
-        <div class="chart-container">
-          <h3>Top Winning Markets</h3>
-          <div style="position: relative; height: 300px;">
-            <canvas id="chart-top-markets"></canvas>
-          </div>
-        </div>
-      </div>
-
-      <!-- Winning Markets Table -->
       <div class="section">
-        <h2>Top Winning Markets</h2>
+        <h2>All Convergence Events</h2>
+        <div class="signal-tier-filters" style="margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-sm cv-filter active" data-min="0">All</button>
+          <button class="btn btn-sm cv-filter" data-min="8">Consensus (8+)</button>
+          <button class="btn btn-sm cv-filter" data-min="3">Cluster (3+)</button>
+          <button class="btn btn-sm cv-filter" data-min="2">Emerging (2+)</button>
+        </div>
         <div class="table-wrapper">
-          <table id="patterns-table" class="data-table sortable">
+          <table id="convergence-table" class="data-table sortable">
             <thead>
               <tr>
                 <th data-field="title">Market</th>
-                <th data-field="winRate" class="sortable">Win Rate</th>
-                <th data-field="avgPnL" class="sortable">Avg PnL</th>
-                <th data-field="positionCount" class="sortable">Positions</th>
+                <th data-field="direction">Direction</th>
+                <th data-field="walletCount" class="sortable">Wallets</th>
+                <th data-field="avgScore" class="sortable">Avg Score</th>
+                <th data-field="totalBuySize" class="sortable">Buy Size</th>
+                <th data-field="avgEntryPrice" class="sortable">Avg Price</th>
+                <th data-field="convergenceSpanHours" class="sortable">Span (hrs)</th>
+                <th data-field="strength">Strength</th>
               </tr>
             </thead>
-            <tbody id="patterns-tbody">
-              <tr><td colspan="4" class="empty-state">Loading pattern data...</td></tr>
+            <tbody id="convergence-tbody">
+              <tr><td colspan="8" class="empty-state">Loading convergence data...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
+
+      <div id="detail-panel-convergence" class="detail-panel hidden">
+        <div class="detail-close" onclick="closeDetailPanel('convergence')">&#10005;</div>
+        <div id="detail-content-convergence"></div>
+      </div>
     </div>
 
-    <!-- Tab 5: Signals -->
+    <!-- Tab 3: Signals -->
     <div id="tab-signals" class="tab-content">
       <div class="tab-header">
         <h1>Signals</h1>
-        <p class="subtitle">Curated Trading Signals from Smart Wallet Consensus</p>
+        <p class="subtitle">Trade Signals from Wallet Convergence</p>
       </div>
 
-      <!-- Signal Engine Stats -->
-      <div class="section">
-        <h2>Signal Engine</h2>
-        <div class="metrics-grid">
-          <div class="metric-card">
-            <div class="metric-label">Active Signals</div>
-            <div class="metric-value" id="metric-active-signals">-</div>
-            <div class="metric-sub" id="metric-signal-tiers">-</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Hit Rate</div>
-            <div class="metric-value" id="metric-signal-hitrate">-</div>
-            <div class="metric-sub" id="metric-signal-record">-</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Signal PnL</div>
-            <div class="metric-value" id="metric-signal-pnl">-</div>
-            <div class="metric-sub" id="metric-signal-avg-conf">-</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Avg Confidence</div>
-            <div class="metric-value" id="metric-signal-confidence">-</div>
-            <div class="metric-sub" id="metric-signal-scan-activity">-</div>
-          </div>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">Active Signals</div>
+          <div class="metric-value" id="sig-active">-</div>
+          <div class="metric-sub" id="sig-tiers">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Hit Rate</div>
+          <div class="metric-value" id="sig-hitrate">-</div>
+          <div class="metric-sub" id="sig-record">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Avg Confidence</div>
+          <div class="metric-value" id="sig-confidence">-</div>
+          <div class="metric-sub" id="sig-activity">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Signal PnL</div>
+          <div class="metric-value" id="sig-pnl">-</div>
+          <div class="metric-sub" id="sig-avg-conf">-</div>
         </div>
       </div>
 
-      <!-- Active Signals Table -->
       <div class="section">
         <h2>Active Signals</h2>
         <div class="signal-tier-filters" style="margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn-sm signal-filter active" data-tier="all">All</button>
-          <button class="btn btn-sm signal-filter" data-tier="elite">Elite</button>
-          <button class="btn btn-sm signal-filter" data-tier="pro">Pro</button>
-          <button class="btn btn-sm signal-filter" data-tier="starter">Starter</button>
+          <button class="btn btn-sm sig-filter active" data-tier="all">All</button>
+          <button class="btn btn-sm sig-filter" data-tier="elite">Elite</button>
+          <button class="btn btn-sm sig-filter" data-tier="pro">Pro</button>
+          <button class="btn btn-sm sig-filter" data-tier="starter">Starter</button>
           <span style="border-left: 1px solid var(--border); margin: 0 4px;"></span>
-          <button class="btn btn-sm signal-filter" data-type="consensus">Consensus</button>
-          <button class="btn btn-sm signal-filter" data-type="cluster">Cluster</button>
-          <button class="btn btn-sm signal-filter" data-type="solo">Solo</button>
+          <button class="btn btn-sm sig-filter" data-type="consensus">Consensus</button>
+          <button class="btn btn-sm sig-filter" data-type="cluster">Cluster</button>
+          <button class="btn btn-sm sig-filter" data-type="solo">Solo</button>
         </div>
         <div class="table-wrapper">
           <table id="active-signals-table" class="data-table sortable">
@@ -339,22 +213,20 @@
                 <th data-field="tier">Tier</th>
                 <th data-field="direction">Direction</th>
                 <th data-field="walletCount" class="sortable">Wallets</th>
-                <th data-field="openMarketPrice" class="sortable">Entry Price</th>
-                <th data-field="currentMarketPrice" class="sortable">Live Price</th>
+                <th data-field="openMarketPrice" class="sortable">Entry</th>
+                <th data-field="currentMarketPrice" class="sortable">Live</th>
                 <th data-field="confidence" class="sortable">Confidence</th>
                 <th data-field="avgScore" class="sortable">Avg Score</th>
-                <th data-field="unrealised" class="sortable">Unrealised</th>
-                <th data-field="scansActive" class="sortable">Age (scans)</th>
+                <th data-field="scansActive" class="sortable">Age</th>
               </tr>
             </thead>
             <tbody id="active-signals-tbody">
-              <tr><td colspan="11" class="empty-state">Loading signals...</td></tr>
+              <tr><td colspan="10" class="empty-state">Loading signals...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Signal History / Track Record -->
       <div class="section">
         <h2>Signal Track Record</h2>
         <div class="table-wrapper">
@@ -364,40 +236,36 @@
                 <th data-field="marketTitle">Market</th>
                 <th data-field="outcome">Result</th>
                 <th data-field="direction">Direction</th>
-                <th data-field="openMarketPrice" class="sortable">Open Price</th>
-                <th data-field="peakConfidence" class="sortable">Peak Confidence</th>
+                <th data-field="openMarketPrice" class="sortable">Entry</th>
+                <th data-field="peakConfidence" class="sortable">Peak Conf</th>
                 <th data-field="peakWallets" class="sortable">Peak Wallets</th>
                 <th data-field="signalReturn" class="sortable">Return</th>
-                <th data-field="duration" class="sortable">Duration</th>
                 <th data-field="closeReason">Close Reason</th>
               </tr>
             </thead>
             <tbody id="signal-history-tbody">
-              <tr><td colspan="9" class="empty-state">No signal history yet</td></tr>
+              <tr><td colspan="8" class="empty-state">No signal history yet</td></tr>
             </tbody>
           </table>
         </div>
       </div>
-
     </div>
 
-    <!-- Tab 6: Paper Trader -->
+    <!-- Tab 4: Paper Trader -->
     <div id="tab-paper" class="tab-content">
       <div class="tab-header">
         <h1>Paper Trader</h1>
         <p class="subtitle">Hypothetical Performance Trading Our Signals</p>
-        <p class="description">$10,000 starting balance · $100 per trade · Auto-trades every signal</p>
+        <p class="description">$10,000 starting balance &middot; Auto-trades every signal</p>
       </div>
 
-      <!-- Portfolio Selector -->
       <div class="signal-tier-filters" style="margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
-        <button class="btn btn-sm paper-portfolio-filter active" data-portfolio="combined">Combined</button>
-        <button class="btn btn-sm paper-portfolio-filter" data-portfolio="elite">Elite Only</button>
-        <button class="btn btn-sm paper-portfolio-filter" data-portfolio="pro">Pro Only</button>
-        <button class="btn btn-sm paper-portfolio-filter" data-portfolio="starter">Starter Only</button>
+        <button class="btn btn-sm paper-filter active" data-portfolio="combined">Combined</button>
+        <button class="btn btn-sm paper-filter" data-portfolio="elite">Elite</button>
+        <button class="btn btn-sm paper-filter" data-portfolio="pro">Pro</button>
+        <button class="btn btn-sm paper-filter" data-portfolio="starter">Starter</button>
       </div>
 
-      <!-- Performance Summary -->
       <div class="metrics-grid">
         <div class="metric-card">
           <div class="metric-label">Portfolio Value</div>
@@ -431,7 +299,6 @@
         </div>
       </div>
 
-      <!-- Equity Curve Chart -->
       <div class="charts-section">
         <div class="chart-container" style="grid-column: 1 / -1;">
           <h3>Equity Curve</h3>
@@ -441,9 +308,8 @@
         </div>
       </div>
 
-      <!-- Open Trades -->
       <div class="section">
-        <h2>Open Trades <span id="paper-open-count" style="color: var(--text-muted); font-weight: normal; font-size: 0.85em;">(0)</span></h2>
+        <h2>Open Trades <span id="paper-open-count" style="color: var(--text-dim); font-weight: normal; font-size: 0.85em;">(0)</span></h2>
         <div class="table-wrapper">
           <table id="paper-open-table" class="data-table sortable">
             <thead>
@@ -452,22 +318,20 @@
                 <th data-field="signalType">Type</th>
                 <th data-field="tier">Tier</th>
                 <th data-field="direction">Direction</th>
-                <th data-field="openMarketPrice" class="sortable">Mkt Price</th>
                 <th data-field="confidence" class="sortable">Confidence</th>
                 <th data-field="tradeSize">Size</th>
-                <th data-field="openedScan" class="sortable">Age (scans)</th>
+                <th data-field="openedScan" class="sortable">Age</th>
               </tr>
             </thead>
             <tbody id="paper-open-tbody">
-              <tr><td colspan="8" class="empty-state">No open trades yet</td></tr>
+              <tr><td colspan="7" class="empty-state">No open trades yet</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Closed Trades -->
       <div class="section">
-        <h2>Trade History <span id="paper-closed-count" style="color: var(--text-muted); font-weight: normal; font-size: 0.85em;">(0)</span></h2>
+        <h2>Trade History <span id="paper-closed-count" style="color: var(--text-dim); font-weight: normal; font-size: 0.85em;">(0)</span></h2>
         <div class="table-wrapper">
           <table id="paper-closed-table" class="data-table sortable">
             <thead>
@@ -475,23 +339,19 @@
                 <th data-field="marketTitle">Market</th>
                 <th data-field="signalType">Type</th>
                 <th data-field="tier">Tier</th>
-                <th data-field="direction">Direction</th>
-                <th data-field="openMarketPrice" class="sortable">Mkt Price</th>
                 <th data-field="outcome">Result</th>
                 <th data-field="pnl" class="sortable">PnL</th>
                 <th data-field="returnPct" class="sortable">Return %</th>
-                <th data-field="duration" class="sortable">Duration</th>
                 <th data-field="closeReason">Close Reason</th>
               </tr>
             </thead>
             <tbody id="paper-closed-tbody">
-              <tr><td colspan="9" class="empty-state">No closed trades yet</td></tr>
+              <tr><td colspan="7" class="empty-state">No closed trades yet</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Tier Comparison -->
       <div class="section">
         <h2>Tier Comparison</h2>
         <div class="table-wrapper">
@@ -517,7 +377,7 @@
 
   </div>
 
-  <footer>Not financial advice. Data from Polymarket's public Goldsky subgraphs.</footer>
+  <footer>Not financial advice. Data from Polymarket public APIs.</footer>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
