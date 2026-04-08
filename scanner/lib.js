@@ -2506,7 +2506,7 @@ function processPaperTrades(signals, paperState, scanIndex) {
       } else if (closeReason === 'resolved' && outcome === 'loss') {
         // Signal was wrong — lose the trade amount
         tradePnl = -trade.tradeSize;
-      } else if (closeReason === 'stale' || closeReason === 'expired' || closeReason === 'deduplicated' || closeReason === 'upgraded_to_consensus') {
+      } else if (closeReason === 'stale' || closeReason === 'expired' || closeReason === 'majority_exit' || closeReason === 'deduplicated' || closeReason === 'upgraded_to_consensus') {
         // Signal closed without resolution — return capital with small friction cost
         tradePnl = -trade.tradeSize * 0.02; // 2% slippage/friction for exit
       } else {
@@ -2608,6 +2608,7 @@ export {
   analyzePositions,
   computeScore,
   resolveMarkets,
+  matchesWinningOutcome,
   computeConsensus,
   computeWinPatterns,
   computeActivePositions,
