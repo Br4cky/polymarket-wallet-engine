@@ -62,7 +62,7 @@ const CONFIG = {
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
   MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
-  MAX_INACTIVE_DAYS: 30,           // Must have traded within last 30 days
+  MAX_INACTIVE_DAYS: 60,           // Must have traded within last 60 days
   DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
   RESCORE_BATCH_SIZE: 50,          // Wallets to rescore per fast loop (background)
 
