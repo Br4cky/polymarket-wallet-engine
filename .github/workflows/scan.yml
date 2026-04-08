@@ -2,7 +2,7 @@ name: Scan Polymarket Wallets
 
 on:
   schedule:
-    - cron: '5 * * * *'  # Every hour at :05
+    - cron: '5 */2 * * *'  # Every 2 hours at :05
   workflow_dispatch:
 
 permissions:
