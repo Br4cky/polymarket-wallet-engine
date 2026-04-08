@@ -42,7 +42,9 @@ async function apiRequest(path, params = {}) {
       }
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        let body = '';
+        try { body = await response.text(); } catch {}
+        throw new Error(`HTTP ${response.status}: ${response.statusText}${body ? ' — ' + body.slice(0, 200) : ''}`);
       }
 
       // Success — speed back up
@@ -79,7 +81,7 @@ async function apiRequest(path, params = {}) {
  */
 async function fetchTrades(wallet, opts = {}) {
   const params = {
-    user: wallet,
+    user: wallet.toLowerCase(),
     limit: opts.limit || 500,
   };
   if (opts.offset) params.offset = opts.offset;
@@ -169,7 +171,7 @@ async function fetchRecentTrades(wallets, sinceTs, onProgress) {
  */
 async function fetchActivity(wallet, opts = {}) {
   const params = {
-    user: wallet,
+    user: wallet.toLowerCase(),
     limit: opts.limit || 500,
   };
   if (opts.startTs) params.startTs = opts.startTs;
