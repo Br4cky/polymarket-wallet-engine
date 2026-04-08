@@ -60,16 +60,16 @@ const CONFIG = {
   TARGET_POOL_SIZE: 500,           // Top N to keep after scoring
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
-  DISCOVERY_INTERVAL_SCANS: 10,    // Run full discovery every N fast-loop scans
+  DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
   RESCORE_BATCH_SIZE: 50,          // Wallets to rescore per fast loop (background)
 
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
-  LOOKBACK_HOURS: 2,                       // Check trades from last 2 hours each loop
+  LOOKBACK_HOURS: 4,                       // Check trades from last 4 hours each loop
 
   // Goldsky pagination
   BATCH_SIZE: 1000,
-  MAX_POSITIONS: 200000,
+  MAX_POSITIONS: 2000000,          // 2M positions — deeper crawl for more wallets
 };
 
 if (!fs.existsSync(DATA_DIR)) {
