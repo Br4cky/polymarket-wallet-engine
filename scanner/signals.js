@@ -266,7 +266,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       const tokenId = candidate.asset || signal.tokenId;
       const mi = tokenId ? marketLookup.get(tokenId) : null;
       if (mi && mi.currentPrice > 0) {
-        signal.currentMarketPrice = +mi.currentPrice.toFixed(4);
+        signal.currentMarketPrice = +(mi.currentPrice || 0).toFixed(4);
       }
 
       // Recompute confidence
@@ -290,7 +290,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 
       // --- OPEN new signal ---
       const confidence = computeConvergenceConfidence(candidate, signalType);
-      const currentPrice = mi ? +mi.currentPrice.toFixed(4) : 0;
+      const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
 
       active[signalId] = {
         signalId,
@@ -400,7 +400,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         const tokenId = data.meta.asset || signal.tokenId;
         const mi = tokenId ? marketLookup.get(tokenId) : null;
         if (mi && mi.currentPrice > 0) {
-          signal.currentMarketPrice = +mi.currentPrice.toFixed(4);
+          signal.currentMarketPrice = +(mi.currentPrice || 0).toFixed(4);
         }
 
         updated++;
@@ -412,7 +412,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 
         // Open solo signal
         const avgPrice = data.trades.reduce((s, t) => s + t.price, 0) / data.trades.length;
-        const currentPrice = mi ? +mi.currentPrice.toFixed(4) : 0;
+        const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
         const confidence = computeSoloConfidence(walletInfo, buySize, avgPrice);
 
         active[signalId] = {
