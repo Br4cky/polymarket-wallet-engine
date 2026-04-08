@@ -215,9 +215,9 @@ async function discoverWallets(state, existingPool) {
   let processed = 0;
 
   for (const [address, summary] of candidates) {
-    // Skip if already in pool and recently scored
+    // Skip if already in pool and scored within last 3 days
     if (pool[address] && pool[address].lastScored &&
-        (Date.now() - new Date(pool[address].lastScored).getTime()) < 7 * 24 * 60 * 60 * 1000) {
+        (Date.now() - new Date(pool[address].lastScored).getTime()) < 3 * 24 * 60 * 60 * 1000) {
       qualified++;
       processed++;
       if (processed % 100 === 0) console.log(`  Processed ${processed}/${candidates.length} (${qualified} qualified)...`);
@@ -277,7 +277,66 @@ async function discoverWallets(state, existingPool) {
     }
   }
 
-  // Step 5: Rank and trim to top N (with minimum score floor)
+  // Step 5: Re-check existing pool members not in current candidates
+  // Catches wallets that have gone inactive or deteriorated since last scored
+  const candidateAddrs = new Set(candidates.map(([addr]) => addr));
+  let decayed = 0;
+  let rescored = 0;
+  const staleWallets = Object.entries(pool)
+    .filter(([addr, w]) => {
+      if (candidateAddrs.has(addr)) return false;
+      if (!w.lastScored || w.status === 'removed') return false;
+      const daysSinceScored = (Date.now() - new Date(w.lastScored).getTime()) / (24 * 60 * 60 * 1000);
+      return daysSinceScored >= 7;
+    })
+    .sort((a, b) => {
+      // Oldest scored first — prioritise most stale
+      return new Date(a[1].lastScored).getTime() - new Date(b[1].lastScored).getTime();
+    })
+    .slice(0, CONFIG.RESCORE_BATCH_SIZE); // Limit to batch size per discovery
+
+  for (const [addr, wallet] of staleWallets) {
+    // Quick inactive check (no API call needed)
+    const daysSinceLastTrade = wallet.stats?.lastTradeTs > 0
+      ? (Date.now() / 1000 - wallet.stats.lastTradeTs) / 86400
+      : Infinity;
+    if (daysSinceLastTrade > CONFIG.MAX_INACTIVE_DAYS) {
+      wallet.status = 'removed';
+      wallet.removeReason = 'inactive';
+      decayed++;
+      continue;
+    }
+
+    // Re-score from fresh trade data
+    try {
+      const trades = await fetchAllTrades(addr, { maxTrades: 5000 });
+      if (!trades || trades.length < 10) {
+        wallet.status = 'removed';
+        wallet.removeReason = 'insufficient_trades';
+        decayed++;
+        continue;
+      }
+      const stats = analyzeTradeHistory(trades);
+      if (!stats || (stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
+        wallet.status = 'removed';
+        wallet.removeReason = 'insufficient_resolved';
+        decayed++;
+        continue;
+      }
+      wallet.score = computeWalletScore(stats);
+      wallet.stats = stats;
+      wallet.lastScored = new Date().toISOString();
+      wallet.totalTrades = trades.length;
+      rescored++;
+    } catch (err) {
+      // Keep existing score on error
+    }
+  }
+  if (decayed > 0 || rescored > 0) {
+    console.log(`  Pool maintenance: ${rescored} re-scored, ${decayed} removed`);
+  }
+
+  // Step 6: Rank and trim to top N (with minimum score floor)
   const ranked = Object.entries(pool)
     .filter(([, w]) => w.score >= CONFIG.MIN_SCORE_POOL && w.status !== 'removed')
     .sort((a, b) => b[1].score - a[1].score);
