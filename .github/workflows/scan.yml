@@ -2,16 +2,20 @@ name: Scan Polymarket Wallets
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '5 * * * *'  # Every hour at :05
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: scanner
+  cancel-in-progress: false  # Let running scans finish, skip new ones
+
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -27,10 +31,8 @@ jobs:
         run: |
           git config user.name "Polymarket Scanner Bot"
           git config user.email "scanner@polymarket-signals.local"
-          # Remove old uncompressed files if they exist (migrating to .gz)
           git rm -f --ignore-unmatch data/wallets.json data/markets.json data/analytics.json
           git add data/
           SCAN_COUNT=$(node -e "const fs = require('fs'); try { const s = JSON.parse(fs.readFileSync('data/state.json','utf8')); console.log(s.scanCount); } catch(e) { console.log('unknown'); }")
           git diff --cached --quiet || git commit -m "Scan #${SCAN_COUNT}: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # Retry push with pull-rebase if another scan pushed while this one ran
           git push || (git pull --rebase && git push) || (sleep 5 && git pull --rebase && git push)
