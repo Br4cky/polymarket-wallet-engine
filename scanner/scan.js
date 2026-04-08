@@ -61,6 +61,7 @@ const CONFIG = {
   MIN_SCORE_POOL: 50,              // Minimum score to enter the pool — filters out noise
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
+  MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
   DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
   RESCORE_BATCH_SIZE: 50,          // Wallets to rescore per fast loop (background)
 
@@ -236,6 +237,12 @@ async function discoverWallets(state, existingPool) {
       }
 
       const score = computeWalletScore(stats);
+
+      // Require minimum resolved markets — no flukes
+      if ((stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
+        processed++;
+        continue;
+      }
 
       pool[address] = {
         address,

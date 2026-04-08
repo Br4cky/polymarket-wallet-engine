@@ -416,7 +416,7 @@ function computeWalletScore(stats) {
   const wrDiff = Math.abs(stats.recentWinRate - stats.winRate);
   const consistencyScore = stats.recentResolved >= 5
     ? Math.max(0, 1 - wrDiff * 3) * 15  // 33% WR difference = 0 pts
-    : 7.5; // Not enough recent data — give benefit of doubt
+    : 3; // Not enough recent data — small benefit of doubt, not half marks
 
   // Activity (15 pts) — recent trading frequency and recency
   const daysSinceLastTrade = stats.lastTradeTs > 0
