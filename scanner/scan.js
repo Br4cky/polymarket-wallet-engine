@@ -58,6 +58,7 @@ const CONFIG = {
   // Wallet discovery (slow loop)
   MAX_DISCOVERY_WALLETS: 5000,     // Candidates to discover from Goldsky
   TARGET_POOL_SIZE: 500,           // Top N to keep after scoring
+  MIN_SCORE_POOL: 50,              // Minimum score to enter the pool — filters out noise
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
   DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
@@ -259,9 +260,9 @@ async function discoverWallets(state, existingPool) {
     }
   }
 
-  // Step 5: Rank and trim to top N
+  // Step 5: Rank and trim to top N (with minimum score floor)
   const ranked = Object.entries(pool)
-    .filter(([, w]) => w.score > 0 && w.status !== 'removed')
+    .filter(([, w]) => w.score >= CONFIG.MIN_SCORE_POOL && w.status !== 'removed')
     .sort((a, b) => b[1].score - a[1].score);
 
   const trimmedPool = {};
