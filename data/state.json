@@ -1,12 +1,12 @@
 {
-  "scanCount": 85,
-  "lastRun": "2026-04-08T08:41:48.359Z",
-  "lastDiscovery": 85,
-  "lastFastLoop": "2026-04-08T08:41:52.844Z",
-  "walletPoolVersion": 1,
+  "scanCount": 86,
+  "lastRun": "2026-04-08T22:54:00.386Z",
+  "lastDiscovery": 86,
+  "lastFastLoop": "2026-04-08T22:58:27.353Z",
+  "walletPoolVersion": 2,
   "cursor": null,
   "totalPositionsScanned": 0,
-  "lastId": "0x076ccd4fd7e7454fc4e627fa1885326552ee284b-62595435619678438799673612599999067112702849851098967060818869994133628780778",
+  "lastId": "0x07c4dcb8e02a79b4cee0811ce0dc21ea0a14b93d-73322740126428782679872941364975967796539517054656289162936931336660834090456",
   "totalScanned": 13653000,
   "scanIndex": 82
 }
