@@ -62,6 +62,7 @@ const CONFIG = {
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
   MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
+  MAX_INACTIVE_DAYS: 30,           // Must have traded within last 30 days
   DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
   RESCORE_BATCH_SIZE: 50,          // Wallets to rescore per fast loop (background)
 
@@ -240,6 +241,15 @@ async function discoverWallets(state, existingPool) {
 
       // Require minimum resolved markets — no flukes
       if ((stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
+        processed++;
+        continue;
+      }
+
+      // Must have traded recently — no ghost wallets
+      const daysSinceLastTrade = stats.lastTradeTs > 0
+        ? (Date.now() / 1000 - stats.lastTradeTs) / 86400
+        : Infinity;
+      if (daysSinceLastTrade > CONFIG.MAX_INACTIVE_DAYS) {
         processed++;
         continue;
       }
