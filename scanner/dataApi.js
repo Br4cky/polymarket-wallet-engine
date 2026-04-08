@@ -108,7 +108,11 @@ async function fetchAllTrades(wallet, opts = {}) {
   let offset = 0;
   const pageSize = 1000;
 
+  const maxOffset = 3000; // Data API hard limit on pagination offset
+
   while (allTrades.length < maxTrades) {
+    if (offset >= maxOffset) break; // API rejects offsets >= 3000
+
     const batch = await fetchTrades(wallet, {
       limit: Math.min(pageSize, maxTrades - allTrades.length),
       offset,

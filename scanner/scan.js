@@ -132,11 +132,14 @@ async function discoverWallets(state, existingPool) {
   console.log(`  Using entity: ${entityName} (user=${fields.user}, pnl=${fields.pnl}, token=${fields.token})`);
 
   // Step 2: Fetch position summaries from Goldsky (aggregate per wallet)
-  console.log('  Fetching wallet positions from Goldsky...');
+  // Resume from last cursor position so each discovery scans NEW positions
+  const resumeCursor = state.lastId || '';
+  console.log(`  Fetching wallet positions from Goldsky...${resumeCursor ? ' (resuming from cursor)' : ' (starting fresh)'}`);
   const walletSummaries = new Map(); // address → { totalPnl, positionCount, totalBought }
 
-  let cursor = '';
+  let cursor = resumeCursor;
   let totalFetched = 0;
+  let wrapped = false;
 
   while (totalFetched < CONFIG.MAX_POSITIONS) {
     const userField = fields.user;
@@ -194,11 +197,18 @@ async function discoverWallets(state, existingPool) {
       console.log(`  Scanned ${totalFetched.toLocaleString()} positions, ${walletSummaries.size.toLocaleString()} unique wallets...`);
     }
 
-    if (items.length < CONFIG.BATCH_SIZE) break;
+    if (items.length < CONFIG.BATCH_SIZE) {
+      // Reached the end of Goldsky data — wrap around to start next time
+      cursor = '';
+      wrapped = true;
+      break;
+    }
     await new Promise(r => setTimeout(r, 200));
   }
 
-  console.log(`  Found ${walletSummaries.size.toLocaleString()} wallets from ${totalFetched.toLocaleString()} positions`);
+  // Save cursor so next discovery resumes where we left off
+  state.lastId = cursor;
+  console.log(`  Found ${walletSummaries.size.toLocaleString()} wallets from ${totalFetched.toLocaleString()} positions${wrapped ? ' (reached end, will restart next cycle)' : ''}`);
 
   // Step 3: Filter to candidates worth qualifying
   const candidates = [...walletSummaries.entries()]

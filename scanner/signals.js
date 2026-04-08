@@ -474,6 +474,13 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
   for (const [signalId, signal] of Object.entries(active)) {
     signal.scansActive = (signal.scansActive || 0) + 1;
 
+    // Refresh live market price from cache (even if not in convergence candidates)
+    const refreshTokenId = signal.tokenId;
+    const refreshMi = refreshTokenId ? marketLookup.get(refreshTokenId) : null;
+    if (refreshMi && refreshMi.currentPrice > 0) {
+      signal.currentMarketPrice = +(refreshMi.currentPrice).toFixed(4);
+    }
+
     // Safety valve: max lifetime
     const lifetimeHours = (nowTs - new Date(signal.openedAt).getTime() / 1000) / 3600;
     if (lifetimeHours >= SIGNAL_THRESHOLDS.MAX_SIGNAL_LIFETIME_HOURS) {
@@ -520,17 +527,51 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       continue;
     }
 
-    // Market resolution check
+    // Market resolution check — multiple detection methods
     const tokenId = signal.tokenId;
     const mi = tokenId ? marketLookup.get(tokenId) : null;
-    if (mi && mi.marketClosed === true) {
+
+    // Detect resolution via multiple methods:
+    // (1) Gamma closed flag (most reliable when present)
+    // (2) Price moved to extreme AND differs significantly from entry price
+    //     (avoids false resolution on markets that naturally trade at 0.98+)
+    // (3) End date has passed
+    const gammaClosed = mi && mi.marketClosed === true;
+
+    const entryPrice = signal.avgEntryPrice || signal.openMarketPrice || 0.5;
+    const currentPrice = mi ? (mi.currentPrice || 0) : 0;
+    const priceMoved = Math.abs(currentPrice - entryPrice) > 0.15;
+    const priceResolved = mi && currentPrice !== undefined &&
+      (currentPrice <= 0.02 || currentPrice >= 0.98) && priceMoved;
+
+    const endDatePassed = mi && mi.endDate && new Date(mi.endDate).getTime() < Date.now();
+
+    const marketResolved = gammaClosed || priceResolved || endDatePassed;
+
+    if (marketResolved) {
       let outcome;
+      let resolvedBy = 'unknown';
+
       if (mi.winningOutcome) {
+        // Gamma explicitly tells us the winner
         outcome = matchesWinningOutcome(signal.direction, signal.direction, mi.winningOutcome)
           ? 'win' : 'loss';
+        resolvedBy = 'gamma';
+      } else if (priceResolved) {
+        // Price at extreme — infer winner from price direction
+        // If the token price → 1, that outcome won. If → 0, that outcome lost.
+        // signal.direction is the outcome our wallets bought
+        const tokenPrice = mi.currentPrice;
+        if (tokenPrice >= 0.98) {
+          // This token won — did our wallets buy this token?
+          outcome = 'win';
+        } else if (tokenPrice <= 0.02) {
+          // This token lost
+          outcome = 'loss';
+        }
+        resolvedBy = 'price';
       } else {
         // Check for REDEEM activity from backing wallets
-        // If wallets redeemed, the market resolved in their favour
         let redeemCount = 0;
         for (const w of backingWallets) {
           const walletTrades = recentTrades.get(w.address);
@@ -540,14 +581,30 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
           );
           if (redeems.length > 0) redeemCount++;
         }
-        outcome = redeemCount > backingWallets.length / 2 ? 'win' : 'loss';
+        if (redeemCount > 0) {
+          outcome = redeemCount > backingWallets.length / 2 ? 'win' : 'loss';
+          resolvedBy = 'redeem_detection';
+        } else if (currentPrice >= 0.98) {
+          outcome = 'win';
+          resolvedBy = 'end_date_price';
+        } else if (currentPrice <= 0.02) {
+          outcome = 'loss';
+          resolvedBy = 'end_date_price';
+        } else {
+          // End date passed but can't determine winner — close without outcome
+          outcome = null;
+          resolvedBy = 'end_date';
+        }
       }
 
       // Compute signal return
       const openPrice = signal.openMarketPrice || signal.avgEntryPrice || 0;
-      const signalReturn = outcome === 'win' && openPrice > 0
-        ? +((1 / openPrice - 1) * 100).toFixed(2)
-        : -100;
+      let signalReturn = 0;
+      if (outcome === 'win' && openPrice > 0) {
+        signalReturn = +((1 / openPrice - 1) * 100).toFixed(2);
+      } else if (outcome === 'loss') {
+        signalReturn = -100;
+      }
 
       closeSignal(active, history, signalId, 'resolved', scanIndex, now, outcome);
       // Enrich the history entry
@@ -556,7 +613,8 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         lastEntry.signalReturn = signalReturn;
         lastEntry.openMarketPrice = openPrice;
         lastEntry.winningOutcome = mi.winningOutcome || null;
-        lastEntry.resolvedBy = mi.winningOutcome ? 'gamma' : 'redeem_detection';
+        lastEntry.resolvedBy = resolvedBy;
+        lastEntry.resolvedPrice = mi.currentPrice;
       }
       closed++;
     }
