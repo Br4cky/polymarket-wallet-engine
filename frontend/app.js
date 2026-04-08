@@ -496,9 +496,11 @@ function renderSignals() {
 
   createSortableTable('signal-history-table', [
     { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
-    { field: 'outcome', render: v => {
-      const cls = v === 'win' ? 'badge-high' : v === 'loss' ? 'badge-low' : 'badge-mid';
-      return `<span class="badge ${cls}">${v.toUpperCase()}</span>`;
+    { field: 'outcome', render: (v, row) => {
+      if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
+      if (v === 'loss') return `<span class="badge badge-low">LOSS</span>`;
+      const reason = (row.closeReason || 'closed').replace(/_/g, ' ');
+      return `<span class="badge badge-mid">${reason.toUpperCase()}</span>`;
     }},
     { field: 'direction', render: v => v },
     { field: 'openMarketPrice', render: v => v > 0 ? (v * 100).toFixed(1) + '\u00A2' : '-' },
@@ -588,9 +590,11 @@ function renderPaperTrader() {
       return `<span class="badge ${cls}">${(v || 'consensus').toUpperCase()}</span>`;
     }},
     { field: 'tier', render: v => `<span class="tier-badge tier-${v || 'starter'}">${(v || 'starter').toUpperCase()}</span>` },
-    { field: 'outcome', render: v => {
-      const cls = v === 'win' ? 'badge-high' : v === 'loss' ? 'badge-low' : 'badge-mid';
-      return `<span class="badge ${cls}">${(v || 'pending').toUpperCase()}</span>`;
+    { field: 'outcome', render: (v, row) => {
+      if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
+      if (v === 'loss') return `<span class="badge badge-low">LOSS</span>`;
+      const reason = (row.closeReason || v || 'pending').replace(/_/g, ' ');
+      return `<span class="badge badge-mid">${reason.toUpperCase()}</span>`;
     }},
     { field: 'pnl', render: v => `<span class="${pnlClass(v || 0)}">${fmtDollars(v || 0)}</span>` },
     { field: 'returnPct', render: v => {
