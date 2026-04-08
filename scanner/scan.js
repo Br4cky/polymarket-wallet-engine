@@ -15,9 +15,11 @@
 
 import {
   GOLDSKY_PNL,
+  USDC_DIVISOR,
   gqlQuery,
   introspectSchema,
   introspectEntity,
+  discoverEntities,
   resolveMarkets,
   loadJSON,
   saveJSON,
@@ -67,7 +69,6 @@ const CONFIG = {
 
   // Goldsky pagination
   BATCH_SIZE: 1000,
-  USDC_DIVISOR: 1e6,
   MAX_POSITIONS: 200000,
 };
 
@@ -109,32 +110,23 @@ function saveState(state) {
 async function discoverWallets(state, existingPool) {
   console.log('\n🔍 WALLET DISCOVERY — Finding and qualifying new wallets...');
 
-  // Step 1: Introspect Goldsky schema
-  console.log('  Introspecting Goldsky schema...');
-  let schema;
+  // Step 1: Discover entities and fields dynamically (handles schema differences)
+  console.log('  Discovering Goldsky schema...');
+  let discovered;
   try {
-    schema = await introspectSchema(GOLDSKY_PNL);
+    discovered = await discoverEntities(GOLDSKY_PNL);
   } catch (err) {
-    console.error('  Schema introspection failed:', err.message);
+    console.error('  Entity discovery failed:', err.message);
     return existingPool;
   }
 
-  // Find the entity with position data
-  const posEntities = schema.filter(e =>
-    /position|pnl/i.test(e) && !/bucket|snapshot|hourly|daily/i.test(e)
-  );
-  const entityName = posEntities[0] || schema[0];
-  if (!entityName) {
-    console.error('  No position entity found');
+  if (!discovered || discovered.length === 0) {
+    console.error('  No position entities found in Goldsky schema');
     return existingPool;
   }
 
-  console.log(`  Using entity: ${entityName}`);
-  const fields = await introspectEntity(GOLDSKY_PNL, entityName);
-  if (!fields) {
-    console.error('  Entity introspection failed');
-    return existingPool;
-  }
+  const { entity: entityName, fields } = discovered[0];
+  console.log(`  Using entity: ${entityName} (user=${fields.user}, pnl=${fields.pnl}, token=${fields.token})`);
 
   // Step 2: Fetch position summaries from Goldsky (aggregate per wallet)
   console.log('  Fetching wallet positions from Goldsky...');
@@ -142,13 +134,18 @@ async function discoverWallets(state, existingPool) {
 
   let cursor = '';
   let totalFetched = 0;
-  const existingAddresses = new Set(Object.keys(existingPool));
 
   while (totalFetched < CONFIG.MAX_POSITIONS) {
-    const userField = fields.user || 'user';
-    const pnlField = fields.pnl || 'pnl';
-    const boughtField = fields.totalBought || 'totalBought';
-    const amountField = fields.amount || 'amount';
+    const userField = fields.user;
+    const pnlField = fields.pnl;
+    const boughtField = fields.totalBought;
+    const amountField = fields.amount;
+
+    // Build query with only the fields that exist
+    const queryFields = ['id', `${userField} { id }`];
+    if (pnlField) queryFields.push(pnlField);
+    if (boughtField) queryFields.push(boughtField);
+    if (amountField) queryFields.push(amountField);
 
     const query = `{
       ${entityName}s(
@@ -156,11 +153,7 @@ async function discoverWallets(state, existingPool) {
         orderBy: id
         ${cursor ? `where: { id_gt: "${cursor}" }` : ''}
       ) {
-        id
-        ${userField} { id }
-        ${pnlField}
-        ${boughtField || ''}
-        ${amountField || ''}
+        ${queryFields.join('\n        ')}
       }
     }`;
 
@@ -179,8 +172,8 @@ async function discoverWallets(state, existingPool) {
       const address = (typeof item[userField] === 'object' ? item[userField]?.id : item[userField]) || '';
       if (!address || address.length < 10) continue;
 
-      const pnl = parseFloat(item[pnlField] || 0) / CONFIG.USDC_DIVISOR;
-      const bought = boughtField ? parseFloat(item[boughtField] || 0) / CONFIG.USDC_DIVISOR : 0;
+      const pnl = pnlField ? parseFloat(item[pnlField] || 0) / USDC_DIVISOR : 0;
+      const bought = boughtField ? parseFloat(item[boughtField] || 0) / USDC_DIVISOR : 0;
 
       if (!walletSummaries.has(address)) {
         walletSummaries.set(address, { totalPnl: 0, positionCount: 0, totalBought: 0 });
