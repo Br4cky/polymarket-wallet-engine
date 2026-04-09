@@ -245,6 +245,7 @@ function renderWalletPool() {
     totalPnl: w.stats?.totalPnl || 0,
     resolved: w.stats?.resolved || 0,
     tradesPerWeek: w.stats?.positionsPerWeek || 0,
+    consistency: w.stats?.weeklyConsistency || 0,
   }));
 
   createSortableTable('wallet-table', [
@@ -255,6 +256,7 @@ function renderWalletPool() {
     { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
     { field: 'resolved', render: v => String(v) },
     { field: 'tradesPerWeek', render: v => (v || 0).toFixed(1) },
+    { field: 'consistency', render: v => ((v || 0) * 100).toFixed(0) + '%' },
   ], walletData);
 
   renderScoreDistribution(lb);

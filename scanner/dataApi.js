@@ -338,6 +338,26 @@ function analyzeTradeHistory(trades, opts = {}) {
   const recentSpanDays = Math.max(1, (now - recentFirstTs) / 86400);
   const recentTradesPerDay = recentTradeCount > 0 ? recentTradeCount / recentSpanDays : 0;
 
+  // Consistency-based frequency — how many distinct weeks had trades, not just total/span.
+  // A wallet that traded 150 times on one day then stopped scores low here.
+  // A wallet that trades 5x/week every week scores high.
+  const activeDays = new Set(allTrades.map(t => Math.floor(t.timestamp / 86400))).size;
+  const activeWeeks = new Set(allTrades.map(t => Math.floor(t.timestamp / (86400 * 7)))).size;
+  const totalWeeksSpan = Math.max(1, tradingSpanDays / 7);
+  // What % of weeks since first trade had at least one trade
+  const weeklyConsistency = +(activeWeeks / totalWeeksSpan).toFixed(3);
+  // Avg trades per ACTIVE week (not per calendar week)
+  const tradesPerActiveWeek = activeWeeks > 0 ? +(allTrades.length / activeWeeks).toFixed(1) : 0;
+  // Avg new markets per active week
+  const marketsPerActiveWeek = activeWeeks > 0 ? +(marketTrades.size / activeWeeks).toFixed(1) : 0;
+
+  // Same for recent window
+  const recentActiveDays = new Set(recentTrades.map(t => Math.floor(t.timestamp / 86400))).size;
+  const recentActiveWeeks = new Set(recentTrades.map(t => Math.floor(t.timestamp / (86400 * 7)))).size;
+  const recentTotalWeeks = Math.max(1, recentSpanDays / 7);
+  const recentWeeklyConsistency = +(recentActiveWeeks / recentTotalWeeks).toFixed(3);
+  const recentTradesPerActiveWeek = recentActiveWeeks > 0 ? +(recentTradeCount / recentActiveWeeks).toFixed(1) : 0;
+
   // Edge ratio: average win / average loss
   const avgWin = wins > 0
     ? marketResults.filter(r => r.outcome === 'win').reduce((s, r) => s + r.pnl, 0) / wins
@@ -369,6 +389,17 @@ function analyzeTradeHistory(trades, opts = {}) {
     recentTradesPerDay: +recentTradesPerDay.toFixed(2),
     marketsPerDay: +marketsPerDay.toFixed(2),
     tradingSpanDays: Math.round(tradingSpanDays),
+
+    // Consistency metrics — measures how regularly a wallet trades
+    activeDays,                         // distinct days with at least one trade
+    activeWeeks,                        // distinct weeks with at least one trade
+    weeklyConsistency,                  // ratio: active weeks / total weeks since first trade (0-1)
+    tradesPerActiveWeek,                // avg trades in weeks they actually traded
+    marketsPerActiveWeek,               // avg new markets in weeks they actually traded
+    recentActiveDays,                   // same but for 90-day window
+    recentActiveWeeks,
+    recentWeeklyConsistency,
+    recentTradesPerActiveWeek,
 
     // Timing
     avgHoldTimeHours: +(avgHoldTime / 3600).toFixed(1),

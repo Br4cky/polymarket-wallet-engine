@@ -536,7 +536,9 @@ async function fastLoop(state, walletPool, marketLookup) {
         ? Math.abs(w.stats.avgPnlPerWin / w.stats.avgPnlPerLoss) : 0,
       totalVolume: w.stats?.totalVolume || 0,
       openCount: 0,
-      positionsPerWeek: w.stats?.tradesPerWeek || 0,
+      positionsPerWeek: w.stats?.tradesPerActiveWeek || 0,
+      activeWeeks: w.stats?.activeWeeks || 0,
+      weeklyConsistency: w.stats?.weeklyConsistency || 0,
       tradingDays: w.stats?.activeDays || 0,
     },
   }));
