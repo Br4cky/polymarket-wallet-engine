@@ -1,12 +1,12 @@
 {
   "scanCount": 94,
   "lastRun": "2026-04-09T10:38:06.521Z",
-  "lastDiscovery": 92,
+  "lastDiscovery": 91,
   "lastFastLoop": "2026-04-09T10:38:28.086Z",
   "walletPoolVersion": 4,
   "cursor": null,
   "totalPositionsScanned": 0,
-  "lastId": "0x07e78aa3a7a84fdbbae29d85e9a917aafcacd451-33165109201505626390444118484792756860675218312368520570000149872423014145972",
+  "lastId": "",
   "totalScanned": 13653000,
   "scanIndex": 82
 }
