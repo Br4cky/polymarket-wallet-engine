@@ -704,10 +704,18 @@ async function run() {
   console.log(`  Last discovery: scan #${state.lastDiscovery}`);
 
   // Decide whether to run discovery (slow loop)
+  // Force discovery if pool is below target (e.g. after state reset)
+  const poolBelowTarget = Object.keys(walletPool).length < CONFIG.TARGET_POOL_SIZE * 0.5;
   const needsDiscovery = Object.keys(walletPool).length === 0 ||
+    poolBelowTarget ||
     (state.scanCount - state.lastDiscovery) >= CONFIG.DISCOVERY_INTERVAL_SCANS;
 
   if (needsDiscovery) {
+    // If pool is critically low, reset cursor to scan from beginning
+    if (poolBelowTarget && state.lastId) {
+      console.log('  Pool below 50% target — resetting Goldsky cursor to start');
+      state.lastId = '';
+    }
     walletPool = await discoverWallets(state, walletPool);
     state.lastDiscovery = state.scanCount;
 
