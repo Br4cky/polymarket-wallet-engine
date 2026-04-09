@@ -533,9 +533,10 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 
     // Detect resolution via multiple methods:
     // (1) Gamma closed flag (most reliable when present)
-    // (2) Price moved to extreme AND differs significantly from entry price
+    // (2) Price at extreme AND moved significantly from entry price
     //     (avoids false resolution on markets that naturally trade at 0.98+)
-    // (3) End date has passed
+    // Only resolve if we can actually determine win/loss — no point closing
+    // a signal as "resolved" with no outcome.
     const gammaClosed = mi && mi.marketClosed === true;
 
     const entryPrice = signal.avgEntryPrice || signal.openMarketPrice || 0.5;
@@ -544,9 +545,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     const priceResolved = mi && currentPrice !== undefined &&
       (currentPrice <= 0.02 || currentPrice >= 0.98) && priceMoved;
 
-    const endDatePassed = mi && mi.endDate && new Date(mi.endDate).getTime() < Date.now();
-
-    const marketResolved = gammaClosed || priceResolved || endDatePassed;
+    const marketResolved = gammaClosed || priceResolved;
 
     if (marketResolved) {
       let outcome;
@@ -584,16 +583,15 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         if (redeemCount > 0) {
           outcome = redeemCount > backingWallets.length / 2 ? 'win' : 'loss';
           resolvedBy = 'redeem_detection';
-        } else if (currentPrice >= 0.98) {
-          outcome = 'win';
-          resolvedBy = 'end_date_price';
-        } else if (currentPrice <= 0.02) {
-          outcome = 'loss';
-          resolvedBy = 'end_date_price';
         } else {
-          // End date passed but can't determine winner — close without outcome
-          outcome = null;
-          resolvedBy = 'end_date';
+          // Gamma says closed but no winningOutcome and price isn't extreme
+          // — use price direction relative to entry as best guess
+          if (currentPrice > entryPrice) {
+            outcome = 'win';
+          } else {
+            outcome = 'loss';
+          }
+          resolvedBy = 'gamma_price_infer';
         }
       }
 

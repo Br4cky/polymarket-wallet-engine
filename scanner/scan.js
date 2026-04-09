@@ -535,7 +535,8 @@ async function fastLoop(state, walletPool, marketLookup) {
   analytics.consensus = candidates.map(c => ({
     marketTitle: c.title || 'Unknown',
     tokenId: c.conditionId,
-    slug: c.slug || c.eventSlug || '',
+    slug: c.slug || '',
+    eventSlug: c.eventSlug || '',
     walletCount: c.walletCount,
     avgScore: c.avgScore,
     direction: c.direction || 'mixed',

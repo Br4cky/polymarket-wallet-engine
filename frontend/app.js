@@ -55,8 +55,12 @@ function truncate(str, max) {
   return str.length > max ? str.slice(0, max) + '...' : str;
 }
 
-function polymarketUrl(slug) {
+function polymarketUrl(slug, eventSlug) {
   if (!slug) return '#';
+  // Polymarket URLs are /event/{eventSlug}/{marketSlug}
+  // If slug already contains a /, it's already the full path
+  if (slug.includes('/')) return `https://polymarket.com/event/${slug}`;
+  if (eventSlug && eventSlug !== slug) return `https://polymarket.com/event/${eventSlug}/${slug}`;
   return `https://polymarket.com/event/${slug}`;
 }
 
@@ -332,6 +336,7 @@ function renderConvergence() {
   const cvData = filtered.map(c => ({
     title: c.marketTitle || 'Unknown',
     slug: c.slug || '',
+    eventSlug: c.eventSlug || '',
     direction: c.direction || 'Unknown',
     walletCount: c.walletCount || 0,
     avgScore: c.avgScore || 0,
@@ -344,7 +349,7 @@ function renderConvergence() {
   }));
 
   createSortableTable('convergence-table', [
-    { field: 'title', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 50)}</a>` },
+    { field: 'title', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 50)}</a>` },
     { field: 'direction', render: v => `<span class="badge badge-high">${v}</span>` },
     { field: 'walletCount', render: v => {
       const cls = v >= 8 ? 'badge-high' : v >= 3 ? 'badge-mid' : 'badge-low';
@@ -454,6 +459,7 @@ function renderSignals() {
   const sigData = filtered.map(s => ({
     marketTitle: s.marketTitle || 'Unknown',
     slug: s.slug || '',
+    eventSlug: s.eventSlug || '',
     signalType: s.signalType || 'consensus',
     tier: s.tier || 'starter',
     direction: s.direction || 'mixed',
@@ -466,7 +472,7 @@ function renderSignals() {
   }));
 
   createSortableTable('active-signals-table', [
-    { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
+    { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
     { field: 'signalType', render: v => {
       const cls = v === 'solo' ? 'badge-solo' : v === 'cluster' ? 'badge-cluster' : 'badge-consensus';
       return `<span class="badge ${cls}">${v.toUpperCase()}</span>`;
@@ -485,6 +491,7 @@ function renderSignals() {
   const histData = history.slice(0, 100).map(s => ({
     marketTitle: s.marketTitle || 'Unknown',
     slug: s.slug || '',
+    eventSlug: s.eventSlug || '',
     outcome: s.outcome || 'unknown',
     direction: s.direction || 'mixed',
     openMarketPrice: s.openMarketPrice || 0,
@@ -495,22 +502,24 @@ function renderSignals() {
   }));
 
   createSortableTable('signal-history-table', [
-    { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
+    { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
     { field: 'outcome', render: (v, row) => {
       if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
       if (v === 'loss') return `<span class="badge badge-low">LOSS</span>`;
+      // For non-resolved closures, show the reason (stale, majority exit, expired)
       const reason = (row.closeReason || 'closed').replace(/_/g, ' ');
       return `<span class="badge badge-mid">${reason.toUpperCase()}</span>`;
     }},
     { field: 'direction', render: v => v },
     { field: 'openMarketPrice', render: v => v > 0 ? (v * 100).toFixed(1) + '\u00A2' : '-' },
-    { field: 'peakConfidence', render: v => v.toFixed(1) },
-    { field: 'peakWallets', render: v => String(v) },
+    { field: 'peakConfidence', render: v => v ? v.toFixed(1) : '-' },
+    { field: 'peakWallets', render: v => String(v || '-') },
     { field: 'signalReturn', render: v => {
-      const pct = (v * 100).toFixed(1);
+      if (v === undefined || v === null) return '-';
+      const pct = typeof v === 'number' ? (v).toFixed(1) : '0.0';
       return `<span class="${v >= 0 ? 'badge-positive' : 'badge-negative'}">${v >= 0 ? '+' : ''}${pct}%</span>`;
     }},
-    { field: 'closeReason', render: v => `<span style="color: var(--text-dim);">${v}</span>` },
+    { field: 'closeReason', render: v => `<span style="color: var(--text-dim);">${(v || '-').replace(/_/g, ' ')}</span>` },
   ], histData);
 }
 
