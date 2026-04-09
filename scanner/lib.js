@@ -938,6 +938,122 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
   return lookup;
 }
 
+/**
+ * Refresh resolution status for active signal tokens.
+ * Queries Gamma by condition_id (more reliable for resolved markets than clob_token_ids).
+ * Only queries tokens that aren't already resolved in the lookup.
+ *
+ * @param {Array} signals - Array of { tokenId, conditionId } from active signals
+ * @param {Map} marketLookup - Existing market cache (will be mutated with updates)
+ */
+async function refreshSignalMarkets(signals, marketLookup) {
+  if (!signals || signals.length === 0) return;
+
+  let refreshed = 0;
+  let errors = 0;
+
+  for (const signal of signals) {
+    const tid = signal.tokenId;
+    const existing = tid ? marketLookup.get(tid) : null;
+
+    // Skip if already resolved in cache
+    if (existing && existing.marketClosed === true && existing.winningOutcome) continue;
+
+    // Query Gamma by condition_id — works for both open and closed markets
+    const conditionId = signal.conditionId;
+    if (!conditionId) continue;
+
+    try {
+      const url = `${GAMMA_MARKETS}?condition_id=${conditionId}&limit=10`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        errors++;
+        continue;
+      }
+
+      const markets = await response.json();
+      if (!Array.isArray(markets) || markets.length === 0) continue;
+
+      const market = markets[0];
+      const marketClosed = market.closed === true || market.closed === 'true';
+      const marketActive = market.active === true || market.active === 'true';
+      const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true;
+
+      // Determine winning outcome
+      let winningOutcome = null;
+      if (marketClosed) {
+        // Check tokens array
+        if (market.tokens && Array.isArray(market.tokens)) {
+          for (const token of market.tokens) {
+            const price = parseFloat(token.price || 0);
+            if (price >= 0.95) {
+              winningOutcome = token.outcome || null;
+              break;
+            }
+          }
+        }
+        // Check outcomePrices
+        if (!winningOutcome) {
+          let parsedPrices = market.outcomePrices;
+          if (typeof parsedPrices === 'string') try { parsedPrices = JSON.parse(parsedPrices); } catch(e) { parsedPrices = null; }
+          let parsedOutcomes = market.outcomes;
+          if (typeof parsedOutcomes === 'string') try { parsedOutcomes = JSON.parse(parsedOutcomes); } catch(e) { parsedOutcomes = null; }
+          if (Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
+            for (let i = 0; i < parsedPrices.length; i++) {
+              if (parseFloat(parsedPrices[i] || 0) >= 0.95 && parsedOutcomes[i]) {
+                winningOutcome = parsedOutcomes[i];
+                break;
+              }
+            }
+          }
+        }
+        // Check winner field
+        if (!winningOutcome && market.winner) {
+          winningOutcome = market.winner;
+        }
+      }
+
+      // Update all token entries for this market
+      let clobIds = market.clobTokenIds;
+      if (typeof clobIds === 'string') try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
+      let outcomesList = market.outcomes;
+      if (typeof outcomesList === 'string') try { outcomesList = JSON.parse(outcomesList); } catch(e) { outcomesList = null; }
+      let outcomePrices = market.outcomePrices;
+      if (typeof outcomePrices === 'string') try { outcomePrices = JSON.parse(outcomePrices); } catch(e) { outcomePrices = null; }
+
+      if (Array.isArray(clobIds)) {
+        for (let i = 0; i < clobIds.length; i++) {
+          const tokenId = clobIds[i];
+          const existingEntry = marketLookup.get(tokenId) || {};
+          const price = Array.isArray(outcomePrices) ? parseFloat(outcomePrices[i] || 0) : (existingEntry.currentPrice || 0);
+          const outcome = Array.isArray(outcomesList) ? outcomesList[i] : (i === 0 ? 'Yes' : 'No');
+
+          marketLookup.set(tokenId, {
+            ...existingEntry,
+            title: market.question || market.title || existingEntry.title || '',
+            marketClosed,
+            marketActive,
+            acceptingOrders,
+            winningOutcome,
+            currentPrice: price,
+            outcome,
+            endDate: market.end_date_iso || market.endDate || existingEntry.endDate || null,
+          });
+        }
+      }
+
+      refreshed++;
+      await new Promise(r => setTimeout(r, 150)); // Rate limit
+    } catch (err) {
+      errors++;
+    }
+  }
+
+  if (refreshed > 0 || errors > 0) {
+    console.log(`  Signal market refresh: ${refreshed} updated, ${errors} errors`);
+  }
+}
+
 // ============================================================================
 // Analytics Functions
 // ============================================================================
@@ -2608,6 +2724,7 @@ export {
   analyzePositions,
   computeScore,
   resolveMarkets,
+  refreshSignalMarkets,
   matchesWinningOutcome,
   computeConsensus,
   computeWinPatterns,

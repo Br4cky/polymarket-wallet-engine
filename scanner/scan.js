@@ -21,6 +21,7 @@ import {
   introspectEntity,
   discoverEntities,
   resolveMarkets,
+  refreshSignalMarkets,
   loadJSON,
   saveJSON,
   loadGzJSON,
@@ -413,7 +414,7 @@ async function fastLoop(state, walletPool, marketLookup) {
     }
   }
 
-  // Also refresh active signal tokens
+  // Also refresh active signal tokens (by clob_token_ids first)
   const signalsFile = path.join(DATA_DIR, 'signals.json.gz');
   let existingSignals = loadGzJSON(signalsFile) || { active: {}, history: [], stats: {} };
 
@@ -431,6 +432,16 @@ async function fastLoop(state, walletPool, marketLookup) {
     } catch (err) {
       console.error(`  Gamma resolution error: ${err.message}`);
     }
+  }
+
+  // Refresh active signal markets by condition_id — catches resolved markets
+  // that clob_token_ids lookup misses (Gamma sometimes stops returning resolved
+  // markets by token ID but always returns them by condition_id)
+  const activeSignalsList = Object.values(existingSignals.active || {})
+    .filter(s => s.conditionId)
+    .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId }));
+  if (activeSignalsList.length > 0) {
+    await refreshSignalMarkets(activeSignalsList, marketLookup);
   }
 
   // Step 3: Detect convergence — where are multiple wallets buying?
