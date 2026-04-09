@@ -502,17 +502,18 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     // Every signal that goes to history MUST have an outcome if we can possibly determine one.
     const tokenId = signal.tokenId;
     const mi = tokenId ? marketLookup.get(tokenId) : null;
-    const entryPrice = signal.avgEntryPrice || signal.openMarketPrice || 0.5;
-    const currentPrice = mi ? (mi.currentPrice || 0) : 0;
 
     function tryDetermineOutcome() {
+      // ONLY two reliable methods — no price-based inference.
+      // Prices are unreliable because Gamma stops serving data for resolved markets,
+      // causing both tokens to show 0, which gives wrong results.
+
+      // Method 1: Gamma winningOutcome (definitive — Gamma tells us who won)
       if (mi && mi.winningOutcome) {
         const won = matchesWinningOutcome(signal.direction, signal.direction, mi.winningOutcome);
         return { outcome: won ? 'win' : 'loss', resolvedBy: 'gamma' };
       }
-      if (mi && currentPrice >= 0.98) return { outcome: 'win', resolvedBy: 'price_extreme' };
-      if (mi && currentPrice <= 0.02) return { outcome: 'loss', resolvedBy: 'price_extreme' };
-      // Redeem detection
+      // Method 2: Redeem detection (wallets redeemed = they won)
       let redeemCount = 0;
       for (const w of backingWallets) {
         const wt = recentTrades.get(w.address);
@@ -522,12 +523,8 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       if (redeemCount > 0) {
         return { outcome: redeemCount > backingWallets.length / 2 ? 'win' : 'loss', resolvedBy: 'redeem_detection' };
       }
-      // If market is closed/not accepting orders, infer from price vs entry
-      const gammaClosed = mi && mi.marketClosed === true;
-      const gammaNotAccepting = mi && mi.acceptingOrders === false;
-      if (gammaClosed || gammaNotAccepting) {
-        return { outcome: currentPrice > entryPrice ? 'win' : 'loss', resolvedBy: 'gamma_price_infer' };
-      }
+      // No reliable outcome data yet — return null, signal stays without outcome
+      // until Gamma provides winningOutcome via condition_id refresh
       return null;
     }
 
@@ -565,13 +562,11 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       continue;
     }
 
-    // Market resolution check — multiple detection methods
+    // Market resolution check — only trust Gamma flags, never prices
     const gammaClosed = mi && mi.marketClosed === true;
     const gammaNotAccepting = mi && mi.acceptingOrders === false;
-    const priceAtExtreme = mi && currentPrice !== undefined &&
-      (currentPrice <= 0.02 || currentPrice >= 0.98);
 
-    const marketResolved = gammaClosed || gammaNotAccepting || priceAtExtreme;
+    const marketResolved = gammaClosed || gammaNotAccepting;
 
     if (marketResolved) {
       closeWithOutcome('resolved');
@@ -628,21 +623,15 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       continue;
     }
 
-    // Market has resolved — determine outcome
+    // Market has resolved — determine outcome ONLY from Gamma winningOutcome
+    // Never use prices — they're unreliable for resolved markets
     let result = null;
     if (hmi.winningOutcome) {
       const dir = (h.direction || '').toLowerCase().trim();
       const winner = hmi.winningOutcome.toLowerCase().trim();
       result = { outcome: dir === winner ? 'win' : 'loss', resolvedBy: 'gamma_repair' };
-    } else if (hmi.currentPrice >= 0.98) {
-      result = { outcome: 'win', resolvedBy: 'price_extreme_repair' };
-    } else if (hmi.currentPrice <= 0.02) {
-      result = { outcome: 'loss', resolvedBy: 'price_extreme_repair' };
-    } else {
-      // Market closed but no extreme price — infer from price vs entry
-      const ep = h.avgEntryPrice || h.openMarketPrice || 0.5;
-      result = { outcome: hmi.currentPrice > ep ? 'win' : 'loss', resolvedBy: 'gamma_price_infer_repair' };
     }
+    // If Gamma doesn't have winningOutcome yet, leave it — will retry next scan
 
     if (result) {
       h.outcome = result.outcome;
