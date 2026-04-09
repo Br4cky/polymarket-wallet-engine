@@ -591,6 +591,76 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     }
   }
 
+  // --- Phase 2.5: Repair history — backfill outcomes OR restore to active ---
+  // Signals that were prematurely closed (stale/expired) before the market resolved
+  // need one of two things:
+  //   (a) If the market has now resolved → backfill WIN/LOSS outcome
+  //   (b) If the market is STILL OPEN → move back to active signals (they should never
+  //       have been closed — wallets are still holding)
+  let repaired = 0;
+  let restored = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    if (h.outcome === 'win' || h.outcome === 'loss') continue; // already resolved
+    if (!h.conditionId && !h.tokenId) continue; // no way to look up
+
+    const hmi = h.tokenId ? marketLookup.get(h.tokenId) : null;
+    if (!hmi) continue; // not in cache this scan — will try again next scan
+
+    // Check if market is still open
+    const marketStillOpen = hmi.marketClosed !== true && hmi.acceptingOrders !== false;
+
+    if (marketStillOpen) {
+      // Market hasn't resolved — this signal should never have been closed.
+      // Restore it to active signals.
+      const sid = h.signalId;
+      if (sid && !active[sid]) {
+        h.status = 'active';
+        h.outcome = null;
+        h.closedAt = null;
+        h.closedScan = null;
+        delete h.closeReason;
+        delete h.closedReason;
+        active[sid] = h;
+        history.splice(i, 1);
+        restored++;
+      }
+      continue;
+    }
+
+    // Market has resolved — determine outcome
+    let result = null;
+    if (hmi.winningOutcome) {
+      const dir = (h.direction || '').toLowerCase().trim();
+      const winner = hmi.winningOutcome.toLowerCase().trim();
+      result = { outcome: dir === winner ? 'win' : 'loss', resolvedBy: 'gamma_repair' };
+    } else if (hmi.currentPrice >= 0.98) {
+      result = { outcome: 'win', resolvedBy: 'price_extreme_repair' };
+    } else if (hmi.currentPrice <= 0.02) {
+      result = { outcome: 'loss', resolvedBy: 'price_extreme_repair' };
+    } else {
+      // Market closed but no extreme price — infer from price vs entry
+      const ep = h.avgEntryPrice || h.openMarketPrice || 0.5;
+      result = { outcome: hmi.currentPrice > ep ? 'win' : 'loss', resolvedBy: 'gamma_price_infer_repair' };
+    }
+
+    if (result) {
+      h.outcome = result.outcome;
+      h.resolvedBy = result.resolvedBy;
+      h.closeReason = 'resolved';
+      const op = h.openMarketPrice || h.avgEntryPrice || 0;
+      if (result.outcome === 'win' && op > 0) {
+        h.signalReturn = +((1 / op - 1) * 100).toFixed(2);
+      } else if (result.outcome === 'loss') {
+        h.signalReturn = -100;
+      }
+      repaired++;
+    }
+  }
+  if (repaired > 0 || restored > 0) {
+    console.log(`  History repair: ${repaired} backfilled with WIN/LOSS, ${restored} restored to active (market still open)`);
+  }
+
   // --- Phase 3: Aggregate stats ---
   const activeSignals = Object.values(active);
   const allHistory = history;

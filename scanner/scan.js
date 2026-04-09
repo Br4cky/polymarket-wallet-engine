@@ -434,14 +434,29 @@ async function fastLoop(state, walletPool, marketLookup) {
     }
   }
 
-  // Refresh active signal markets by condition_id — catches resolved markets
-  // that clob_token_ids lookup misses (Gamma sometimes stops returning resolved
-  // markets by token ID but always returns them by condition_id)
+  // Refresh signal markets by condition_id — catches resolved markets
+  // that clob_token_ids lookup misses. Include BOTH active signals AND
+  // history signals with no outcome, so the repair phase can backfill them.
   const activeSignalsList = Object.values(existingSignals.active || {})
     .filter(s => s.conditionId)
     .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId }));
-  if (activeSignalsList.length > 0) {
-    await refreshSignalMarkets(activeSignalsList, marketLookup);
+
+  const historyNeedingRepair = (Array.isArray(existingSignals.history) ? existingSignals.history : Object.values(existingSignals.history || {}))
+    .filter(s => s.conditionId && s.outcome !== 'win' && s.outcome !== 'loss')
+    .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId }));
+
+  const allSignalsToRefresh = [...activeSignalsList, ...historyNeedingRepair];
+  // Deduplicate by conditionId
+  const seen = new Set();
+  const uniqueSignals = allSignalsToRefresh.filter(s => {
+    if (seen.has(s.conditionId)) return false;
+    seen.add(s.conditionId);
+    return true;
+  });
+
+  if (uniqueSignals.length > 0) {
+    console.log(`  Refreshing ${uniqueSignals.length} signal markets (${activeSignalsList.length} active, ${historyNeedingRepair.length} history needing repair)`);
+    await refreshSignalMarkets(uniqueSignals, marketLookup);
   }
 
   // Step 3: Detect convergence — where are multiple wallets buying?
