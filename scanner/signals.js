@@ -481,140 +481,113 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       signal.currentMarketPrice = +(refreshMi.currentPrice).toFixed(4);
     }
 
-    // Safety valve: max lifetime
-    const lifetimeHours = (nowTs - new Date(signal.openedAt).getTime() / 1000) / 3600;
-    if (lifetimeHours >= SIGNAL_THRESHOLDS.MAX_SIGNAL_LIFETIME_HOURS) {
-      closeSignal(active, history, signalId, 'expired', scanIndex, now);
-      closed++;
-      continue;
-    }
-
-    // Check for sells from backing wallets
+    // Check for sells from backing wallets (needed for exit ratio AND redeem detection later)
     let walletsExited = 0;
     const backingWallets = signal.currentWallets || [];
 
     for (const w of backingWallets) {
       const walletTrades = recentTrades.get(w.address);
       if (!walletTrades) continue;
-
-      // Look for SELL trades in this signal's market
       const sells = walletTrades.filter(t =>
         t.conditionId === signal.conditionId && t.side === 'SELL'
       );
-      if (sells.length > 0) {
-        walletsExited++;
-      }
+      if (sells.length > 0) walletsExited++;
     }
 
     const exitRatio = backingWallets.length > 0 ? walletsExited / backingWallets.length : 0;
     signal.exitRatio = +exitRatio.toFixed(2);
     signal.walletsExited = walletsExited;
 
-    if (exitRatio > 0.5 && backingWallets.length >= 2) {
-      console.log(`  ⚠ ${signalId} closed: ${walletsExited}/${backingWallets.length} wallets exited`);
-      closeSignal(active, history, signalId, 'majority_exit', scanIndex, now);
+    // Helper: attempt to determine WIN/LOSS from market data before closing for any reason.
+    // Every signal that goes to history MUST have an outcome if we can possibly determine one.
+    const tokenId = signal.tokenId;
+    const mi = tokenId ? marketLookup.get(tokenId) : null;
+    const entryPrice = signal.avgEntryPrice || signal.openMarketPrice || 0.5;
+    const currentPrice = mi ? (mi.currentPrice || 0) : 0;
+
+    function tryDetermineOutcome() {
+      if (mi && mi.winningOutcome) {
+        const won = matchesWinningOutcome(signal.direction, signal.direction, mi.winningOutcome);
+        return { outcome: won ? 'win' : 'loss', resolvedBy: 'gamma' };
+      }
+      if (mi && currentPrice >= 0.98) return { outcome: 'win', resolvedBy: 'price_extreme' };
+      if (mi && currentPrice <= 0.02) return { outcome: 'loss', resolvedBy: 'price_extreme' };
+      // Redeem detection
+      let redeemCount = 0;
+      for (const w of backingWallets) {
+        const wt = recentTrades.get(w.address);
+        if (!wt) continue;
+        if (wt.some(t => t.conditionId === signal.conditionId && t.type === 'REDEEM')) redeemCount++;
+      }
+      if (redeemCount > 0) {
+        return { outcome: redeemCount > backingWallets.length / 2 ? 'win' : 'loss', resolvedBy: 'redeem_detection' };
+      }
+      // If market is closed/not accepting orders, infer from price vs entry
+      const gammaClosed = mi && mi.marketClosed === true;
+      const gammaNotAccepting = mi && mi.acceptingOrders === false;
+      if (gammaClosed || gammaNotAccepting) {
+        return { outcome: currentPrice > entryPrice ? 'win' : 'loss', resolvedBy: 'gamma_price_infer' };
+      }
+      return null;
+    }
+
+    // Helper: close signal with outcome, always attempting to determine WIN/LOSS first
+    function closeWithOutcome(reason) {
+      const result = tryDetermineOutcome();
+      const outcome = result ? result.outcome : null;
+      closeSignal(active, history, signalId, reason, scanIndex, now, outcome);
+      // Enrich history entry with resolution details
+      const lastEntry = history[history.length - 1];
+      if (lastEntry && lastEntry.signalId === signalId) {
+        const openPrice = signal.openMarketPrice || signal.avgEntryPrice || 0;
+        if (outcome === 'win' && openPrice > 0) {
+          lastEntry.signalReturn = +((1 / openPrice - 1) * 100).toFixed(2);
+        } else if (outcome === 'loss') {
+          lastEntry.signalReturn = -100;
+        }
+        if (result) lastEntry.resolvedBy = result.resolvedBy;
+        lastEntry.openMarketPrice = openPrice;
+        lastEntry.winningOutcome = mi?.winningOutcome || null;
+      }
       closed++;
+    }
+
+    // Safety valve: max lifetime
+    const lifetimeHours = (nowTs - new Date(signal.openedAt).getTime() / 1000) / 3600;
+    if (lifetimeHours >= SIGNAL_THRESHOLDS.MAX_SIGNAL_LIFETIME_HOURS) {
+      closeWithOutcome('expired');
       continue;
     }
 
-    // Stale check: no new trades for STALE_HOURS
-    const hoursSinceLastTrade = signal.lastTradeTs
-      ? (nowTs - signal.lastTradeTs) / 3600
-      : Infinity;
-    if (hoursSinceLastTrade >= SIGNAL_THRESHOLDS.STALE_HOURS) {
-      closeSignal(active, history, signalId, 'stale', scanIndex, now);
-      closed++;
+    if (exitRatio > 0.5 && backingWallets.length >= 2) {
+      console.log(`  ⚠ ${signalId} closed: ${walletsExited}/${backingWallets.length} wallets exited`);
+      closeWithOutcome('majority_exit');
       continue;
     }
 
     // Market resolution check — multiple detection methods
-    const tokenId = signal.tokenId;
-    const mi = tokenId ? marketLookup.get(tokenId) : null;
-
-    // Detect resolution via multiple methods:
-    // (1) Gamma closed flag (most reliable when present)
-    // (2) Price at extreme AND moved significantly from entry price
-    //     (avoids false resolution on markets that naturally trade at 0.98+)
-    // Only resolve if we can actually determine win/loss — no point closing
-    // a signal as "resolved" with no outcome.
     const gammaClosed = mi && mi.marketClosed === true;
+    const gammaNotAccepting = mi && mi.acceptingOrders === false;
+    const priceAtExtreme = mi && currentPrice !== undefined &&
+      (currentPrice <= 0.02 || currentPrice >= 0.98);
 
-    const entryPrice = signal.avgEntryPrice || signal.openMarketPrice || 0.5;
-    const currentPrice = mi ? (mi.currentPrice || 0) : 0;
-    const priceMoved = Math.abs(currentPrice - entryPrice) > 0.15;
-    const priceResolved = mi && currentPrice !== undefined &&
-      (currentPrice <= 0.02 || currentPrice >= 0.98) && priceMoved;
-
-    const marketResolved = gammaClosed || priceResolved;
+    const marketResolved = gammaClosed || gammaNotAccepting || priceAtExtreme;
 
     if (marketResolved) {
-      let outcome;
-      let resolvedBy = 'unknown';
+      closeWithOutcome('resolved');
+      continue;
+    }
 
-      if (mi.winningOutcome) {
-        // Gamma explicitly tells us the winner
-        outcome = matchesWinningOutcome(signal.direction, signal.direction, mi.winningOutcome)
-          ? 'win' : 'loss';
-        resolvedBy = 'gamma';
-      } else if (priceResolved) {
-        // Price at extreme — infer winner from price direction
-        // If the token price → 1, that outcome won. If → 0, that outcome lost.
-        // signal.direction is the outcome our wallets bought
-        const tokenPrice = mi.currentPrice;
-        if (tokenPrice >= 0.98) {
-          // This token won — did our wallets buy this token?
-          outcome = 'win';
-        } else if (tokenPrice <= 0.02) {
-          // This token lost
-          outcome = 'loss';
-        }
-        resolvedBy = 'price';
-      } else {
-        // Check for REDEEM activity from backing wallets
-        let redeemCount = 0;
-        for (const w of backingWallets) {
-          const walletTrades = recentTrades.get(w.address);
-          if (!walletTrades) continue;
-          const redeems = walletTrades.filter(t =>
-            t.conditionId === signal.conditionId && t.type === 'REDEEM'
-          );
-          if (redeems.length > 0) redeemCount++;
-        }
-        if (redeemCount > 0) {
-          outcome = redeemCount > backingWallets.length / 2 ? 'win' : 'loss';
-          resolvedBy = 'redeem_detection';
-        } else {
-          // Gamma says closed but no winningOutcome and price isn't extreme
-          // — use price direction relative to entry as best guess
-          if (currentPrice > entryPrice) {
-            outcome = 'win';
-          } else {
-            outcome = 'loss';
-          }
-          resolvedBy = 'gamma_price_infer';
-        }
-      }
-
-      // Compute signal return
-      const openPrice = signal.openMarketPrice || signal.avgEntryPrice || 0;
-      let signalReturn = 0;
-      if (outcome === 'win' && openPrice > 0) {
-        signalReturn = +((1 / openPrice - 1) * 100).toFixed(2);
-      } else if (outcome === 'loss') {
-        signalReturn = -100;
-      }
-
-      closeSignal(active, history, signalId, 'resolved', scanIndex, now, outcome);
-      // Enrich the history entry
-      const lastEntry = history[history.length - 1];
-      if (lastEntry && lastEntry.signalId === signalId) {
-        lastEntry.signalReturn = signalReturn;
-        lastEntry.openMarketPrice = openPrice;
-        lastEntry.winningOutcome = mi.winningOutcome || null;
-        lastEntry.resolvedBy = resolvedBy;
-        lastEntry.resolvedPrice = mi.currentPrice;
-      }
-      closed++;
+    // Stale check: no new trades for STALE_HOURS
+    // ONLY close as stale if the market itself is no longer active.
+    // If the market is still open, wallets are simply holding — that's a valid signal.
+    const hoursSinceLastTrade = signal.lastTradeTs
+      ? (nowTs - signal.lastTradeTs) / 3600
+      : Infinity;
+    const marketStillOpen = mi && mi.marketClosed !== true && mi.acceptingOrders !== false;
+    if (hoursSinceLastTrade >= SIGNAL_THRESHOLDS.STALE_HOURS && !marketStillOpen) {
+      closeWithOutcome('stale');
+      continue;
     }
   }
 

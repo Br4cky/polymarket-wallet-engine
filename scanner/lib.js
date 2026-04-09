@@ -765,7 +765,8 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
           const marketClosed = market.closed === true || market.closed === 'true';
           const marketActive = market.active === true || market.active === 'true';
           const endDate = market.end_date_iso || market.endDate || null;
-          const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true;
+          const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
+            || market.accepting_orders === 'true' || market.acceptingOrders === 'true';
 
           // Determine winning outcome from Gamma data
           // When a market resolves, the winning token's price = 1.00 and loser = 0.00
@@ -977,7 +978,13 @@ async function refreshSignalMarkets(signals, marketLookup) {
       const market = markets[0];
       const marketClosed = market.closed === true || market.closed === 'true';
       const marketActive = market.active === true || market.active === 'true';
-      const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true;
+      const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
+        || market.accepting_orders === 'true' || market.acceptingOrders === 'true';
+
+      // Debug: log markets that look resolved but Gamma doesn't flag as closed
+      if (!marketClosed && !acceptingOrders) {
+        console.log(`  [refresh] Market not accepting orders but not closed: ${(market.question || '').slice(0, 60)} | closed=${market.closed} accepting=${market.accepting_orders || market.acceptingOrders}`);
+      }
 
       // Determine winning outcome
       let winningOutcome = null;
