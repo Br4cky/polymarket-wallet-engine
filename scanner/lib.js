@@ -978,11 +978,21 @@ async function refreshSignalMarkets(signals, marketLookup) {
       // Gamma sometimes ignores unknown condition_id filters and returns
       // default markets instead. Verify the response actually matches what
       // we asked for — otherwise skip and leave the signal untouched.
+      const wantLower = conditionId.toLowerCase();
       const market = markets.find(m =>
-        (m.condition_id || m.conditionId || '').toLowerCase() === conditionId.toLowerCase()
+        (m.conditionId || m.condition_id || '').toLowerCase() === wantLower
       );
       if (!market) {
         errors++;
+        if (errors <= 3) {
+          // Diagnostic: dump what Gamma actually returned so we can see the shape
+          const first = markets[0] || {};
+          const gotCid = first.conditionId || first.condition_id || '(missing)';
+          const gotQ = (first.question || first.title || '').slice(0, 50);
+          console.log(`  [refresh-debug] want=${conditionId.slice(0, 20)}... got=${String(gotCid).slice(0, 20)}... n=${markets.length} q="${gotQ}"`);
+          const condKeys = Object.keys(first).filter(k => /cond/i.test(k));
+          if (condKeys.length) console.log(`    candidate cid keys on returned market: ${condKeys.join(', ')}`);
+        }
         continue;
       }
       const marketClosed = market.closed === true || market.closed === 'true';
