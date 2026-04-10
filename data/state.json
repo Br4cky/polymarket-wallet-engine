@@ -8,5 +8,6 @@
   "totalPositionsScanned": 0,
   "lastId": "0x07e78173a2db6bb5e5607c5b4b5873d37706691a-62066333852013993613786503049815337037457909248170824571467988530063998366484",
   "totalScanned": 13653000,
-  "scanIndex": 82
+  "scanIndex": 82,
+  "stuckCursorCount": 2
 }

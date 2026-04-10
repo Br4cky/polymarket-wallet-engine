@@ -94,6 +94,7 @@ function loadState() {
     walletPoolVersion: 0,     // Incremented when pool changes
     cursor: null,
     totalPositionsScanned: 0,
+    stuckCursorCount: 0,      // Consecutive discoveries where cursor didn't advance
   };
   const existing = loadJSON(stateFile);
   return { ...defaults, ...existing };
@@ -132,15 +133,41 @@ async function discoverWallets(state, existingPool) {
   const { entity: entityName, fields } = discovered[0];
   console.log(`  Using entity: ${entityName} (user=${fields.user}, pnl=${fields.pnl}, token=${fields.token})`);
 
+  // Advance a stuck cursor to the next 2-hex-char address prefix bucket.
+  // Wallet ids are hex strings like "0x07e78173...-..." — the first two
+  // hex chars after "0x" give us 256 evenly-sized buckets. Jumping to the
+  // next bucket skips over any "poisoned" region that's timing out in
+  // Goldsky's index scan.
+  // Example: "0x07e7...-..."  →  "0x08"  (matches everything starting 0x08...)
+  //          "0xff...-..."    →  ""      (wrap to beginning)
+  function nextPrefixBucket(cur) {
+    if (!cur || typeof cur !== 'string' || !cur.startsWith('0x') || cur.length < 4) return '';
+    const n = parseInt(cur.slice(2, 4), 16);
+    if (Number.isNaN(n)) return '';
+    if (n >= 255) return ''; // wrap
+    return '0x' + (n + 1).toString(16).padStart(2, '0');
+  }
+
   // Step 2: Fetch position summaries from Goldsky (aggregate per wallet)
-  // Resume from last cursor position so each discovery scans NEW positions
-  const resumeCursor = state.lastId || '';
+  // Resume from last cursor position so each discovery scans NEW positions.
+  // If we've been stuck on the same cursor for 2+ cycles, Goldsky is timing
+  // out on this position — auto-advance past it before we even start.
+  let resumeCursor = state.lastId || '';
+  if (resumeCursor && (state.stuckCursorCount || 0) >= 2) {
+    const advanced = nextPrefixBucket(resumeCursor);
+    console.log(`  ⚠ Cursor has been stuck for ${state.stuckCursorCount} cycles at ${resumeCursor.slice(0, 16)}... — auto-advancing to bucket "${advanced || '(start)'}"`);
+    resumeCursor = advanced;
+    state.stuckCursorCount = 0;
+  }
   console.log(`  Fetching wallet positions from Goldsky...${resumeCursor ? ' (resuming from cursor)' : ' (starting fresh)'}`);
   const walletSummaries = new Map(); // address → { totalPnl, positionCount, totalBought }
 
   let cursor = resumeCursor;
+  const cursorAtStart = cursor;
   let totalFetched = 0;
   let wrapped = false;
+  let bucketAdvancesThisCycle = 0;
+  const MAX_BUCKET_ADVANCES = 4; // hard cap — never scan more than 4 buckets in one cycle
 
   while (totalFetched < CONFIG.MAX_POSITIONS) {
     const userField = fields.user;
@@ -168,8 +195,20 @@ async function discoverWallets(state, existingPool) {
     try {
       data = await gqlQuery(GOLDSKY_PNL, query);
     } catch (err) {
-      console.error(`  Goldsky query error: ${err.message}`);
-      break;
+      console.error(`  Goldsky query error at cursor ${cursor ? cursor.slice(0, 16) + '…' : '(start)'}: ${err.message}`);
+      // Advance past the poisoned cursor region instead of breaking silently.
+      // Without this, state.lastId would stay pinned at the failing cursor
+      // forever and every subsequent discovery would hit the same timeout.
+      if (bucketAdvancesThisCycle >= MAX_BUCKET_ADVANCES) {
+        console.error(`  Already advanced ${bucketAdvancesThisCycle} buckets this cycle — giving up to avoid burning through address space`);
+        break;
+      }
+      const advanced = nextPrefixBucket(cursor);
+      console.log(`  ↪ Advancing cursor to next prefix bucket: "${advanced || '(start)'}"`);
+      cursor = advanced;
+      bucketAdvancesThisCycle++;
+      await new Promise(r => setTimeout(r, 500)); // brief pause before retry
+      continue;
     }
 
     const items = data?.[`${entityName}s`] || [];
@@ -207,9 +246,18 @@ async function discoverWallets(state, existingPool) {
     await new Promise(r => setTimeout(r, 200));
   }
 
-  // Save cursor so next discovery resumes where we left off
+  // Save cursor so next discovery resumes where we left off.
+  // Track stuck state: if cursor didn't advance at all this cycle, increment
+  // the counter. After 2 stuck cycles the next discovery will auto-advance
+  // past the poisoned region (see resumeCursor handling above).
+  if (cursor === cursorAtStart && !wrapped && totalFetched === 0) {
+    state.stuckCursorCount = (state.stuckCursorCount || 0) + 1;
+    console.log(`  ⚠ Cursor did not advance this cycle (stuck count: ${state.stuckCursorCount})`);
+  } else {
+    state.stuckCursorCount = 0;
+  }
   state.lastId = cursor;
-  console.log(`  Found ${walletSummaries.size.toLocaleString()} wallets from ${totalFetched.toLocaleString()} positions${wrapped ? ' (reached end, will restart next cycle)' : ''}`);
+  console.log(`  Found ${walletSummaries.size.toLocaleString()} wallets from ${totalFetched.toLocaleString()} positions${wrapped ? ' (reached end, will restart next cycle)' : ''}${bucketAdvancesThisCycle > 0 ? ` [${bucketAdvancesThisCycle} bucket advances]` : ''}`);
 
   // Step 3: Filter to candidates worth qualifying
   const candidates = [...walletSummaries.entries()]
