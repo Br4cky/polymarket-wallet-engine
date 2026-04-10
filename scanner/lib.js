@@ -950,128 +950,146 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
 async function refreshSignalMarkets(signals, marketLookup) {
   if (!signals || signals.length === 0) return;
 
+  const GAMMA_EVENTS = GAMMA_MARKETS.replace('/markets', '/events');
+
   let refreshed = 0;
   let errors = 0;
   let notFound = 0;
+  let noSlug = 0;
 
+  // Group signals by eventSlug so we only hit each event once per scan.
+  // Events can contain multiple markets (e.g. LoL Game 1, Game 2, Game 3),
+  // so we query by event then match the specific market by conditionId.
+  const byEventSlug = new Map();
   for (const signal of signals) {
     const tid = signal.tokenId;
     if (!tid) continue;
-
     const existing = marketLookup.get(tid);
-    // Skip if already resolved in cache
-    if (existing && existing.marketClosed === true && existing.winningOutcome) continue;
+    if (existing && existing.marketClosed === true && existing.winningOutcome) continue; // already resolved
+    const eventSlug = signal.eventSlug || signal.slug; // fall back to market slug
+    if (!eventSlug) { noSlug++; continue; }
+    if (!byEventSlug.has(eventSlug)) byEventSlug.set(eventSlug, []);
+    byEventSlug.get(eventSlug).push(signal);
+  }
 
-    // Query Gamma by clob_token_ids — this is the only query param Gamma actually
-    // respects. condition_id is silently ignored and returns default markets.
+  for (const [eventSlug, eventSignals] of byEventSlug) {
     try {
-      const url = `${GAMMA_MARKETS}?clob_token_ids=${tid}&limit=1`;
+      // Query the event — this endpoint returns full data for both open and
+      // resolved markets, unlike /markets which purges closed markets entirely.
+      const url = `${GAMMA_EVENTS}?slug=${encodeURIComponent(eventSlug)}`;
       const response = await fetch(url);
       if (!response.ok) {
-        errors++;
+        errors += eventSignals.length;
         continue;
       }
 
-      const markets = await response.json();
-      if (!Array.isArray(markets) || markets.length === 0) {
-        // Gamma returned nothing for this tokenId. This happens when a market
-        // has been delisted or Gamma has purged it. Leave the signal untouched.
-        notFound++;
+      const events = await response.json();
+      if (!Array.isArray(events) || events.length === 0) {
+        notFound += eventSignals.length;
         continue;
       }
 
-      // Verify the returned market actually contains our tokenId. Gamma has been
-      // known to return default markets when a filter is malformed or ignored.
-      const market = markets.find(m => {
-        let clobIds = m.clobTokenIds;
-        if (typeof clobIds === 'string') {
-          try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
-        }
-        return Array.isArray(clobIds) && clobIds.includes(tid);
-      });
-      if (!market) {
-        errors++;
-        if (errors <= 3) {
-          const first = markets[0] || {};
-          const gotQ = (first.question || first.title || '').slice(0, 50);
-          console.log(`  [refresh-debug] tid=${tid.slice(0, 18)}... n=${markets.length} returned q="${gotQ}" — tokenId not in response`);
-        }
+      const event = events[0];
+      const eventMarkets = Array.isArray(event.markets) ? event.markets : [];
+      if (eventMarkets.length === 0) {
+        notFound += eventSignals.length;
         continue;
       }
 
-      const marketClosed = market.closed === true || market.closed === 'true';
-      const marketActive = market.active === true || market.active === 'true';
-      const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
-        || market.accepting_orders === 'true' || market.acceptingOrders === 'true';
-
-      // Determine winning outcome (only meaningful when marketClosed)
-      let winningOutcome = null;
-      if (marketClosed) {
-        if (market.tokens && Array.isArray(market.tokens)) {
-          for (const token of market.tokens) {
-            const price = parseFloat(token.price || 0);
-            if (price >= 0.95) { winningOutcome = token.outcome || null; break; }
-          }
+      // For each signal in this event, find the matching market by conditionId
+      for (const signal of eventSignals) {
+        const wantCid = (signal.conditionId || '').toLowerCase();
+        const market = eventMarkets.find(m =>
+          ((m.conditionId || m.condition_id) || '').toLowerCase() === wantCid
+        );
+        if (!market) {
+          notFound++;
+          continue;
         }
-        if (!winningOutcome) {
-          let parsedPrices = market.outcomePrices;
-          if (typeof parsedPrices === 'string') try { parsedPrices = JSON.parse(parsedPrices); } catch(e) { parsedPrices = null; }
-          let parsedOutcomes = market.outcomes;
-          if (typeof parsedOutcomes === 'string') try { parsedOutcomes = JSON.parse(parsedOutcomes); } catch(e) { parsedOutcomes = null; }
-          if (Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
-            for (let i = 0; i < parsedPrices.length; i++) {
-              if (parseFloat(parsedPrices[i] || 0) >= 0.95 && parsedOutcomes[i]) {
-                winningOutcome = parsedOutcomes[i];
-                break;
-              }
+
+        const marketClosed = market.closed === true || market.closed === 'true';
+        const marketActive = market.active === true || market.active === 'true';
+        const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
+          || market.accepting_orders === 'true' || market.acceptingOrders === 'true';
+
+        // Parse outcomes / outcomePrices (may be JSON-encoded strings)
+        let parsedPrices = market.outcomePrices;
+        if (typeof parsedPrices === 'string') try { parsedPrices = JSON.parse(parsedPrices); } catch(e) { parsedPrices = null; }
+        let parsedOutcomes = market.outcomes;
+        if (typeof parsedOutcomes === 'string') try { parsedOutcomes = JSON.parse(parsedOutcomes); } catch(e) { parsedOutcomes = null; }
+
+        // Determine winning outcome from settlement prices.
+        // When a market resolves, Polymarket sets outcomePrices to ["1","0"] or ["0","1"].
+        // The outcome at the index where price == "1" is the winner.
+        let winningOutcome = null;
+        if (marketClosed && Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
+          for (let i = 0; i < parsedPrices.length; i++) {
+            if (parseFloat(parsedPrices[i] || 0) >= 0.95 && parsedOutcomes[i]) {
+              winningOutcome = parsedOutcomes[i];
+              break;
             }
           }
         }
-        if (!winningOutcome && market.winner) winningOutcome = market.winner;
-      }
+        // Fallbacks
+        if (marketClosed && !winningOutcome && market.tokens && Array.isArray(market.tokens)) {
+          for (const t of market.tokens) {
+            const p = parseFloat(t.price || 0);
+            if (p >= 0.95) { winningOutcome = t.outcome || null; break; }
+          }
+        }
+        if (marketClosed && !winningOutcome && market.winner) {
+          winningOutcome = market.winner;
+        }
 
-      // Parse clobTokenIds for this market's token pair (Yes/No)
-      let clobIds = market.clobTokenIds;
-      if (typeof clobIds === 'string') try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
-      let outcomesList = market.outcomes;
-      if (typeof outcomesList === 'string') try { outcomesList = JSON.parse(outcomesList); } catch(e) { outcomesList = null; }
-      let outcomePrices = market.outcomePrices;
-      if (typeof outcomePrices === 'string') try { outcomePrices = JSON.parse(outcomePrices); } catch(e) { outcomePrices = null; }
+        let clobIds = market.clobTokenIds;
+        if (typeof clobIds === 'string') try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
 
-      const resolvedData = {
-        title: market.question || market.title || '',
-        marketClosed,
-        marketActive,
-        acceptingOrders,
-        winningOutcome,
-        endDate: market.end_date_iso || market.endDate || null,
-      };
+        const resolvedData = {
+          title: market.question || market.title || '',
+          marketClosed,
+          marketActive,
+          acceptingOrders,
+          winningOutcome,
+          endDate: market.end_date_iso || market.endDate || null,
+        };
 
-      // Update every token entry in this market pair (Yes + No)
-      if (Array.isArray(clobIds)) {
-        for (let i = 0; i < clobIds.length; i++) {
-          const tokenId = clobIds[i];
+        // Write to cache for every token id associated with this market pair:
+        // both sides from Gamma's clobTokenIds, plus the signal's own tokenId
+        // (which may differ between Data API and Gamma CLOB IDs).
+        const tokenIdsToWrite = new Set();
+        if (Array.isArray(clobIds)) for (const c of clobIds) tokenIdsToWrite.add(c);
+        tokenIdsToWrite.add(signal.tokenId);
+
+        for (const tokenId of tokenIdsToWrite) {
           const existingEntry = marketLookup.get(tokenId) || {};
-          const price = Array.isArray(outcomePrices) ? parseFloat(outcomePrices[i] || 0) : (existingEntry.currentPrice || 0);
-          const outcome = Array.isArray(outcomesList) ? outcomesList[i] : (i === 0 ? 'Yes' : 'No');
+          let price = existingEntry.currentPrice || 0;
+          let outcomeLabel = existingEntry.outcome;
+          if (Array.isArray(clobIds) && Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
+            const idx = clobIds.indexOf(tokenId);
+            if (idx >= 0) {
+              price = parseFloat(parsedPrices[idx] || 0);
+              outcomeLabel = parsedOutcomes[idx] || outcomeLabel;
+            }
+          }
           marketLookup.set(tokenId, {
             ...existingEntry,
             ...resolvedData,
             currentPrice: price,
-            outcome,
+            outcome: outcomeLabel,
           });
         }
+
+        refreshed++;
       }
 
-      refreshed++;
-      await new Promise(r => setTimeout(r, 150)); // Rate limit
+      await new Promise(r => setTimeout(r, 150)); // Rate limit between event requests
     } catch (err) {
-      errors++;
+      errors += eventSignals.length;
     }
   }
 
-  if (refreshed > 0 || errors > 0 || notFound > 0) {
-    console.log(`  Signal market refresh: ${refreshed} updated, ${notFound} not in Gamma, ${errors} errors`);
+  if (refreshed > 0 || errors > 0 || notFound > 0 || noSlug > 0) {
+    console.log(`  Signal market refresh: ${refreshed} updated, ${notFound} not found, ${errors} errors, ${noSlug} missing slug (via ${byEventSlug.size} event queries)`);
   }
 }
 
