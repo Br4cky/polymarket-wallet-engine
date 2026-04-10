@@ -952,20 +952,20 @@ async function refreshSignalMarkets(signals, marketLookup) {
 
   let refreshed = 0;
   let errors = 0;
+  let notFound = 0;
 
   for (const signal of signals) {
     const tid = signal.tokenId;
-    const existing = tid ? marketLookup.get(tid) : null;
+    if (!tid) continue;
 
+    const existing = marketLookup.get(tid);
     // Skip if already resolved in cache
     if (existing && existing.marketClosed === true && existing.winningOutcome) continue;
 
-    // Query Gamma by condition_id — works for both open and closed markets
-    const conditionId = signal.conditionId;
-    if (!conditionId) continue;
-
+    // Query Gamma by clob_token_ids — this is the only query param Gamma actually
+    // respects. condition_id is silently ignored and returns default markets.
     try {
-      const url = `${GAMMA_MARKETS}?condition_id=${conditionId}&limit=10`;
+      const url = `${GAMMA_MARKETS}?clob_token_ids=${tid}&limit=1`;
       const response = await fetch(url);
       if (!response.ok) {
         errors++;
@@ -973,52 +973,46 @@ async function refreshSignalMarkets(signals, marketLookup) {
       }
 
       const markets = await response.json();
-      if (!Array.isArray(markets) || markets.length === 0) continue;
+      if (!Array.isArray(markets) || markets.length === 0) {
+        // Gamma returned nothing for this tokenId. This happens when a market
+        // has been delisted or Gamma has purged it. Leave the signal untouched.
+        notFound++;
+        continue;
+      }
 
-      // Gamma sometimes ignores unknown condition_id filters and returns
-      // default markets instead. Verify the response actually matches what
-      // we asked for — otherwise skip and leave the signal untouched.
-      const wantLower = conditionId.toLowerCase();
-      const market = markets.find(m =>
-        (m.conditionId || m.condition_id || '').toLowerCase() === wantLower
-      );
+      // Verify the returned market actually contains our tokenId. Gamma has been
+      // known to return default markets when a filter is malformed or ignored.
+      const market = markets.find(m => {
+        let clobIds = m.clobTokenIds;
+        if (typeof clobIds === 'string') {
+          try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
+        }
+        return Array.isArray(clobIds) && clobIds.includes(tid);
+      });
       if (!market) {
         errors++;
         if (errors <= 3) {
-          // Diagnostic: dump what Gamma actually returned so we can see the shape
           const first = markets[0] || {};
-          const gotCid = first.conditionId || first.condition_id || '(missing)';
           const gotQ = (first.question || first.title || '').slice(0, 50);
-          console.log(`  [refresh-debug] want=${conditionId.slice(0, 20)}... got=${String(gotCid).slice(0, 20)}... n=${markets.length} q="${gotQ}"`);
-          const condKeys = Object.keys(first).filter(k => /cond/i.test(k));
-          if (condKeys.length) console.log(`    candidate cid keys on returned market: ${condKeys.join(', ')}`);
+          console.log(`  [refresh-debug] tid=${tid.slice(0, 18)}... n=${markets.length} returned q="${gotQ}" — tokenId not in response`);
         }
         continue;
       }
+
       const marketClosed = market.closed === true || market.closed === 'true';
       const marketActive = market.active === true || market.active === 'true';
       const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
         || market.accepting_orders === 'true' || market.acceptingOrders === 'true';
 
-      // Debug: log markets that look resolved but Gamma doesn't flag as closed
-      if (!marketClosed && !acceptingOrders) {
-        console.log(`  [refresh] Market not accepting orders but not closed: ${(market.question || '').slice(0, 60)} | closed=${market.closed} accepting=${market.accepting_orders || market.acceptingOrders}`);
-      }
-
-      // Determine winning outcome
+      // Determine winning outcome (only meaningful when marketClosed)
       let winningOutcome = null;
       if (marketClosed) {
-        // Check tokens array
         if (market.tokens && Array.isArray(market.tokens)) {
           for (const token of market.tokens) {
             const price = parseFloat(token.price || 0);
-            if (price >= 0.95) {
-              winningOutcome = token.outcome || null;
-              break;
-            }
+            if (price >= 0.95) { winningOutcome = token.outcome || null; break; }
           }
         }
-        // Check outcomePrices
         if (!winningOutcome) {
           let parsedPrices = market.outcomePrices;
           if (typeof parsedPrices === 'string') try { parsedPrices = JSON.parse(parsedPrices); } catch(e) { parsedPrices = null; }
@@ -1033,13 +1027,10 @@ async function refreshSignalMarkets(signals, marketLookup) {
             }
           }
         }
-        // Check winner field
-        if (!winningOutcome && market.winner) {
-          winningOutcome = market.winner;
-        }
+        if (!winningOutcome && market.winner) winningOutcome = market.winner;
       }
 
-      // Update all token entries for this market
+      // Parse clobTokenIds for this market's token pair (Yes/No)
       let clobIds = market.clobTokenIds;
       if (typeof clobIds === 'string') try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
       let outcomesList = market.outcomes;
@@ -1056,13 +1047,13 @@ async function refreshSignalMarkets(signals, marketLookup) {
         endDate: market.end_date_iso || market.endDate || null,
       };
 
+      // Update every token entry in this market pair (Yes + No)
       if (Array.isArray(clobIds)) {
         for (let i = 0; i < clobIds.length; i++) {
           const tokenId = clobIds[i];
           const existingEntry = marketLookup.get(tokenId) || {};
           const price = Array.isArray(outcomePrices) ? parseFloat(outcomePrices[i] || 0) : (existingEntry.currentPrice || 0);
           const outcome = Array.isArray(outcomesList) ? outcomesList[i] : (i === 0 ? 'Yes' : 'No');
-
           marketLookup.set(tokenId, {
             ...existingEntry,
             ...resolvedData,
@@ -1072,18 +1063,6 @@ async function refreshSignalMarkets(signals, marketLookup) {
         }
       }
 
-      // CRITICAL: Also update the signal's own tokenId — it may differ from Gamma's
-      // clobTokenIds (Data API asset IDs vs Gamma CLOB IDs can be different)
-      const signalTid = signal.tokenId;
-      if (signalTid && (!Array.isArray(clobIds) || !clobIds.includes(signalTid))) {
-        const existingEntry = marketLookup.get(signalTid) || {};
-        marketLookup.set(signalTid, {
-          ...existingEntry,
-          ...resolvedData,
-          currentPrice: existingEntry.currentPrice || 0,
-        });
-      }
-
       refreshed++;
       await new Promise(r => setTimeout(r, 150)); // Rate limit
     } catch (err) {
@@ -1091,8 +1070,8 @@ async function refreshSignalMarkets(signals, marketLookup) {
     }
   }
 
-  if (refreshed > 0 || errors > 0) {
-    console.log(`  Signal market refresh: ${refreshed} updated, ${errors} errors`);
+  if (refreshed > 0 || errors > 0 || notFound > 0) {
+    console.log(`  Signal market refresh: ${refreshed} updated, ${notFound} not in Gamma, ${errors} errors`);
   }
 }
 
