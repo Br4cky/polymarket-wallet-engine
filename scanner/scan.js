@@ -482,16 +482,18 @@ async function fastLoop(state, walletPool, marketLookup) {
     }
   }
 
-  // Refresh signal markets by condition_id — catches resolved markets
+  // Refresh signal markets via Gamma /events?slug — catches resolved markets
   // that clob_token_ids lookup misses. Include BOTH active signals AND
   // history signals with no outcome, so the repair phase can backfill them.
+  // Pass eventSlug + slug through — refreshSignalMarkets needs them to
+  // query /events?slug, otherwise every signal gets skipped as "missing slug".
   const activeSignalsList = Object.values(existingSignals.active || {})
     .filter(s => s.conditionId)
-    .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId }));
+    .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId, eventSlug: s.eventSlug, slug: s.slug }));
 
   const historyNeedingRepair = (Array.isArray(existingSignals.history) ? existingSignals.history : Object.values(existingSignals.history || {}))
     .filter(s => s.conditionId && s.outcome !== 'win' && s.outcome !== 'loss')
-    .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId }));
+    .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId, eventSlug: s.eventSlug, slug: s.slug }));
 
   const allSignalsToRefresh = [...activeSignalsList, ...historyNeedingRepair];
   // Deduplicate by conditionId
