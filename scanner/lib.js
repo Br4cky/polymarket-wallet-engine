@@ -975,7 +975,16 @@ async function refreshSignalMarkets(signals, marketLookup) {
       const markets = await response.json();
       if (!Array.isArray(markets) || markets.length === 0) continue;
 
-      const market = markets[0];
+      // Gamma sometimes ignores unknown condition_id filters and returns
+      // default markets instead. Verify the response actually matches what
+      // we asked for — otherwise skip and leave the signal untouched.
+      const market = markets.find(m =>
+        (m.condition_id || m.conditionId || '').toLowerCase() === conditionId.toLowerCase()
+      );
+      if (!market) {
+        errors++;
+        continue;
+      }
       const marketClosed = market.closed === true || market.closed === 'true';
       const marketActive = market.active === true || market.active === 'true';
       const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
