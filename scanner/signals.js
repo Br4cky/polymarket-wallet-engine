@@ -594,10 +594,20 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
   //       have been closed — wallets are still holding)
   let repaired = 0;
   let restored = 0;
+  let dedupedFromActive = 0;
   for (let i = history.length - 1; i >= 0; i--) {
     const h = history[i];
     if (h.outcome === 'win' || h.outcome === 'loss') continue; // already resolved
     if (!h.conditionId && !h.tokenId) continue; // no way to look up
+
+    // If this signalId is already present in active (the wallet re-opened the position
+    // after we wrongly closed the old one), the history entry is a stale remnant and
+    // should just be dropped — the active version is the current source of truth.
+    if (h.signalId && active[h.signalId]) {
+      history.splice(i, 1);
+      dedupedFromActive++;
+      continue;
+    }
 
     const hmi = h.tokenId ? marketLookup.get(h.tokenId) : null;
     if (!hmi) continue; // not in cache this scan — will try again next scan
@@ -646,8 +656,8 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       repaired++;
     }
   }
-  if (repaired > 0 || restored > 0) {
-    console.log(`  History repair: ${repaired} backfilled with WIN/LOSS, ${restored} restored to active (market still open)`);
+  if (repaired > 0 || restored > 0 || dedupedFromActive > 0) {
+    console.log(`  History repair: ${repaired} backfilled with WIN/LOSS, ${restored} restored to active, ${dedupedFromActive} duplicates of active removed`);
   }
 
   // --- Phase 3: Aggregate stats ---
