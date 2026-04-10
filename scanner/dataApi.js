@@ -107,11 +107,16 @@ async function fetchAllTrades(wallet, opts = {}) {
   const allTrades = [];
   let offset = 0;
   const pageSize = 1000;
+  let truncated = false;
 
   const maxOffset = 3000; // Data API hard limit on pagination offset
 
   while (allTrades.length < maxTrades) {
-    if (offset >= maxOffset) break; // API rejects offsets >= 3000
+    if (offset >= maxOffset) {
+      // Hit the API offset ceiling — wallet has more history we can't see.
+      truncated = true;
+      break;
+    }
 
     const batch = await fetchTrades(wallet, {
       limit: Math.min(pageSize, maxTrades - allTrades.length),
@@ -126,6 +131,9 @@ async function fetchAllTrades(wallet, opts = {}) {
     offset += pageSize;
   }
 
+  // If we hit the user's own maxTrades cap before the API ceiling, also flag.
+  if (!truncated && allTrades.length >= maxTrades) truncated = true;
+  allTrades.truncated = truncated;
   return allTrades;
 }
 
@@ -178,10 +186,60 @@ async function fetchActivity(wallet, opts = {}) {
     user: wallet.toLowerCase(),
     limit: opts.limit || 500,
   };
+  if (opts.offset) params.offset = opts.offset;
   if (opts.startTs) params.startTs = opts.startTs;
 
   const data = await apiRequest('/activity', params);
   return Array.isArray(data) ? data : [];
+}
+
+/**
+ * Fetch all activity events for a wallet (TRADE + REDEEM + others).
+ * Paginated; capped at the Data API's 3000-offset ceiling.
+ *
+ * Crucial difference vs fetchAllTrades: REDEEM events are how Polymarket
+ * winners actually collect their payouts. Without them, winning positions
+ * look "still open" to our analyzer and contribute $0 to computed PnL,
+ * which is why internal stats.totalPnl drifts far below Goldsky's lifetime
+ * aggregate for any wallet that redeems winners through to resolution.
+ *
+ * @param {string} wallet - Wallet address
+ * @param {object} opts - Options
+ * @param {number} opts.maxEvents - Cap total events returned (default 10000)
+ * @param {number} opts.startTs - Only events after this timestamp
+ * @returns {Promise<Array>} All activity events, plus `truncated` flag as an
+ *                           array property when pagination hit a ceiling.
+ */
+async function fetchAllActivity(wallet, opts = {}) {
+  const maxEvents = opts.maxEvents || 10000;
+  const allEvents = [];
+  let offset = 0;
+  const pageSize = 500;
+  const maxOffset = 3000;
+  let truncated = false;
+
+  while (allEvents.length < maxEvents) {
+    if (offset >= maxOffset) {
+      truncated = true;
+      break;
+    }
+
+    const batch = await fetchActivity(wallet, {
+      limit: Math.min(pageSize, maxEvents - allEvents.length),
+      offset,
+      startTs: opts.startTs,
+    });
+
+    if (!batch || batch.length === 0) break;
+    allEvents.push(...batch);
+
+    if (batch.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  if (!truncated && allEvents.length >= maxEvents) truncated = true;
+  allEvents.truncated = truncated;
+  return allEvents;
 }
 
 // ============================================================================
@@ -189,31 +247,102 @@ async function fetchActivity(wallet, opts = {}) {
 // ============================================================================
 
 /**
- * Analyze a wallet's trade history to compute real performance stats.
- * This replaces the snapshot-based analyzePositions() from the old system.
+ * Analyze a wallet's trade/activity history to compute real performance stats.
  *
- * @param {Array} trades - Full trade history from fetchAllTrades()
+ * Accepts either:
+ *   - A pure trade list from fetchAllTrades() (legacy), OR
+ *   - A mixed activity list from fetchAllActivity() including REDEEM events.
+ *
+ * REDEEM events are normalised into synthetic SELLs so that winning positions
+ * which the wallet held through to resolution actually close out. Without this
+ * step, redeemed winners stay bucketed as "open" and contribute $0 to PnL,
+ * which is why our internal stats.totalPnl used to drift far below Goldsky.
+ *
+ * @param {Array} events - Full history from fetchAllTrades() or fetchAllActivity()
  * @param {object} opts - Options
- * @param {number} opts.windowDays - Only consider trades from last N days (default: 90)
- * @returns {object} Computed stats
+ * @param {number} opts.windowDays - Only consider events from last N days (default: 90)
+ * @param {Map} opts.marketLookup - Optional Map<conditionId, { marketClosed, winningOutcome }>
+ *                                  used to resolve positions the wallet never explicitly closed
+ *                                  (winners who didn't redeem, losers whose shares went to $0).
+ * @returns {object} Computed stats (includes `tradesTruncated` if pagination capped)
  */
-function analyzeTradeHistory(trades, opts = {}) {
-  if (!trades || trades.length === 0) {
+function analyzeTradeHistory(events, opts = {}) {
+  if (!events || events.length === 0) {
     return null;
   }
 
   const windowDays = opts.windowDays || 90;
   const windowTs = Math.floor(Date.now() / 1000) - (windowDays * 86400);
   const now = Math.floor(Date.now() / 1000);
+  const marketLookup = opts.marketLookup instanceof Map ? opts.marketLookup : null;
 
-  // Split into time windows for comparison
-  const recentTrades = trades.filter(t => t.timestamp >= windowTs);
-  const allTrades = trades;
+  // Normalise every event into either a BUY, a SELL, or a synthetic SELL from
+  // a REDEEM. Anything else (REWARD, SPLIT, MERGE, CONVERSION, …) is ignored.
+  // A normalised event always carries: timestamp, conditionId, size, price,
+  // side, plus market metadata when present.
+  const allEvents = [];
+  for (const ev of events) {
+    if (!ev || typeof ev !== 'object') continue;
+    const type = (ev.type || '').toUpperCase();
+    const cid = ev.conditionId;
+    if (!cid) continue;
+
+    if (type === 'REDEEM') {
+      // Redemption: wallet cashed `size` shares for `usdcSize` USDC payout.
+      // Treat as a synthetic SELL at the implied price. Winners redeem
+      // at $1/share; losers at $0 (payout usually absent for losers entirely,
+      // so the position is just left truncated — we detect via the
+      // marketClosed check downstream).
+      const size = parseFloat(ev.size || ev.shares || 0) || 0;
+      const payout = parseFloat(ev.usdcSize || ev.payout || 0) || 0;
+      if (size <= 0) continue;
+      const price = payout > 0 ? payout / size : 0;
+      allEvents.push({
+        timestamp: ev.timestamp,
+        conditionId: cid,
+        asset: ev.asset || ev.tokenId || '',
+        side: 'SELL',
+        size,
+        price,
+        title: ev.title || '',
+        slug: ev.slug || '',
+        eventSlug: ev.eventSlug || '',
+        outcome: ev.outcome || '',
+        outcomeIndex: ev.outcomeIndex,
+        _fromRedeem: true,
+      });
+      continue;
+    }
+
+    // Plain trade — type may be 'TRADE' or absent (legacy fetchAllTrades shape)
+    if (type === 'TRADE' || type === '' || type === undefined) {
+      const side = (ev.side || '').toUpperCase();
+      if (side !== 'BUY' && side !== 'SELL') continue;
+      allEvents.push({
+        timestamp: ev.timestamp,
+        conditionId: cid,
+        asset: ev.asset || ev.tokenId || '',
+        side,
+        size: parseFloat(ev.size || 0) || 0,
+        price: parseFloat(ev.price || 0) || 0,
+        title: ev.title || '',
+        slug: ev.slug || '',
+        eventSlug: ev.eventSlug || '',
+        outcome: ev.outcome || '',
+        outcomeIndex: ev.outcomeIndex,
+      });
+    }
+    // Other activity types (REWARD, SPLIT, MERGE, CONVERSION) are dropped.
+  }
+
+  if (allEvents.length === 0) return null;
+
+  const recentTrades = allEvents.filter(t => t.timestamp >= windowTs);
 
   // Group trades by market (conditionId) to compute per-market outcomes
   const marketTrades = new Map(); // conditionId → { buys: [], sells: [], redeems: [], meta: {} }
 
-  for (const trade of allTrades) {
+  for (const trade of allEvents) {
     const cid = trade.conditionId;
     if (!cid) continue;
 
@@ -253,14 +382,17 @@ function analyzeTradeHistory(trades, opts = {}) {
   let recentWins = 0;
   let recentLosses = 0;
   let recentPnl = 0;
+  // Counters so callers can tell how much of the WR fix actually fired
+  let unredeemedWins = 0;
+  let worthlessLosses = 0;
 
   for (const [cid, mt] of marketTrades) {
     const totalBought = mt.buys.reduce((sum, t) => sum + (t.size * t.price), 0);
-    const totalSold = mt.sells.reduce((sum, t) => sum + (t.size * t.price), 0);
+    const totalSoldRaw = mt.sells.reduce((sum, t) => sum + (t.size * t.price), 0);
     const totalBuySize = mt.buys.reduce((sum, t) => sum + t.size, 0);
     const totalSellSize = mt.sells.reduce((sum, t) => sum + t.size, 0);
     const avgBuyPrice = totalBuySize > 0 ? totalBought / totalBuySize : 0;
-    const avgSellPrice = totalSellSize > 0 ? totalSold / totalSellSize : 0;
+    const avgSellPrice = totalSellSize > 0 ? totalSoldRaw / totalSellSize : 0;
 
     const firstBuy = mt.buys.length > 0 ? Math.min(...mt.buys.map(t => t.timestamp)) : 0;
     const lastTrade = Math.max(
@@ -271,7 +403,42 @@ function analyzeTradeHistory(trades, opts = {}) {
     const isRecent = firstBuy >= windowTs;
 
     // Position fully closed if sell size ≈ buy size
-    const positionClosed = totalSellSize >= totalBuySize * 0.95;
+    let positionClosed = totalSellSize >= totalBuySize * 0.95;
+    let totalSold = totalSoldRaw;
+    let syntheticCloseKind = null; // 'unredeemed_win' | 'worthless_loss' | null
+
+    // WR fix: if the position still looks open but the market has actually
+    // resolved on-chain, close it synthetically. Winners who never bothered
+    // to redeem get their unredeemed shares valued at $1; losers' unredeemed
+    // shares are worth $0 (so totalSold stays as-is, producing the expected
+    // full-stake loss). Without this, losers linger in openPositions forever
+    // and inflate WR, since REDEEM events only fire for winners.
+    //
+    // marketLookup is keyed by tokenId (asset) to match the rest of the
+    // scanner. Some conditionIds have multiple tokenIds (one per outcome)
+    // but a wallet's trades on a given conditionId will all be on the same
+    // side, so looking up by the first trade's asset is sufficient.
+    if (!positionClosed && marketLookup && totalBuySize > 0) {
+      const firstTrade = mt.buys[0] || mt.sells[0];
+      const asset = firstTrade?.asset;
+      const info = asset ? marketLookup.get(asset) : null;
+      if (info && info.marketClosed === true && info.winningOutcome) {
+        const walletOutcome = String(mt.outcome || firstTrade?.outcome || '').toLowerCase().trim();
+        const winningOutcome = String(info.winningOutcome).toLowerCase().trim();
+        const won = walletOutcome && walletOutcome === winningOutcome;
+        const unredeemedSize = Math.max(0, totalBuySize - totalSellSize);
+        if (won) {
+          totalSold = totalSoldRaw + unredeemedSize * 1.0;
+          syntheticCloseKind = 'unredeemed_win';
+          unredeemedWins++;
+        } else {
+          // Losing shares are worthless — no extra payout added.
+          syntheticCloseKind = 'worthless_loss';
+          worthlessLosses++;
+        }
+        positionClosed = true;
+      }
+    }
 
     if (positionClosed && totalBuySize > 0) {
       // Resolved market
@@ -304,6 +471,7 @@ function analyzeTradeHistory(trades, opts = {}) {
         firstBuy,
         lastTrade,
         holdTime: lastTrade - firstBuy,
+        closeKind: syntheticCloseKind || 'traded',
       });
 
       // Category tracking
@@ -327,9 +495,16 @@ function analyzeTradeHistory(trades, opts = {}) {
     : 0;
 
   // Trading frequency
-  const firstTradeTs = allTrades.length > 0 ? Math.min(...allTrades.map(t => t.timestamp)) : now;
+  const firstTradeTs = allEvents.length > 0 ? Math.min(...allEvents.map(t => t.timestamp)) : now;
+  const lastTradeTsComputed = allEvents.length > 0 ? Math.max(...allEvents.map(t => t.timestamp)) : now;
+  // statsSpanDays: the actual time span covered by the events we analysed.
+  // When /activity pagination truncates (tradesTruncated=true), this is the
+  // effective recency window — e.g. a span of 45 days means the analyzer only
+  // saw the wallet's last ~45 days of trading. Critical for interpreting
+  // any stat derived from this sample.
+  const statsSpanDays = Math.max(1, Math.ceil((lastTradeTsComputed - firstTradeTs) / 86400));
   const tradingSpanDays = Math.max(1, (now - firstTradeTs) / 86400);
-  const tradesPerDay = allTrades.length / tradingSpanDays;
+  const tradesPerDay = allEvents.length / tradingSpanDays;
   const marketsPerDay = marketTrades.size / tradingSpanDays;
 
   // Recent trading frequency — use actual active span, not full window
@@ -341,13 +516,13 @@ function analyzeTradeHistory(trades, opts = {}) {
   // Consistency-based frequency — how many distinct weeks had trades, not just total/span.
   // A wallet that traded 150 times on one day then stopped scores low here.
   // A wallet that trades 5x/week every week scores high.
-  const activeDays = new Set(allTrades.map(t => Math.floor(t.timestamp / 86400))).size;
-  const activeWeeks = new Set(allTrades.map(t => Math.floor(t.timestamp / (86400 * 7)))).size;
+  const activeDays = new Set(allEvents.map(t => Math.floor(t.timestamp / 86400))).size;
+  const activeWeeks = new Set(allEvents.map(t => Math.floor(t.timestamp / (86400 * 7)))).size;
   const totalWeeksSpan = Math.max(1, tradingSpanDays / 7);
   // What % of weeks since first trade had at least one trade
   const weeklyConsistency = +(activeWeeks / totalWeeksSpan).toFixed(3);
   // Avg trades per ACTIVE week (not per calendar week)
-  const tradesPerActiveWeek = activeWeeks > 0 ? +(allTrades.length / activeWeeks).toFixed(1) : 0;
+  const tradesPerActiveWeek = activeWeeks > 0 ? +(allEvents.length / activeWeeks).toFixed(1) : 0;
   // Avg new markets per active week
   const marketsPerActiveWeek = activeWeeks > 0 ? +(marketTrades.size / activeWeeks).toFixed(1) : 0;
 
@@ -381,7 +556,8 @@ function analyzeTradeHistory(trades, opts = {}) {
     edgeRatio: +edgeRatio.toFixed(2),
 
     // Activity
-    totalTrades: allTrades.length,
+    totalTrades: allEvents.length,
+    tradesTruncated: events.truncated === true, // Data API 3000-offset cap hit
     recentTrades: recentTradeCount,
     uniqueMarkets: marketTrades.size,
     openPositions,
@@ -389,6 +565,9 @@ function analyzeTradeHistory(trades, opts = {}) {
     recentTradesPerDay: +recentTradesPerDay.toFixed(2),
     marketsPerDay: +marketsPerDay.toFixed(2),
     tradingSpanDays: Math.round(tradingSpanDays),
+    statsSpanDays,                      // actual days covered by the analysed sample
+    unredeemedWins,                     // WR fix: winners closed via marketLookup
+    worthlessLosses,                    // WR fix: losers closed via marketLookup
 
     // Consistency metrics — measures how regularly a wallet trades
     activeDays,                         // distinct days with at least one trade
@@ -404,7 +583,7 @@ function analyzeTradeHistory(trades, opts = {}) {
     // Timing
     avgHoldTimeHours: +(avgHoldTime / 3600).toFixed(1),
     firstTradeTs,
-    lastTradeTs: allTrades.length > 0 ? Math.max(...allTrades.map(t => t.timestamp)) : 0,
+    lastTradeTs: allEvents.length > 0 ? Math.max(...allEvents.map(t => t.timestamp)) : 0,
 
     // Breakdown
     categories: Object.fromEntries(categories),
@@ -495,6 +674,7 @@ export {
   fetchAllTrades,
   fetchRecentTrades,
   fetchActivity,
+  fetchAllActivity,
   analyzeTradeHistory,
   computeWalletScore,
 };

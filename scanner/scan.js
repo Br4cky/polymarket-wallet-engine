@@ -33,6 +33,7 @@ import {
 
 import {
   fetchAllTrades,
+  fetchAllActivity,
   fetchRecentTrades,
   analyzeTradeHistory,
   computeWalletScore,
@@ -58,7 +59,7 @@ const DATA_DIR = path.resolve(__dirname, '../data');
 const CONFIG = {
   // Wallet discovery (slow loop)
   MAX_DISCOVERY_WALLETS: 5000,     // Candidates to discover from Goldsky
-  TARGET_POOL_SIZE: 500,           // Top N to keep after scoring
+  TARGET_POOL_SIZE: 1000,          // Top N to keep after scoring
   MIN_SCORE_POOL: 50,              // Minimum score to enter the pool — filters out noise
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
@@ -109,10 +110,68 @@ function saveState(state) {
 // ============================================================================
 
 /**
+ * Refresh a single wallet's lifetime PnL from Goldsky by aggregating
+ * all of its positions. Used during the pool retention re-score loop so we
+ * don't hold onto wallets whose lifetime PnL has drifted below the admission
+ * floor since they were first discovered.
+ *
+ * Returns { totalPnl, positionCount } or null on error.
+ */
+async function fetchGoldskyWalletPnl(wallet, entityName, fields) {
+  const userField = fields.user;
+  const pnlField = fields.pnl;
+  const boughtField = fields.totalBought;
+  if (!pnlField) return null;
+
+  const addr = wallet.toLowerCase();
+  let totalPnl = 0;
+  let totalBought = 0;
+  let positionCount = 0;
+  let lastId = '';
+
+  const queryFields = ['id', pnlField];
+  if (boughtField) queryFields.push(boughtField);
+
+  // Page through the wallet's positions (typically <100, so 1-2 queries)
+  while (positionCount < 2000) {
+    const query = `{
+      ${entityName}s(
+        first: 1000
+        orderBy: id
+        where: { ${userField}: "${addr}"${lastId ? `, id_gt: "${lastId}"` : ''} }
+      ) {
+        ${queryFields.join('\n        ')}
+      }
+    }`;
+
+    let data;
+    try {
+      data = await gqlQuery(GOLDSKY_PNL, query);
+    } catch (err) {
+      return null;
+    }
+
+    const items = data?.[`${entityName}s`] || [];
+    if (items.length === 0) break;
+
+    for (const item of items) {
+      totalPnl += parseFloat(item[pnlField] || 0) / USDC_DIVISOR;
+      if (boughtField) totalBought += parseFloat(item[boughtField] || 0) / USDC_DIVISOR;
+      positionCount++;
+    }
+
+    if (items.length < 1000) break;
+    lastId = items[items.length - 1].id;
+  }
+
+  return { totalPnl, totalBought, positionCount };
+}
+
+/**
  * Discover wallet addresses from Goldsky and qualify them via Data API.
  * This runs periodically (every DISCOVERY_INTERVAL_SCANS fast loops).
  */
-async function discoverWallets(state, existingPool) {
+async function discoverWallets(state, existingPool, marketLookup = null) {
   console.log('\n🔍 WALLET DISCOVERY — Finding and qualifying new wallets...');
 
   // Step 1: Discover entities and fields dynamically (handles schema differences)
@@ -132,6 +191,28 @@ async function discoverWallets(state, existingPool) {
 
   const { entity: entityName, fields } = discovered[0];
   console.log(`  Using entity: ${entityName} (user=${fields.user}, pnl=${fields.pnl}, token=${fields.token})`);
+
+  // Persist the full schema field list to state so we can see what additional
+  // fields Goldsky exposes on the position entity that we aren't currently
+  // mining (e.g. timestamps, tradeCount, etc.) — discoverEntities logs them
+  // but until now we were throwing that information away.
+  try {
+    const allFields = await introspectEntity(GOLDSKY_PNL,
+      entityName.charAt(0).toUpperCase() + entityName.slice(1).replace(/s$/, ''))
+      || await introspectEntity(GOLDSKY_PNL, entityName);
+    if (allFields && allFields.length > 0) {
+      state.goldskySchema = {
+        entity: entityName,
+        allFields,
+        usedFields: fields,
+        unusedFields: allFields.filter(f =>
+          ![fields.user, fields.pnl, fields.token, fields.totalBought, fields.amount, 'id'].includes(f)),
+        introspectedAt: new Date().toISOString(),
+      };
+    }
+  } catch (err) {
+    // Non-fatal — introspection is informational
+  }
 
   // Advance a stuck cursor to the next 2-hex-char address prefix bucket.
   // Wallet ids are hex strings like "0x07e78173...-..." — the first two
@@ -284,13 +365,19 @@ async function discoverWallets(state, existingPool) {
     }
 
     try {
-      const trades = await fetchAllTrades(address, { maxTrades: 5000 });
-      if (!trades || trades.length < 10) {
+      // Use /activity so REDEEM events close out winning positions that would
+      // otherwise look "still open" to the analyzer and contribute $0 to PnL.
+      const events = await fetchAllActivity(address, { maxEvents: 5000 });
+      if (!events || events.length < 10) {
         processed++;
         continue;
       }
 
-      const stats = analyzeTradeHistory(trades);
+      // marketLookup lets the analyzer close positions on markets that have
+      // resolved on-chain but whose shares the wallet never sold or redeemed
+      // (worthless losers and unredeemed winners). Without it, losers cling
+      // to openPositions and inflate winRate because REDEEMs fire for winners only.
+      const stats = analyzeTradeHistory(events, { marketLookup });
       if (!stats) {
         processed++;
         continue;
@@ -354,6 +441,7 @@ async function discoverWallets(state, existingPool) {
     })
     .slice(0, CONFIG.RESCORE_BATCH_SIZE); // Limit to batch size per discovery
 
+  let pnlDecayed = 0;
   for (const [addr, wallet] of staleWallets) {
     // Quick inactive check (no API call needed)
     const daysSinceLastTrade = wallet.stats?.lastTradeTs > 0
@@ -366,16 +454,35 @@ async function discoverWallets(state, existingPool) {
       continue;
     }
 
-    // Re-score from fresh trade data
+    // Refresh the lifetime PnL from Goldsky. If it's dropped below the
+    // admission floor, evict — we never want a sub-threshold wallet in the pool.
     try {
-      const trades = await fetchAllTrades(addr, { maxTrades: 5000 });
-      if (!trades || trades.length < 10) {
+      const fresh = await fetchGoldskyWalletPnl(addr, entityName, fields);
+      if (fresh && fresh.positionCount > 0) {
+        wallet.goldskyPnl = +fresh.totalPnl.toFixed(2);
+        wallet.goldskyPositions = fresh.positionCount;
+        if (wallet.goldskyPnl < CONFIG.MIN_PNL_DISCOVERY) {
+          wallet.status = 'removed';
+          wallet.removeReason = 'pnl_below_floor';
+          pnlDecayed++;
+          decayed++;
+          continue;
+        }
+      }
+    } catch (err) {
+      // Non-fatal — keep existing goldskyPnl
+    }
+
+    // Re-score from fresh activity data (trades + redemptions)
+    try {
+      const events = await fetchAllActivity(addr, { maxEvents: 5000 });
+      if (!events || events.length < 10) {
         wallet.status = 'removed';
         wallet.removeReason = 'insufficient_trades';
         decayed++;
         continue;
       }
-      const stats = analyzeTradeHistory(trades);
+      const stats = analyzeTradeHistory(events, { marketLookup });
       if (!stats || (stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
         wallet.status = 'removed';
         wallet.removeReason = 'insufficient_resolved';
@@ -385,19 +492,42 @@ async function discoverWallets(state, existingPool) {
       wallet.score = computeWalletScore(stats);
       wallet.stats = stats;
       wallet.lastScored = new Date().toISOString();
-      wallet.totalTrades = trades.length;
+      wallet.totalTrades = events.length;
       rescored++;
     } catch (err) {
       // Keep existing score on error
     }
   }
   if (decayed > 0 || rescored > 0) {
-    console.log(`  Pool maintenance: ${rescored} re-scored, ${decayed} removed`);
+    console.log(`  Pool maintenance: ${rescored} re-scored, ${decayed} removed${pnlDecayed > 0 ? ` (${pnlDecayed} below PnL floor)` : ''}`);
   }
 
   // Step 6: Rank and trim to top N (with minimum score floor)
+  //
+  // Grace period: after the WR fix ships, scores will recalibrate downward
+  // across the whole pool as wallets get re-scored with the honest WR/PnL.
+  // If we apply MIN_SCORE_POOL mid-recalibration we risk evicting wallets
+  // whose score is TEMPORARILY low only because they haven't been re-scored
+  // yet. Detect this by counting how many wallets in the pool still carry
+  // pre-fix stats (no `unredeemedWins` field — it was added by the fix).
+  //
+  // If >20% of the pool is still pre-fix, skip score-based eviction this cycle.
+  // Lifetime-PnL-based eviction (via goldskyPnl < MIN_PNL_DISCOVERY in the
+  // re-score loop) and inactive-wallet eviction stay active throughout, so
+  // nothing garbage sneaks in during the grace window.
+  const poolEntries = Object.entries(pool);
+  const preFixCount = poolEntries.filter(([, w]) =>
+    w.status !== 'removed' && (w.stats && w.stats.unredeemedWins === undefined)
+  ).length;
+  const activeCount = poolEntries.filter(([, w]) => w.status !== 'removed').length;
+  const preFixRatio = activeCount > 0 ? preFixCount / activeCount : 0;
+  const graceActive = preFixRatio > 0.2;
+  if (graceActive) {
+    console.log(`  ⏳ Score-eviction grace period active: ${preFixCount}/${activeCount} wallets still pre-fix (${(preFixRatio * 100).toFixed(0)}%). Skipping MIN_SCORE_POOL filter this cycle.`);
+  }
+
   const ranked = Object.entries(pool)
-    .filter(([, w]) => w.score >= CONFIG.MIN_SCORE_POOL && w.status !== 'removed')
+    .filter(([, w]) => w.status !== 'removed' && (graceActive || w.score >= CONFIG.MIN_SCORE_POOL))
     .sort((a, b) => b[1].score - a[1].score);
 
   const trimmedPool = {};
@@ -416,7 +546,60 @@ async function discoverWallets(state, existingPool) {
     console.log(`    #${w.rank} ${addr.slice(0, 12)}... score:${w.score} WR:${((w.stats?.recentWinRate || w.stats?.winRate || 0) * 100).toFixed(0)}% PnL:$${(w.stats?.totalPnl || 0).toFixed(0)}`);
   }
 
+  // Step 7: Snapshot each wallet's lifetime PnL into the history ledger so we
+  // can build equity-curve time series for every tracked wallet. Append-only,
+  // capped per-wallet to keep the file bounded.
+  try {
+    snapshotWalletHistory(trimmedPool, state.scanCount);
+  } catch (err) {
+    console.error(`  ⚠ Wallet history snapshot failed: ${err.message}`);
+  }
+
   return trimmedPool;
+}
+
+/**
+ * Append a PnL snapshot row for every wallet in the pool to
+ * data/wallet-history.json.gz. One row per discovery cycle per wallet.
+ * Used to reconstruct equity curves and detect regime changes.
+ */
+const WALLET_HISTORY_FILE = path.join(DATA_DIR, 'wallet-history.json.gz');
+const WALLET_HISTORY_MAX_ROWS = 180; // ~6 months at once/day
+
+function snapshotWalletHistory(pool, scanCount) {
+  const existing = loadGzJSON(WALLET_HISTORY_FILE) || { wallets: {} };
+  if (!existing.wallets) existing.wallets = {};
+
+  const ts = new Date().toISOString();
+  let added = 0;
+  for (const [addr, wallet] of Object.entries(pool)) {
+    if (!existing.wallets[addr]) existing.wallets[addr] = [];
+    const rows = existing.wallets[addr];
+
+    // Deduplicate: don't snapshot the same scan twice
+    if (rows.length && rows[rows.length - 1].scan === scanCount) continue;
+
+    rows.push({
+      scan: scanCount,
+      ts,
+      goldskyPnl: +(wallet.goldskyPnl || 0).toFixed(2),
+      goldskyPositions: wallet.goldskyPositions || 0,
+      score: +(wallet.score || 0).toFixed(1),
+      resolvedMarkets: wallet.stats?.resolvedMarkets || 0,
+      winRate: +(wallet.stats?.winRate || 0).toFixed(4),
+      samplePnl: +(wallet.stats?.totalPnl || 0).toFixed(2),
+      tradesTruncated: wallet.stats?.tradesTruncated === true,
+    });
+
+    // Cap to last N rows per wallet
+    if (rows.length > WALLET_HISTORY_MAX_ROWS) {
+      rows.splice(0, rows.length - WALLET_HISTORY_MAX_ROWS);
+    }
+    added++;
+  }
+
+  saveGzJSON(WALLET_HISTORY_FILE, existing);
+  console.log(`  📈 Wallet history: ${added} snapshots appended (${Object.keys(existing.wallets).length} wallets tracked)`);
 }
 
 // ============================================================================
@@ -572,8 +755,12 @@ async function fastLoop(state, walletPool, marketLookup) {
     score: w.score,
     lastActiveTimestamp: w.lastScored || w.discoveredScan ? new Date().toISOString() : null,
     stats: {
-      totalPnl: w.stats?.totalPnl || 0,
-      realizedPnl: w.stats?.totalPnl || 0,
+      // totalPnl reflects Goldsky's full-history lifetime PnL (includes redemptions).
+      // This is the same number MIN_PNL_DISCOVERY gates against, so the dashboard
+      // stays consistent with the admission rule. samplePnl retained for debugging.
+      totalPnl: w.goldskyPnl || w.stats?.totalPnl || 0,
+      samplePnl: w.stats?.totalPnl || 0,
+      realizedPnl: w.goldskyPnl || w.stats?.totalPnl || 0,
       unrealizedPnl: 0,
       wr: w.stats?.winRate || w.stats?.recentWinRate || 0,
       estimatedMarkets: w.stats?.totalMarkets || w.stats?.resolvedMarkets || 0,
@@ -595,7 +782,7 @@ async function fastLoop(state, walletPool, marketLookup) {
 
   // 7c: Summary
   const totalWallets = walletList.length;
-  const totalPnl = walletList.reduce((s, w) => s + (w.stats?.totalPnl || 0), 0);
+  const totalPnl = walletList.reduce((s, w) => s + (w.goldskyPnl || w.stats?.totalPnl || 0), 0);
   const totalWins = walletList.reduce((s, w) => s + (w.stats?.wins || 0), 0);
   const totalResolved = walletList.reduce((s, w) => s + (w.stats?.resolvedMarkets || 0), 0);
 
@@ -789,7 +976,7 @@ async function run() {
     } else if (poolBelowTarget) {
       console.log(`  Pool below target (${poolSize}/${CONFIG.TARGET_POOL_SIZE}) — forcing discovery but keeping cursor position to scan new wallets`);
     }
-    walletPool = await discoverWallets(state, walletPool);
+    walletPool = await discoverWallets(state, walletPool, marketLookup);
     state.lastDiscovery = state.scanCount;
 
     // Save wallet pool
