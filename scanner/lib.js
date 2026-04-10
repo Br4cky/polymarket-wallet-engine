@@ -1028,6 +1028,15 @@ async function refreshSignalMarkets(signals, marketLookup) {
       let outcomePrices = market.outcomePrices;
       if (typeof outcomePrices === 'string') try { outcomePrices = JSON.parse(outcomePrices); } catch(e) { outcomePrices = null; }
 
+      const resolvedData = {
+        title: market.question || market.title || '',
+        marketClosed,
+        marketActive,
+        acceptingOrders,
+        winningOutcome,
+        endDate: market.end_date_iso || market.endDate || null,
+      };
+
       if (Array.isArray(clobIds)) {
         for (let i = 0; i < clobIds.length; i++) {
           const tokenId = clobIds[i];
@@ -1037,16 +1046,23 @@ async function refreshSignalMarkets(signals, marketLookup) {
 
           marketLookup.set(tokenId, {
             ...existingEntry,
-            title: market.question || market.title || existingEntry.title || '',
-            marketClosed,
-            marketActive,
-            acceptingOrders,
-            winningOutcome,
+            ...resolvedData,
             currentPrice: price,
             outcome,
-            endDate: market.end_date_iso || market.endDate || existingEntry.endDate || null,
           });
         }
+      }
+
+      // CRITICAL: Also update the signal's own tokenId — it may differ from Gamma's
+      // clobTokenIds (Data API asset IDs vs Gamma CLOB IDs can be different)
+      const signalTid = signal.tokenId;
+      if (signalTid && (!Array.isArray(clobIds) || !clobIds.includes(signalTid))) {
+        const existingEntry = marketLookup.get(signalTid) || {};
+        marketLookup.set(signalTid, {
+          ...existingEntry,
+          ...resolvedData,
+          currentPrice: existingEntry.currentPrice || 0,
+        });
       }
 
       refreshed++;
