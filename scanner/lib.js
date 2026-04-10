@@ -942,12 +942,14 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
 /**
  * Refresh resolution status for active signal tokens.
  *
- * Primary path: /markets?condition_ids=<cid>  (plural snake_case — verified to
- * return the correct single market, unlike the singular `condition_id` which
- * Gamma silently ignores and returns default markets).
+ * Uses /events?slug=<eventSlug> exclusively: it's the only Gamma endpoint that
+ * returns full data for BOTH open and resolved markets. /markets purges
+ * resolved markets entirely (verified via probe), and /markets?condition_id
+ * (singular) is silently ignored by Gamma.
  *
- * Fallback: /events?slug=<eventSlug> — used if condition_ids returns empty,
- * which can happen when /markets purges a resolved market.
+ * Signals are grouped by eventSlug so each event is queried once even when
+ * multiple markets in the same event have signals on them (e.g. NBA events
+ * with 40+ sub-markets, LoL events with Game 1/2/3).
  *
  * @param {Array} signals - Array of { tokenId, conditionId, eventSlug, slug } from active signals
  * @param {Map} marketLookup - Existing market cache (will be mutated with updates)
@@ -960,170 +962,133 @@ async function refreshSignalMarkets(signals, marketLookup) {
   let refreshed = 0;
   let errors = 0;
   let notFound = 0;
-  let noCid = 0;
-  let viaFallback = 0;
+  let noSlug = 0;
 
-  // Helper: parse market object and write resolved data into marketLookup
-  // Returns true if written, false if skipped (no conditionId match).
-  function applyMarket(signal, market) {
-    if (!market) return false;
-    const wantCid = (signal.conditionId || '').toLowerCase();
-    const gotCid = ((market.conditionId || market.condition_id) || '').toLowerCase();
-    if (wantCid && gotCid && wantCid !== gotCid) return false;
-
-    const marketClosed = market.closed === true || market.closed === 'true';
-    const marketActive = market.active === true || market.active === 'true';
-    const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
-      || market.accepting_orders === 'true' || market.acceptingOrders === 'true';
-
-    let parsedPrices = market.outcomePrices;
-    if (typeof parsedPrices === 'string') try { parsedPrices = JSON.parse(parsedPrices); } catch(e) { parsedPrices = null; }
-    let parsedOutcomes = market.outcomes;
-    if (typeof parsedOutcomes === 'string') try { parsedOutcomes = JSON.parse(parsedOutcomes); } catch(e) { parsedOutcomes = null; }
-
-    // Determine winning outcome: when a market resolves, Polymarket sets
-    // outcomePrices to ["1","0"] or ["0","1"]. Winner is outcome at index of "1".
-    let winningOutcome = null;
-    if (marketClosed && Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
-      for (let i = 0; i < parsedPrices.length; i++) {
-        if (parseFloat(parsedPrices[i] || 0) >= 0.95 && parsedOutcomes[i]) {
-          winningOutcome = parsedOutcomes[i];
-          break;
-        }
-      }
-    }
-    if (marketClosed && !winningOutcome && market.tokens && Array.isArray(market.tokens)) {
-      for (const t of market.tokens) {
-        const p = parseFloat(t.price || 0);
-        if (p >= 0.95) { winningOutcome = t.outcome || null; break; }
-      }
-    }
-    if (marketClosed && !winningOutcome && market.winner) {
-      winningOutcome = market.winner;
-    }
-
-    let clobIds = market.clobTokenIds;
-    if (typeof clobIds === 'string') try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
-
-    const resolvedData = {
-      title: market.question || market.title || '',
-      marketClosed,
-      marketActive,
-      acceptingOrders,
-      winningOutcome,
-      endDate: market.end_date_iso || market.endDate || null,
-    };
-
-    const tokenIdsToWrite = new Set();
-    if (Array.isArray(clobIds)) for (const c of clobIds) tokenIdsToWrite.add(c);
-    tokenIdsToWrite.add(signal.tokenId);
-
-    for (const tokenId of tokenIdsToWrite) {
-      const existingEntry = marketLookup.get(tokenId) || {};
-      let price = existingEntry.currentPrice || 0;
-      let outcomeLabel = existingEntry.outcome;
-      if (Array.isArray(clobIds) && Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
-        const idx = clobIds.indexOf(tokenId);
-        if (idx >= 0) {
-          price = parseFloat(parsedPrices[idx] || 0);
-          outcomeLabel = parsedOutcomes[idx] || outcomeLabel;
-        }
-      }
-      marketLookup.set(tokenId, {
-        ...existingEntry,
-        ...resolvedData,
-        currentPrice: price,
-        outcome: outcomeLabel,
-      });
-    }
-    return true;
-  }
-
-  // Build the work list (skip already-resolved entries + entries missing conditionId)
-  const toProcess = [];
+  // Group signals by eventSlug so each event is queried only once per scan.
+  const byEventSlug = new Map();
   for (const signal of signals) {
     const tid = signal.tokenId;
     if (!tid) continue;
     const existing = marketLookup.get(tid);
-    if (existing && existing.marketClosed === true && existing.winningOutcome) continue;
-    if (!signal.conditionId) { noCid++; continue; }
-    toProcess.push(signal);
+    if (existing && existing.marketClosed === true && existing.winningOutcome) continue; // already resolved
+    const eventSlug = signal.eventSlug || signal.slug;
+    if (!eventSlug) { noSlug++; continue; }
+    if (!byEventSlug.has(eventSlug)) byEventSlug.set(eventSlug, []);
+    byEventSlug.get(eventSlug).push(signal);
   }
 
-  // Phase A: primary lookup via /markets?condition_ids=<cid>
-  // Signals that come back empty go to the fallback phase.
-  const needFallback = [];
-  for (const signal of toProcess) {
+  for (const [eventSlug, eventSignals] of byEventSlug) {
     try {
-      const url = `${GAMMA_MARKETS}?condition_ids=${encodeURIComponent(signal.conditionId)}`;
+      const url = `${GAMMA_EVENTS}?slug=${encodeURIComponent(eventSlug)}`;
       const response = await fetch(url);
-      if (!response.ok) { errors++; continue; }
-      const rows = await response.json();
-      if (!Array.isArray(rows) || rows.length === 0) {
-        needFallback.push(signal);
+      if (!response.ok) {
+        errors += eventSignals.length;
         continue;
       }
-      // Safety check: condition_ids should only return matching markets, but
-      // verify anyway so we never write a wrong market into the cache.
-      const match = rows.find(m =>
-        ((m.conditionId || m.condition_id) || '').toLowerCase() === signal.conditionId.toLowerCase()
-      );
-      if (!match) {
-        needFallback.push(signal);
+      const events = await response.json();
+      if (!Array.isArray(events) || events.length === 0) {
+        notFound += eventSignals.length;
         continue;
       }
-      if (applyMarket(signal, match)) refreshed++;
-      else needFallback.push(signal);
-    } catch (err) {
-      errors++;
-    }
-    await new Promise(r => setTimeout(r, 60)); // gentle rate limit
-  }
 
-  // Phase B: fallback via /events?slug=<eventSlug>, grouped so we only hit
-  // each event once (events can contain many markets).
-  if (needFallback.length > 0) {
-    const byEventSlug = new Map();
-    for (const s of needFallback) {
-      const key = s.eventSlug || s.slug;
-      if (!key) { notFound++; continue; }
-      if (!byEventSlug.has(key)) byEventSlug.set(key, []);
-      byEventSlug.get(key).push(s);
-    }
+      const event = events[0];
+      const eventMarkets = Array.isArray(event.markets) ? event.markets : [];
+      if (eventMarkets.length === 0) {
+        notFound += eventSignals.length;
+        continue;
+      }
 
-    for (const [eventSlug, eventSignals] of byEventSlug) {
-      try {
-        const url = `${GAMMA_EVENTS}?slug=${encodeURIComponent(eventSlug)}`;
-        const response = await fetch(url);
-        if (!response.ok) { errors += eventSignals.length; continue; }
-        const events = await response.json();
-        if (!Array.isArray(events) || events.length === 0) {
-          notFound += eventSignals.length;
+      for (const signal of eventSignals) {
+        const wantCid = (signal.conditionId || '').toLowerCase();
+        const market = eventMarkets.find(m =>
+          ((m.conditionId || m.condition_id) || '').toLowerCase() === wantCid
+        );
+        if (!market) {
+          notFound++;
           continue;
         }
-        const event = events[0];
-        const eventMarkets = Array.isArray(event.markets) ? event.markets : [];
-        for (const signal of eventSignals) {
-          const wantCid = signal.conditionId.toLowerCase();
-          const market = eventMarkets.find(m =>
-            ((m.conditionId || m.condition_id) || '').toLowerCase() === wantCid
-          );
-          if (market && applyMarket(signal, market)) {
-            refreshed++;
-            viaFallback++;
-          } else {
-            notFound++;
+
+        const marketClosed = market.closed === true || market.closed === 'true';
+        const marketActive = market.active === true || market.active === 'true';
+        const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true
+          || market.accepting_orders === 'true' || market.acceptingOrders === 'true';
+
+        let parsedPrices = market.outcomePrices;
+        if (typeof parsedPrices === 'string') try { parsedPrices = JSON.parse(parsedPrices); } catch(e) { parsedPrices = null; }
+        let parsedOutcomes = market.outcomes;
+        if (typeof parsedOutcomes === 'string') try { parsedOutcomes = JSON.parse(parsedOutcomes); } catch(e) { parsedOutcomes = null; }
+
+        // Determine winning outcome from settlement prices. When a market
+        // resolves, Polymarket sets outcomePrices to ["1","0"] or ["0","1"]
+        // and the outcome at index of "1" is the winner.
+        let winningOutcome = null;
+        if (marketClosed && Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
+          for (let i = 0; i < parsedPrices.length; i++) {
+            if (parseFloat(parsedPrices[i] || 0) >= 0.95 && parsedOutcomes[i]) {
+              winningOutcome = parsedOutcomes[i];
+              break;
+            }
           }
         }
-      } catch (err) {
-        errors += eventSignals.length;
+        if (marketClosed && !winningOutcome && market.tokens && Array.isArray(market.tokens)) {
+          for (const t of market.tokens) {
+            const p = parseFloat(t.price || 0);
+            if (p >= 0.95) { winningOutcome = t.outcome || null; break; }
+          }
+        }
+        if (marketClosed && !winningOutcome && market.winner) {
+          winningOutcome = market.winner;
+        }
+
+        let clobIds = market.clobTokenIds;
+        if (typeof clobIds === 'string') try { clobIds = JSON.parse(clobIds); } catch(e) { clobIds = null; }
+
+        const resolvedData = {
+          title: market.question || market.title || '',
+          marketClosed,
+          marketActive,
+          acceptingOrders,
+          winningOutcome,
+          endDate: market.end_date_iso || market.endDate || null,
+        };
+
+        // Write to cache for every token id associated with this market:
+        // both sides from Gamma's clobTokenIds, plus the signal's own tokenId
+        // (which may differ between Data API and Gamma CLOB IDs).
+        const tokenIdsToWrite = new Set();
+        if (Array.isArray(clobIds)) for (const c of clobIds) tokenIdsToWrite.add(c);
+        tokenIdsToWrite.add(signal.tokenId);
+
+        for (const tokenId of tokenIdsToWrite) {
+          const existingEntry = marketLookup.get(tokenId) || {};
+          let price = existingEntry.currentPrice || 0;
+          let outcomeLabel = existingEntry.outcome;
+          if (Array.isArray(clobIds) && Array.isArray(parsedPrices) && Array.isArray(parsedOutcomes)) {
+            const idx = clobIds.indexOf(tokenId);
+            if (idx >= 0) {
+              price = parseFloat(parsedPrices[idx] || 0);
+              outcomeLabel = parsedOutcomes[idx] || outcomeLabel;
+            }
+          }
+          marketLookup.set(tokenId, {
+            ...existingEntry,
+            ...resolvedData,
+            currentPrice: price,
+            outcome: outcomeLabel,
+          });
+        }
+
+        refreshed++;
       }
-      await new Promise(r => setTimeout(r, 100));
+
+      await new Promise(r => setTimeout(r, 150)); // Rate limit between event requests
+    } catch (err) {
+      errors += eventSignals.length;
     }
   }
 
-  if (refreshed > 0 || errors > 0 || notFound > 0 || noCid > 0) {
-    console.log(`  Signal market refresh: ${refreshed} updated (${viaFallback} via /events fallback), ${notFound} not found, ${errors} errors, ${noCid} missing conditionId`);
+  if (refreshed > 0 || errors > 0 || notFound > 0 || noSlug > 0) {
+    console.log(`  Signal market refresh: ${refreshed} updated, ${notFound} not found, ${errors} errors, ${noSlug} missing slug (via ${byEventSlug.size} event queries)`);
   }
 }
 
