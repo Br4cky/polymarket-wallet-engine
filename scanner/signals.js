@@ -498,42 +498,30 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     signal.exitRatio = +exitRatio.toFixed(2);
     signal.walletsExited = walletsExited;
 
-    // Helper: attempt to determine WIN/LOSS from market data before closing for any reason.
-    // Every signal that goes to history MUST have an outcome if we can possibly determine one.
+    // A signal has ONLY two terminal states: win or loss.
+    // It stays Active while the market is open — regardless of wallet exits,
+    // staleness, or age. The only close path is: market has actually resolved
+    // on Gamma AND winningOutcome is known → determine direction match.
     const tokenId = signal.tokenId;
     const mi = tokenId ? marketLookup.get(tokenId) : null;
 
-    function tryDetermineOutcome() {
-      // ONLY two reliable methods — no price-based inference.
-      // Prices are unreliable because Gamma stops serving data for resolved markets,
-      // causing both tokens to show 0, which gives wrong results.
+    // Track informational flags on the active signal (for dashboard display only —
+    // these do NOT close the signal).
+    const lifetimeHours = (nowTs - new Date(signal.openedAt).getTime() / 1000) / 3600;
+    signal.lifetimeHours = +lifetimeHours.toFixed(1);
+    signal.backersExited = exitRatio > 0.5 && backingWallets.length >= 2;
 
-      // Method 1: Gamma winningOutcome (definitive — Gamma tells us who won)
-      if (mi && mi.winningOutcome) {
-        const won = matchesWinningOutcome(signal.direction, signal.direction, mi.winningOutcome);
-        return { outcome: won ? 'win' : 'loss', resolvedBy: 'gamma' };
-      }
-      // Method 2: Redeem detection (wallets redeemed = they won)
-      let redeemCount = 0;
-      for (const w of backingWallets) {
-        const wt = recentTrades.get(w.address);
-        if (!wt) continue;
-        if (wt.some(t => t.conditionId === signal.conditionId && t.type === 'REDEEM')) redeemCount++;
-      }
-      if (redeemCount > 0) {
-        return { outcome: redeemCount > backingWallets.length / 2 ? 'win' : 'loss', resolvedBy: 'redeem_detection' };
-      }
-      // No reliable outcome data yet — return null, signal stays without outcome
-      // until Gamma provides winningOutcome via condition_id refresh
-      return null;
-    }
+    // Market resolution: the ONLY way a signal becomes terminal.
+    // Requires BOTH: Gamma says the market is closed AND winningOutcome is populated.
+    // If marketClosed is true but winningOutcome isn't available yet, we wait —
+    // next scan will pick it up.
+    const gammaClosed = mi && mi.marketClosed === true;
+    const hasWinner = mi && mi.winningOutcome && mi.winningOutcome.length > 0;
 
-    // Helper: close signal with outcome, always attempting to determine WIN/LOSS first
-    function closeWithOutcome(reason) {
-      const result = tryDetermineOutcome();
-      const outcome = result ? result.outcome : null;
-      closeSignal(active, history, signalId, reason, scanIndex, now, outcome);
-      // Enrich history entry with resolution details
+    if (gammaClosed && hasWinner) {
+      const won = matchesWinningOutcome(signal.direction, signal.direction, mi.winningOutcome);
+      const outcome = won ? 'win' : 'loss';
+      closeSignal(active, history, signalId, 'resolved', scanIndex, now, outcome);
       const lastEntry = history[history.length - 1];
       if (lastEntry && lastEntry.signalId === signalId) {
         const openPrice = signal.openMarketPrice || signal.avgEntryPrice || 0;
@@ -542,67 +530,31 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         } else if (outcome === 'loss') {
           lastEntry.signalReturn = -100;
         }
-        if (result) lastEntry.resolvedBy = result.resolvedBy;
+        lastEntry.resolvedBy = 'gamma';
         lastEntry.openMarketPrice = openPrice;
-        lastEntry.winningOutcome = mi?.winningOutcome || null;
+        lastEntry.winningOutcome = mi.winningOutcome;
       }
       closed++;
-    }
-
-    // Safety valve: max lifetime
-    const lifetimeHours = (nowTs - new Date(signal.openedAt).getTime() / 1000) / 3600;
-    if (lifetimeHours >= SIGNAL_THRESHOLDS.MAX_SIGNAL_LIFETIME_HOURS) {
-      closeWithOutcome('expired');
-      continue;
-    }
-
-    if (exitRatio > 0.5 && backingWallets.length >= 2) {
-      console.log(`  ⚠ ${signalId} closed: ${walletsExited}/${backingWallets.length} wallets exited`);
-      closeWithOutcome('majority_exit');
-      continue;
-    }
-
-    // Market resolution check — only trust Gamma flags, never prices
-    const gammaClosed = mi && mi.marketClosed === true;
-    const gammaNotAccepting = mi && mi.acceptingOrders === false;
-
-    const marketResolved = gammaClosed || gammaNotAccepting;
-
-    if (marketResolved) {
-      closeWithOutcome('resolved');
-      continue;
-    }
-
-    // Stale check: no new trades for STALE_HOURS
-    // ONLY close as stale if the market itself is no longer active.
-    // If the market is still open, wallets are simply holding — that's a valid signal.
-    const hoursSinceLastTrade = signal.lastTradeTs
-      ? (nowTs - signal.lastTradeTs) / 3600
-      : Infinity;
-    const marketStillOpen = mi && mi.marketClosed !== true && mi.acceptingOrders !== false;
-    if (hoursSinceLastTrade >= SIGNAL_THRESHOLDS.STALE_HOURS && !marketStillOpen) {
-      closeWithOutcome('stale');
       continue;
     }
   }
 
-  // --- Phase 2.5: Repair history — backfill outcomes OR restore to active ---
-  // Signals that were prematurely closed (stale/expired) before the market resolved
-  // need one of two things:
-  //   (a) If the market has now resolved → backfill WIN/LOSS outcome
-  //   (b) If the market is STILL OPEN → move back to active signals (they should never
-  //       have been closed — wallets are still holding)
+  // --- Phase 2.5: Legacy history repair (safety net for pre-v3 entries) ---
+  // In the new model, Phase 2 NEVER writes a null-outcome entry to history —
+  // signals only close when Gamma has both marketClosed=true and winningOutcome.
+  // This phase exists purely to clean up legacy history entries from before the
+  // model simplification. It does three things:
+  //   (a) If signalId is already active → drop the stale history duplicate
+  //   (b) If market is still open → move it back to active (it was wrongly closed)
+  //   (c) If market has resolved and Gamma has winningOutcome → backfill WIN/LOSS
   let repaired = 0;
   let restored = 0;
   let dedupedFromActive = 0;
   for (let i = history.length - 1; i >= 0; i--) {
     const h = history[i];
-    if (h.outcome === 'win' || h.outcome === 'loss') continue; // already resolved
-    if (!h.conditionId && !h.tokenId) continue; // no way to look up
+    if (h.outcome === 'win' || h.outcome === 'loss') continue;
+    if (!h.conditionId && !h.tokenId) continue;
 
-    // If this signalId is already present in active (the wallet re-opened the position
-    // after we wrongly closed the old one), the history entry is a stale remnant and
-    // should just be dropped — the active version is the current source of truth.
     if (h.signalId && active[h.signalId]) {
       history.splice(i, 1);
       dedupedFromActive++;
@@ -610,14 +562,10 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     }
 
     const hmi = h.tokenId ? marketLookup.get(h.tokenId) : null;
-    if (!hmi) continue; // not in cache this scan — will try again next scan
+    if (!hmi) continue;
 
-    // Check if market is still open
-    const marketStillOpen = hmi.marketClosed !== true && hmi.acceptingOrders !== false;
-
+    const marketStillOpen = hmi.marketClosed !== true;
     if (marketStillOpen) {
-      // Market hasn't resolved — this signal should never have been closed.
-      // Restore it to active signals.
       const sid = h.signalId;
       if (sid && !active[sid]) {
         h.status = 'active';
@@ -633,24 +581,17 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       continue;
     }
 
-    // Market has resolved — determine outcome ONLY from Gamma winningOutcome
-    // Never use prices — they're unreliable for resolved markets
-    let result = null;
+    // Market closed — backfill only if Gamma has winningOutcome
     if (hmi.winningOutcome) {
-      const dir = (h.direction || '').toLowerCase().trim();
-      const winner = hmi.winningOutcome.toLowerCase().trim();
-      result = { outcome: dir === winner ? 'win' : 'loss', resolvedBy: 'gamma_repair' };
-    }
-    // If Gamma doesn't have winningOutcome yet, leave it — will retry next scan
-
-    if (result) {
-      h.outcome = result.outcome;
-      h.resolvedBy = result.resolvedBy;
+      const won = matchesWinningOutcome(h.direction, h.direction, hmi.winningOutcome);
+      h.outcome = won ? 'win' : 'loss';
+      h.resolvedBy = 'gamma_repair';
       h.closeReason = 'resolved';
+      h.winningOutcome = hmi.winningOutcome;
       const op = h.openMarketPrice || h.avgEntryPrice || 0;
-      if (result.outcome === 'win' && op > 0) {
+      if (h.outcome === 'win' && op > 0) {
         h.signalReturn = +((1 / op - 1) * 100).toFixed(2);
-      } else if (result.outcome === 'loss') {
+      } else if (h.outcome === 'loss') {
         h.signalReturn = -100;
       }
       repaired++;
