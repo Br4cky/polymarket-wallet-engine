@@ -99,10 +99,23 @@ function summariseMarket(m, label = 'market') {
     if (Array.isArray(byCondCamel) && byCondCamel[0]) summariseMarket(byCondCamel[0], 'by conditionIds camelCase');
   }
 
-  // 5. /markets?condition_ids=... (plural snake_case)
+  // 5. /markets?condition_ids=... (plural snake_case — the one we use in lib.js)
   if (condId) {
     const byCondPlural = await hit('Gamma /markets?condition_ids=<plural snake>', `${GAMMA}/markets?condition_ids=${condId}`);
-    if (Array.isArray(byCondPlural) && byCondPlural[0]) summariseMarket(byCondPlural[0], 'by condition_ids plural');
+    if (Array.isArray(byCondPlural)) {
+      if (byCondPlural.length === 0) {
+        console.log(`  ⚠ EMPTY — /markets purged this market. /events?slug= fallback will be used.`);
+      } else {
+        const first = byCondPlural[0];
+        const matches = (first.conditionId || first.condition_id || '').toLowerCase() === condId.toLowerCase();
+        console.log(`  returned market matches requested condId? ${matches}`);
+        if (matches) {
+          const isResolved = first.closed === true || first.closed === 'true';
+          console.log(`  resolved? ${isResolved}  ← if true, /markets?condition_ids serves resolved markets (no fallback needed)`);
+        }
+        summariseMarket(first, 'by condition_ids plural');
+      }
+    }
   }
 
   // 6. /markets?condition_id=... (singular snake_case — the one we've been using)
