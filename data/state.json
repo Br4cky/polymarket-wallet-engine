@@ -1,8 +1,8 @@
 {
-  "scanCount": 128,
-  "lastRun": "2026-04-11T16:50:17.437Z",
+  "scanCount": 129,
+  "lastRun": "2026-04-11T19:00:05.878Z",
   "lastDiscovery": 127,
-  "lastFastLoop": "2026-04-11T16:56:42.814Z",
+  "lastFastLoop": "2026-04-11T19:07:07.387Z",
   "walletPoolVersion": 17,
   "cursor": null,
   "totalPositionsScanned": 0,
