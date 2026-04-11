@@ -1,13 +1,36 @@
 {
-  "scanCount": 120,
-  "lastRun": "2026-04-11T03:14:02.458Z",
-  "lastDiscovery": 118,
-  "lastFastLoop": "2026-04-11T03:18:42.181Z",
-  "walletPoolVersion": 14,
+  "scanCount": 121,
+  "lastRun": "2026-04-11T05:36:34.931Z",
+  "lastDiscovery": 121,
+  "lastFastLoop": "2026-04-11T06:06:25.486Z",
+  "walletPoolVersion": 15,
   "cursor": null,
   "totalPositionsScanned": 0,
   "stuckCursorCount": 0,
-  "lastId": "0x09aedca3605e725655e314a29b28910e0ec555bc-63041723026183822995501819112792218483467679275008615938770749539941281238355",
+  "lastId": "0x0b875836205d170956041e95ee97e87f5f819414-32447565458467872837842565220497149298306111297042477329729198992933900527627",
   "totalScanned": 13653000,
-  "scanIndex": 82
+  "scanIndex": 82,
+  "goldskySchema": {
+    "entity": "userPosition",
+    "allFields": [
+      "id",
+      "user",
+      "tokenId",
+      "amount",
+      "avgPrice",
+      "realizedPnl",
+      "totalBought"
+    ],
+    "usedFields": {
+      "user": "user",
+      "pnl": "realizedPnl",
+      "token": "tokenId",
+      "totalBought": "totalBought",
+      "amount": "amount"
+    },
+    "unusedFields": [
+      "avgPrice"
+    ],
+    "introspectedAt": "2026-04-11T05:36:38.135Z"
+  }
 }
