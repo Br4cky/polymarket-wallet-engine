@@ -237,12 +237,17 @@ function renderWalletPool() {
   document.getElementById('wp-total-pnl').textContent = fmtDollars(totalPnl);
   document.getElementById('wp-avg-wr').textContent = avgWR.toFixed(1) + '%';
 
+  // totalPnl here is Goldsky lifetime (scanner writes it). samplePnl is the
+  // analyzer's recency-window PnL — two distinct numbers for two distinct jobs.
   const walletData = lb.map((w, i) => ({
     rank: i + 1,
     score: w.score || 0,
     address: w.address || '',
     winRate: w.stats?.wr || 0,
-    totalPnl: w.stats?.totalPnl || 0,
+    totalPnl: w.stats?.totalPnl || 0,              // lifetime (Goldsky)
+    samplePnl: w.stats?.samplePnl || 0,             // recency window (analyzer)
+    statsSpanDays: w.stats?.statsSpanDays || 0,
+    tradesTruncated: w.stats?.tradesTruncated === true,
     resolved: w.stats?.resolved || 0,
     tradesPerWeek: w.stats?.positionsPerWeek || 0,
     consistency: w.stats?.weeklyConsistency || 0,
@@ -250,13 +255,26 @@ function renderWalletPool() {
 
   createSortableTable('wallet-table', [
     { field: 'rank', render: v => String(v) },
-    { field: 'score', render: v => `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>` },
+    { field: 'score', render: (v, row) => {
+      // Flag wallets still on pre-fix stats (haven't been re-scored through
+      // the new analyzer yet — missing statsSpanDays field).
+      const pending = !row || row.statsSpanDays === 0;
+      const badge = `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>`;
+      return pending ? `${badge} <span title="Pre-fix score — awaiting re-score" style="opacity:0.5">⏳</span>` : badge;
+    }},
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
     { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
+    { field: 'samplePnl', render: v => `<span class="${pnlClass(v)}" style="opacity:0.75">${fmtDollars(v)}</span>` },
+    { field: 'statsSpanDays', render: (v, row) => {
+      if (!v) return '<span style="opacity:0.4">-</span>';
+      const badge = row && row.tradesTruncated
+        ? ` <span title="Hit 3000-event API cap — sample is a fixed-size recency window, not full history" style="color:#fdcb6e">⚠</span>`
+        : '';
+      return `${v}d${badge}`;
+    }},
     { field: 'resolved', render: v => String(v) },
     { field: 'tradesPerWeek', render: v => (v || 0).toFixed(1) },
-    { field: 'consistency', render: v => ((v || 0) * 100).toFixed(0) + '%' },
   ], walletData);
 
   renderScoreDistribution(lb);

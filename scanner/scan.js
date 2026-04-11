@@ -777,6 +777,19 @@ async function fastLoop(state, walletPool, marketLookup) {
       activeWeeks: w.stats?.activeWeeks || 0,
       weeklyConsistency: w.stats?.weeklyConsistency || 0,
       tradingDays: w.stats?.activeDays || 0,
+      // Sample-window metadata so the dashboard can explain what the
+      // behavioural numbers (wr, samplePnl, wins, losses) actually cover.
+      // statsSpanDays: how many days of history the analyzer saw. When
+      // tradesTruncated=true, the 3000-offset cap cut off earlier history,
+      // so this is the effective recency window — a whale might only have
+      // 28 days of sample while a quiet wallet has 300.
+      statsSpanDays: w.stats?.statsSpanDays || 0,
+      tradesTruncated: w.stats?.tradesTruncated === true,
+      // Post-fix transparency: how many open positions were closed by
+      // consulting marketLookup (only populated once analyzer has run
+      // with the WR fix).
+      unredeemedWins: w.stats?.unredeemedWins || 0,
+      worthlessLosses: w.stats?.worthlessLosses || 0,
     },
   }));
 
