@@ -355,9 +355,12 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
   let processed = 0;
 
   for (const [address, summary] of candidates) {
-    // Skip if already in pool and scored within last 3 days
+    // Skip if already in pool and scored recently.
+    // TEMP: set to 0 to force full pool re-score after WR fix deploy.
+    // TODO: restore to 3 * 24 * 60 * 60 * 1000 once recalibration completes.
+    const DISCOVERY_RESCORE_COOLDOWN_MS = 0;
     if (pool[address] && pool[address].lastScored &&
-        (Date.now() - new Date(pool[address].lastScored).getTime()) < 3 * 24 * 60 * 60 * 1000) {
+        (Date.now() - new Date(pool[address].lastScored).getTime()) < DISCOVERY_RESCORE_COOLDOWN_MS) {
       qualified++;
       processed++;
       if (processed % 100 === 0) console.log(`  Processed ${processed}/${candidates.length} (${qualified} qualified)...`);
@@ -433,7 +436,9 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       if (candidateAddrs.has(addr)) return false;
       if (!w.lastScored || w.status === 'removed') return false;
       const daysSinceScored = (Date.now() - new Date(w.lastScored).getTime()) / (24 * 60 * 60 * 1000);
-      return daysSinceScored >= 7;
+      // TEMP: set to 0 to force full pool re-score after WR fix deploy.
+      // TODO: restore to 7 once recalibration completes.
+      return daysSinceScored >= 0;
     })
     .sort((a, b) => {
       // Oldest scored first — prioritise most stale
