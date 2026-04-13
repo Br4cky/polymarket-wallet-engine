@@ -182,12 +182,30 @@ async function fetchGoldskyWalletPnl(wallet, entityName, fields) {
 async function ensureMarketsResolved(events, marketLookup) {
   if (!marketLookup || !events || events.length === 0) return;
 
-  const unresolvedTokens = new Set();
+  // Only resolve tokens where the wallet has a potential open position
+  // (bought more than sold on that asset). This avoids wasting Gamma calls
+  // on markets the wallet already closed naturally.
+  const assetBuys = new Map();  // asset → total buy size
+  const assetSells = new Map(); // asset → total sell size
   for (const ev of events) {
     const asset = ev.asset || ev.tokenId || '';
     if (!asset) continue;
+    const size = parseFloat(ev.size || 0) || 0;
+    const type = (ev.type || '').toUpperCase();
+    const side = (ev.side || '').toUpperCase();
+    if (type === 'REDEEM' || side === 'SELL') {
+      assetSells.set(asset, (assetSells.get(asset) || 0) + size);
+    } else if (side === 'BUY') {
+      assetBuys.set(asset, (assetBuys.get(asset) || 0) + size);
+    }
+  }
+
+  const unresolvedTokens = new Set();
+  for (const [asset, buySize] of assetBuys) {
+    const sellSize = assetSells.get(asset) || 0;
+    // Only need resolution for open positions (buy > 95% sold)
+    if (sellSize >= buySize * 0.95) continue;
     const existing = marketLookup.get(asset);
-    // Need resolution if: missing entirely, or present but never resolved
     if (!existing || (existing.marketClosed === undefined && existing.winningOutcome === undefined)) {
       unresolvedTokens.add(asset);
     }
@@ -195,15 +213,25 @@ async function ensureMarketsResolved(events, marketLookup) {
 
   if (unresolvedTokens.size === 0) return;
 
+  // Cap per-wallet resolution to avoid scan timeouts. The global lookup
+  // persists across scans, so unresolved tokens get picked up next cycle.
+  const MAX_RESOLVE_PER_WALLET = 150;
+  let tokensToResolve = unresolvedTokens;
+  if (unresolvedTokens.size > MAX_RESOLVE_PER_WALLET) {
+    const arr = Array.from(unresolvedTokens).slice(0, MAX_RESOLVE_PER_WALLET);
+    tokensToResolve = new Set(arr);
+    console.log(`    Capping resolution: ${tokensToResolve.size}/${unresolvedTokens.size} open-position tokens`);
+  }
+
   try {
-    const resolved = await resolveMarkets(unresolvedTokens);
+    const resolved = await resolveMarkets(tokensToResolve);
     let newResolutions = 0;
     for (const [id, market] of resolved) {
       marketLookup.set(id, market);
       if (market.marketClosed) newResolutions++;
     }
     if (newResolutions > 0) {
-      console.log(`    Resolved ${newResolutions} new markets from ${unresolvedTokens.size} unresolved tokens`);
+      console.log(`    Resolved ${newResolutions} new markets from ${tokensToResolve.size} unresolved tokens`);
     }
   } catch (err) {
     // Non-fatal — analyzer will run with incomplete lookup
