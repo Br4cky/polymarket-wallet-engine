@@ -507,8 +507,9 @@ function renderSignals() {
     { field: 'scansActive', render: v => String(v) },
   ], sigData);
 
-  // History table
-  const histData = history.slice(0, 100).map(s => ({
+  // History table — show most recent 100 (history is appended chronologically,
+  // so newest closures sit at the end of the array).
+  const histData = history.slice(-100).reverse().map(s => ({
     marketTitle: s.marketTitle || 'Unknown',
     slug: s.slug || '',
     eventSlug: s.eventSlug || '',
