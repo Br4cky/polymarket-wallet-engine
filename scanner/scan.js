@@ -168,6 +168,50 @@ async function fetchGoldskyWalletPnl(wallet, entityName, fields) {
 }
 
 /**
+ * Ensure the global marketLookup has resolution data for all tokens in a
+ * wallet's activity events. The fast loop only resolves tokens it sees in
+ * recent trades, so older markets (especially worthless losers that nobody
+ * trades anymore) may sit in the lookup with only title/slug and no
+ * marketClosed/winningOutcome. Without resolution data the WR fix can't
+ * fire, leaving losing positions "open" and inflating PnL.
+ *
+ * This collects unique asset IDs whose lookup entry is missing OR lacks
+ * resolution data, resolves them from Gamma, and merges results back into
+ * the global lookup so future calls benefit too.
+ */
+async function ensureMarketsResolved(events, marketLookup) {
+  if (!marketLookup || !events || events.length === 0) return;
+
+  const unresolvedTokens = new Set();
+  for (const ev of events) {
+    const asset = ev.asset || ev.tokenId || '';
+    if (!asset) continue;
+    const existing = marketLookup.get(asset);
+    // Need resolution if: missing entirely, or present but never resolved
+    if (!existing || (existing.marketClosed === undefined && existing.winningOutcome === undefined)) {
+      unresolvedTokens.add(asset);
+    }
+  }
+
+  if (unresolvedTokens.size === 0) return;
+
+  try {
+    const resolved = await resolveMarkets(unresolvedTokens);
+    let newResolutions = 0;
+    for (const [id, market] of resolved) {
+      marketLookup.set(id, market);
+      if (market.marketClosed) newResolutions++;
+    }
+    if (newResolutions > 0) {
+      console.log(`    Resolved ${newResolutions} new markets from ${unresolvedTokens.size} unresolved tokens`);
+    }
+  } catch (err) {
+    // Non-fatal — analyzer will run with incomplete lookup
+    console.warn(`    Market resolution warning: ${err.message}`);
+  }
+}
+
+/**
  * Discover wallet addresses from Goldsky and qualify them via Data API.
  * This runs periodically (every DISCOVERY_INTERVAL_SCANS fast loops).
  */
@@ -356,8 +400,8 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
 
   for (const [address, summary] of candidates) {
     // Skip if already in pool and scored recently.
-    // TEMP: set to 0 to force full pool re-score after WR fix deploy.
-    // TODO: restore to 3 * 24 * 60 * 60 * 1000 once recalibration completes.
+    // TEMP: zeroed for one recalibration pass with ensureMarketsResolved fix.
+    // TODO: restore to 3 * 24 * 60 * 60 * 1000 after first full pass.
     const DISCOVERY_RESCORE_COOLDOWN_MS = 0;
     if (pool[address] && pool[address].lastScored &&
         (Date.now() - new Date(pool[address].lastScored).getTime()) < DISCOVERY_RESCORE_COOLDOWN_MS) {
@@ -376,10 +420,11 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
-      // marketLookup lets the analyzer close positions on markets that have
-      // resolved on-chain but whose shares the wallet never sold or redeemed
-      // (worthless losers and unredeemed winners). Without it, losers cling
-      // to openPositions and inflate winRate because REDEEMs fire for winners only.
+      // Ensure the global lookup has resolution data for this wallet's markets.
+      // Without it, worthless losers stay "open" and their buy costs aren't
+      // subtracted from totalPnl, massively inflating the score.
+      await ensureMarketsResolved(events, marketLookup);
+
       const stats = analyzeTradeHistory(events, { marketLookup });
       if (!stats) {
         processed++;
@@ -436,8 +481,8 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       if (candidateAddrs.has(addr)) return false;
       if (!w.lastScored || w.status === 'removed') return false;
       const daysSinceScored = (Date.now() - new Date(w.lastScored).getTime()) / (24 * 60 * 60 * 1000);
-      // TEMP: set to 0 to force full pool re-score after WR fix deploy.
-      // TODO: restore to 7 once recalibration completes.
+      // TEMP: zeroed for one recalibration pass with ensureMarketsResolved fix.
+      // TODO: restore to 7 after first full pass.
       return daysSinceScored >= 0;
     })
     .sort((a, b) => {
@@ -487,6 +532,8 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         decayed++;
         continue;
       }
+      await ensureMarketsResolved(events, marketLookup);
+
       const stats = analyzeTradeHistory(events, { marketLookup });
       if (!stats || (stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
         wallet.status = 'removed';
