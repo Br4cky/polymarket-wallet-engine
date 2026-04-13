@@ -217,7 +217,7 @@ async function ensureMarketsResolved(events, marketLookup) {
 
   // Cap per-wallet resolution to avoid scan timeouts. The global lookup
   // persists across scans, so unresolved tokens get picked up next cycle.
-  const MAX_RESOLVE_PER_WALLET = 50;
+  const MAX_RESOLVE_PER_WALLET = 150;
   let tokensToResolve = unresolvedTokens;
   if (unresolvedTokens.size > MAX_RESOLVE_PER_WALLET) {
     const arr = Array.from(unresolvedTokens).slice(0, MAX_RESOLVE_PER_WALLET);
