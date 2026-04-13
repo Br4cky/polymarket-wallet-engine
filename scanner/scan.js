@@ -215,7 +215,7 @@ async function ensureMarketsResolved(events, marketLookup) {
 
   // Cap per-wallet resolution to avoid scan timeouts. The global lookup
   // persists across scans, so unresolved tokens get picked up next cycle.
-  const MAX_RESOLVE_PER_WALLET = 150;
+  const MAX_RESOLVE_PER_WALLET = 50;
   let tokensToResolve = unresolvedTokens;
   if (unresolvedTokens.size > MAX_RESOLVE_PER_WALLET) {
     const arr = Array.from(unresolvedTokens).slice(0, MAX_RESOLVE_PER_WALLET);
@@ -448,11 +448,10 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
-      // Ensure the global lookup has resolution data for this wallet's markets.
-      // Without it, worthless losers stay "open" and their buy costs aren't
-      // subtracted from totalPnl, massively inflating the score.
-      await ensureMarketsResolved(events, marketLookup);
-
+      // Discovery uses the global lookup as-is for initial qualification.
+      // Per-wallet Gamma resolution is too slow for 1000+ candidates (~9s each).
+      // Wallets enter the pool with a rough score and get properly corrected
+      // on their first re-score cycle via ensureMarketsResolved (Step 5).
       const stats = analyzeTradeHistory(events, { marketLookup });
       if (!stats) {
         processed++;
