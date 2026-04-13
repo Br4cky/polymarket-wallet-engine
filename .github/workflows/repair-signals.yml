@@ -1,0 +1,44 @@
+name: Repair Signals
+
+# Catches signals whose markets resolved during Gamma's eventual-consistency
+# window (scan ran at T, Gamma flipped closed=true at T+5min). Runs every
+# 30 min offset from the main scan. Shares the `scanner` concurrency group
+# so it never overlaps a full scan.
+
+on:
+  schedule:
+    - cron: '20,50 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scanner
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run repair
+        run: node scanner/repair.js
+
+      - name: Commit if changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [[ -n "$(git status --porcelain data/)" ]]; then
+            git add data/signals.json.gz data/markets.json.gz data/analytics.json.gz
+            git commit -m "repair: close resolved signals + sync analytics"
+            # Retry once on push race with scan workflow
+            git push || (git pull --rebase && git push)
+          else
+            echo "No changes to commit."
+          fi
