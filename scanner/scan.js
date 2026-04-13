@@ -206,7 +206,9 @@ async function ensureMarketsResolved(events, marketLookup) {
     // Only need resolution for open positions (buy > 95% sold)
     if (sellSize >= buySize * 0.95) continue;
     const existing = marketLookup.get(asset);
-    if (!existing || (existing.marketClosed === undefined && existing.winningOutcome === undefined)) {
+    // Re-check any token not confirmed closed. marketClosed:false entries from prior
+    // scans may have since resolved — this is where worthless-loser markets hide.
+    if (!existing || existing.marketClosed !== true) {
       unresolvedTokens.add(asset);
     }
   }
