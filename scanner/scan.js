@@ -485,13 +485,16 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         goldskyPositions: summary.positionCount,
         lastScored: new Date().toISOString(),
         discoveredScan: state.scanCount,
-        totalTrades: trades.length,
+        totalTrades: events.length,
         status: 'active',
       };
 
       qualified++;
     } catch (err) {
-      // Skip wallets that error out
+      // Log first few errors per scan so silent failures are visible
+      if (processed < 5 || (err && err.message && !/timeout|ECONNRESET|fetch failed/i.test(err.message))) {
+        console.log(`    ⚠ qualify err ${address.slice(0, 10)}: ${err?.message || err}`);
+      }
     }
 
     processed++;
