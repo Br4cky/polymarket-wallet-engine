@@ -430,9 +430,16 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
 
   for (const [address, summary] of candidates) {
     // Skip if already in pool and scored recently.
-    // TEMP: zeroed for one recalibration pass with ensureMarketsResolved fix.
-    // TODO: restore to 3 * 24 * 60 * 60 * 1000 after first full pass.
-    const DISCOVERY_RESCORE_COOLDOWN_MS = 0;
+    // 24h is a pragmatic middleground: wallets with 50+ resolved markets
+    // barely drift in a day, and this cuts re-score load by ~95% vs 0.
+    // TODO (future): activity-based cooldown — only re-score wallets whose
+    // lastTradeTs > lastScored (i.e. they've actually traded since their
+    // last scoring). Would be more principled than time-based because a
+    // dormant wallet's stats can't have moved at all. Requires plumbing
+    // lastTradeTs into the pool entry (already on wallet.stats) and using
+    // max(lastScored, now - MAX_COOLDOWN) as the floor so truly stale
+    // wallets still get refreshed occasionally.
+    const DISCOVERY_RESCORE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
     if (pool[address] && pool[address].lastScored &&
         (Date.now() - new Date(pool[address].lastScored).getTime()) < DISCOVERY_RESCORE_COOLDOWN_MS) {
       qualified++;
@@ -513,9 +520,10 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       if (candidateAddrs.has(addr)) return false;
       if (!w.lastScored || w.status === 'removed') return false;
       const daysSinceScored = (Date.now() - new Date(w.lastScored).getTime()) / (24 * 60 * 60 * 1000);
-      // TEMP: zeroed for one recalibration pass with ensureMarketsResolved fix.
-      // TODO: restore to 7 after first full pass.
-      return daysSinceScored >= 0;
+      // Re-check stale pool members weekly. Primary cooldown (24h) handles
+      // candidates present in this scan; this catches wallets that have
+      // dropped out of the candidate list (inactive / deteriorated).
+      return daysSinceScored >= 7;
     })
     .sort((a, b) => {
       // Oldest scored first — prioritise most stale
