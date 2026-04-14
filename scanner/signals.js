@@ -399,6 +399,11 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       const buySize = data.trades.reduce((s, t) => s + (t.size * t.price), 0);
       if (buySize < SIGNAL_THRESHOLDS.SOLO_MIN_BUY_SIZE) continue;
 
+      // EV filter — wallet's avg fill price (applies to solo path too)
+      const soloAvgPrice = data.trades.reduce((s, t) => s + t.price, 0) / data.trades.length;
+      if (SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE > 0 && soloAvgPrice < SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE) continue;
+      if (SIGNAL_THRESHOLDS.MAX_ENTRY_PRICE < 1 && soloAvgPrice > SIGNAL_THRESHOLDS.MAX_ENTRY_PRICE) continue;
+
       const signalId = `sig_solo_${wallet.slice(0, 10)}_${cid.slice(0, 10)}`;
       if (active[signalId]) {
         // Update existing solo signal
@@ -422,8 +427,13 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         if (mi && mi.marketClosed === true) continue;
 
         // Open solo signal
-        const avgPrice = data.trades.reduce((s, t) => s + t.price, 0) / data.trades.length;
+        const avgPrice = +soloAvgPrice.toFixed(4);
         const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
+
+        // EV filter on live market price — what a follower would actually pay.
+        if (SIGNAL_THRESHOLDS.MAX_OPEN_PRICE < 1 && currentPrice > 0 &&
+            currentPrice > SIGNAL_THRESHOLDS.MAX_OPEN_PRICE) continue;
+
         const confidence = computeSoloConfidence(walletInfo, buySize, avgPrice);
 
         active[signalId] = {
