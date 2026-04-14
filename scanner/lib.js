@@ -1919,7 +1919,7 @@ function processSignals(consensus, existingSignals, walletData, marketLookup, sc
       (wallet.score || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_SCORE &&
       (stats.wr || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_WIN_RATE &&
       (stats.resolved || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_RESOLVED &&
-      (stats.realizedPnl || stats.totalPnl || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_PNL;
+      (stats.effectivePnl || stats.realizedPnl || stats.totalPnl || 0) >= SIGNAL_THRESHOLDS.SOLO_MIN_PNL;
 
     if (!qualifiesForSolo) continue;
 

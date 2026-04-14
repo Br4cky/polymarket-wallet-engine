@@ -83,15 +83,16 @@
                 <th data-field="score" class="sortable">Score</th>
                 <th data-field="address">Address</th>
                 <th data-field="winRate" class="sortable" title="Win rate over the sample window (last N days, see Span column)">WR (sample)</th>
-                <th data-field="totalPnl" class="sortable" title="Lifetime realised PnL from Goldsky — all closed positions ever, including redemptions">Lifetime PnL</th>
-                <th data-field="samplePnl" class="sortable" title="PnL over the sample window only (what WR is computed from)">Sample PnL</th>
+                <th data-field="effectivePnl" class="sortable" title="max(on-chain, sample). What scoring uses. Both measurement systems miss things — on-chain misses unredeemed winners, sample misses history beyond 3000 events. Taking the max credits whichever saw more.">PnL (effective)</th>
+                <th data-field="onChainPnl" class="sortable" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold on-chain. $0 for unredeemed winners (common when a wallet hasn't cashed out a won market yet).">On-chain</th>
+                <th data-field="samplePnl" class="sortable" title="Analyzer PnL from /activity events, capped at 3000 events. Handles unredeemed winners via marketLookup, but truncates deep history for power users.">Sample</th>
                 <th data-field="statsSpanDays" class="sortable" title="How many days of trading history the sample covers. ⚠ marker means the 3000-event API cap cut off earlier history.">Span</th>
                 <th data-field="resolved" class="sortable">Resolved</th>
                 <th data-field="tradesPerWeek" class="sortable">Trades/Wk</th>
               </tr>
             </thead>
             <tbody id="wallet-tbody">
-              <tr><td colspan="9" class="empty-state">Loading wallets...</td></tr>
+              <tr><td colspan="10" class="empty-state">Loading wallets...</td></tr>
             </tbody>
           </table>
         </div>

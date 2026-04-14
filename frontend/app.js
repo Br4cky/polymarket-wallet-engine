@@ -237,15 +237,23 @@ function renderWalletPool() {
   document.getElementById('wp-total-pnl').textContent = fmtDollars(totalPnl);
   document.getElementById('wp-avg-wr').textContent = avgWR.toFixed(1) + '%';
 
-  // totalPnl here is Goldsky lifetime (scanner writes it). samplePnl is the
-  // analyzer's recency-window PnL — two distinct numbers for two distinct jobs.
+  // Three PnL numbers with different meanings:
+  //   onChainPnl   — Goldsky realizedPnl. Only counts positions explicitly
+  //                  redeemed/sold on-chain. Zero for unredeemed winners.
+  //   samplePnl    — Analyzer PnL from /activity events (3000-event cap).
+  //                  Handles unredeemed winners via marketLookup inference,
+  //                  but truncates deep history for power users.
+  //   effectivePnl — max(onChain, sample). What scoring uses, because both
+  //                  measurement systems are incomplete in opposite ways.
   const walletData = lb.map((w, i) => ({
     rank: i + 1,
     score: w.score || 0,
     address: w.address || '',
     winRate: w.stats?.wr || 0,
-    totalPnl: w.stats?.totalPnl || 0,              // lifetime (Goldsky)
-    samplePnl: w.stats?.samplePnl || 0,             // recency window (analyzer)
+    onChainPnl: w.stats?.totalPnl || 0,                 // Goldsky realized
+    samplePnl: w.stats?.samplePnl || 0,                  // analyzer 3000-event sample
+    effectivePnl: w.stats?.effectivePnl
+      || Math.max(w.stats?.totalPnl || 0, w.stats?.samplePnl || 0),
     statsSpanDays: w.stats?.statsSpanDays || 0,
     tradesTruncated: w.stats?.tradesTruncated === true,
     resolved: w.stats?.resolved || 0,
@@ -264,8 +272,9 @@ function renderWalletPool() {
     }},
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
-    { field: 'totalPnl', render: v => `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` },
-    { field: 'samplePnl', render: v => `<span class="${pnlClass(v)}" style="opacity:0.75">${fmtDollars(v)}</span>` },
+    { field: 'effectivePnl', label: 'PnL (effective)', render: v => `<span class="${pnlClass(v)}" title="max(on-chain realized, analyzer sample) — what scoring actually uses">${fmtDollars(v)}</span>` },
+    { field: 'onChainPnl', label: 'On-chain', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold. $0 for unredeemed winners.">${fmtDollars(v)}</span>` },
+    { field: 'samplePnl', label: 'Sample', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="Analyzer PnL from /activity events (3000-event cap). Handles unredeemed winners but truncates deep history.">${fmtDollars(v)}</span>` },
     { field: 'statsSpanDays', render: (v, row) => {
       if (!v) return '<span style="opacity:0.4">-</span>';
       const badge = row && row.tradesTruncated

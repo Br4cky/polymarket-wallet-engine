@@ -628,10 +628,15 @@ function computeWalletScore(stats) {
   const allTimeSampleFactor = Math.min(1, Math.sqrt(stats.resolvedMarkets) / 8); // plateaus at ~64 resolved
   const allTimeWrScore = Math.max(0, (stats.winRate - 0.5) * 2) * allTimeSampleFactor * 10;
 
-  // Profitability (15 pts) — log scale to avoid saturation
+  // Profitability (15 pts) — log scale to avoid saturation.
+  // Use effectivePnl = max(sample analyzer, Goldsky on-chain) when present —
+  // credits both unredeemed winners (analyzer > Goldsky) and wallets with
+  // >3000-event history beyond our sample window (Goldsky > analyzer).
+  // Falls back to totalPnl for legacy entries without effectivePnl.
   // $100 PnL ≈ 5pts, $1k ≈ 10pts, $10k ≈ 13pts, $100k ≈ 15pts
-  const pnlScore = stats.totalPnl > 0
-    ? Math.min(1, Math.log10(1 + stats.totalPnl) / 5) * 15
+  const scorePnl = (stats.effectivePnl != null ? stats.effectivePnl : stats.totalPnl) || 0;
+  const pnlScore = scorePnl > 0
+    ? Math.min(1, Math.log10(1 + scorePnl) / 5) * 15
     : 0;
 
   // Consistency (15 pts) — penalise wallets whose recent performance diverges from all-time

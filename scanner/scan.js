@@ -467,6 +467,15 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
+      // effectivePnl = max(analyzer sample, Goldsky on-chain realized).
+      // - Sample wins when wallet has unredeemed winners (Goldsky reports $0
+      //   until on-chain redemption; analyzer infers via marketLookup).
+      // - Goldsky wins when wallet has >3000 activity events (analyzer is
+      //   truncated to the most-recent window).
+      // Taking max gives us the benefit of both measurement systems.
+      stats.goldskyPnl = summary.totalPnl || 0;
+      stats.effectivePnl = Math.max(stats.totalPnl || 0, stats.goldskyPnl);
+
       const score = computeWalletScore(stats);
 
       // Require minimum resolved markets — no flukes
@@ -581,6 +590,9 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         decayed++;
         continue;
       }
+      // Attach goldskyPnl + effectivePnl so scoring uses the better of the two.
+      stats.goldskyPnl = wallet.goldskyPnl || 0;
+      stats.effectivePnl = Math.max(stats.totalPnl || 0, stats.goldskyPnl);
       wallet.score = computeWalletScore(stats);
       wallet.stats = stats;
       wallet.lastScored = new Date().toISOString();
@@ -847,11 +859,15 @@ async function fastLoop(state, walletPool, marketLookup) {
     score: w.score,
     lastActiveTimestamp: w.lastScored || w.discoveredScan ? new Date().toISOString() : null,
     stats: {
-      // totalPnl reflects Goldsky's full-history lifetime PnL (includes redemptions).
-      // This is the same number MIN_PNL_DISCOVERY gates against, so the dashboard
-      // stays consistent with the admission rule. samplePnl retained for debugging.
+      // totalPnl   = Goldsky on-chain realized (only counts explicitly redeemed/sold positions).
+      //              Same number MIN_PNL_DISCOVERY gates against. Misses unredeemed winners.
+      // samplePnl  = Analyzer's PnL from /activity events, capped at 3000 events.
+      //              Handles unredeemed winners but truncates deep history.
+      // effectivePnl = max(onChain, sample) — what scoring actually uses, since both
+      //                measurement systems are incomplete in opposite ways.
       totalPnl: w.goldskyPnl || w.stats?.totalPnl || 0,
       samplePnl: w.stats?.totalPnl || 0,
+      effectivePnl: w.stats?.effectivePnl || Math.max(w.goldskyPnl || 0, w.stats?.totalPnl || 0),
       realizedPnl: w.goldskyPnl || w.stats?.totalPnl || 0,
       unrealizedPnl: 0,
       wr: w.stats?.winRate || w.stats?.recentWinRate || 0,
