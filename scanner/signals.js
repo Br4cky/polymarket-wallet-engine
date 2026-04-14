@@ -582,6 +582,8 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
   for (let i = history.length - 1; i >= 0; i--) {
     const h = history[i];
     if (h.outcome === 'win' || h.outcome === 'loss') continue;
+    // Voided signals are terminal — don't restore or backfill them.
+    if (h.outcome === 'void' || h.status === 'voided') continue;
     if (!h.conditionId && !h.tokenId) continue;
 
     if (h.signalId && active[h.signalId]) {
