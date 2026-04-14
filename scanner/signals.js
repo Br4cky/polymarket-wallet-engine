@@ -297,10 +297,14 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       const confidence = computeConvergenceConfidence(candidate, signalType);
       const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
 
+      // Require a valid live price — without it we can't track return,
+      // can't run the MAX_OPEN_PRICE filter, and the dashboard shows "-".
+      if (!(currentPrice > 0)) continue;
+
       // EV filter on live market price — what a follower would actually pay.
       // Skips end-of-market sweep signals where the market has already moved
       // to ≥MAX_OPEN_PRICE and the edge is gone.
-      if (SIGNAL_THRESHOLDS.MAX_OPEN_PRICE < 1 && currentPrice > 0 &&
+      if (SIGNAL_THRESHOLDS.MAX_OPEN_PRICE < 1 &&
           currentPrice > SIGNAL_THRESHOLDS.MAX_OPEN_PRICE) continue;
 
       active[signalId] = {
@@ -430,8 +434,12 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         const avgPrice = +soloAvgPrice.toFixed(4);
         const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
 
+        // Require a valid live price — without it we can't track return
+        // and the dashboard shows "-".
+        if (!(currentPrice > 0)) continue;
+
         // EV filter on live market price — what a follower would actually pay.
-        if (SIGNAL_THRESHOLDS.MAX_OPEN_PRICE < 1 && currentPrice > 0 &&
+        if (SIGNAL_THRESHOLDS.MAX_OPEN_PRICE < 1 &&
             currentPrice > SIGNAL_THRESHOLDS.MAX_OPEN_PRICE) continue;
 
         const confidence = computeSoloConfidence(walletInfo, buySize, avgPrice);
