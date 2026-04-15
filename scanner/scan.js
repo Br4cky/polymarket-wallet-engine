@@ -436,22 +436,35 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
 
   for (const [address, summary] of candidates) {
     // Skip if already in pool and scored recently.
-    // 24h is a pragmatic middleground: wallets with 50+ resolved markets
-    // barely drift in a day, and this cuts re-score load by ~95% vs 0.
-    // TODO (future): activity-based cooldown — only re-score wallets whose
-    // lastTradeTs > lastScored (i.e. they've actually traded since their
-    // last scoring). Would be more principled than time-based because a
-    // dormant wallet's stats can't have moved at all. Requires plumbing
-    // lastTradeTs into the pool entry (already on wallet.stats) and using
-    // max(lastScored, now - MAX_COOLDOWN) as the floor so truly stale
-    // wallets still get refreshed occasionally.
+    //
+    // Two-tier cooldown:
+    //   - < 24h  (HARD_FLOOR): always skip. Wallets with 50+ resolved markets
+    //     barely drift in a day; this cut re-score load by ~95% vs no
+    //     cooldown and is what the original time-based gate was there for.
+    //   - 24h–7d (activity gate): skip ONLY if the wallet hasn't traded
+    //     since its last score. `stats.lastTradeTs > lastScored` means new
+    //     activity → stats may have shifted and it's worth re-analyzing.
+    //     A dormant wallet's stats literally cannot have moved since it
+    //     was last analyzed, so re-scoring it is pure wasted API budget.
+    //   - > 7d   (MAX_FLOOR): always re-score. Guards against edge cases
+    //     where lastTradeTs is stale or missing, and forces a periodic
+    //     refresh so truly inactive wallets still hit the MAX_INACTIVE_DAYS
+    //     eviction check on the re-score path.
     const DISCOVERY_RESCORE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-    if (pool[address] && pool[address].lastScored &&
-        (Date.now() - new Date(pool[address].lastScored).getTime()) < DISCOVERY_RESCORE_COOLDOWN_MS) {
-      qualified++;
-      processed++;
-      if (processed % 100 === 0) console.log(`  Processed ${processed}/${candidates.length} (${qualified} qualified)...`);
-      continue;
+    const DISCOVERY_RESCORE_MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+    if (pool[address] && pool[address].lastScored) {
+      const lastScoredMs = new Date(pool[address].lastScored).getTime();
+      const ageMs = Date.now() - lastScoredMs;
+      const lastTradeMs = (pool[address].stats?.lastTradeTs || 0) * 1000;
+      const tradedSinceScored = lastTradeMs > lastScoredMs;
+      const withinHardFloor = ageMs < DISCOVERY_RESCORE_COOLDOWN_MS;
+      const withinMaxFloor = ageMs < DISCOVERY_RESCORE_MAX_COOLDOWN_MS;
+      if (withinHardFloor || (withinMaxFloor && !tradedSinceScored)) {
+        qualified++;
+        processed++;
+        if (processed % 100 === 0) console.log(`  Processed ${processed}/${candidates.length} (${qualified} qualified)...`);
+        continue;
+      }
     }
 
     try {
