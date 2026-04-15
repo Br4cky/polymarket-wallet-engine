@@ -41,16 +41,39 @@ function loadGzJSON(p) {
   return JSON.parse(zlib.gunzipSync(fs.readFileSync(p)));
 }
 
-async function gql(query) {
-  const res = await fetch(GOLDSKY_PNL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
-  });
-  if (!res.ok) throw new Error(`Goldsky ${res.status}`);
-  const data = await res.json();
-  if (data.errors) throw new Error(`GraphQL: ${JSON.stringify(data.errors)}`);
-  return data.data;
+async function gql(query, { retries = 3 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await fetch(GOLDSKY_PNL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      if (!res.ok) throw new Error(`Goldsky ${res.status}`);
+      const data = await res.json();
+      if (data.errors) {
+        const msg = JSON.stringify(data.errors);
+        // Retry on statement timeout — sometimes a single retry works when
+        // the query planner picks a better plan the second time.
+        if (/timeout/i.test(msg) && attempt < retries - 1) {
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          lastErr = new Error(`GraphQL: ${msg}`);
+          continue;
+        }
+        throw new Error(`GraphQL: ${msg}`);
+      }
+      return data.data;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries - 1 && /timeout|ECONNRESET|fetch failed/i.test(err.message)) {
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 // Goldsky's user_position table isn't indexed on `user`, so filtering by
@@ -78,7 +101,7 @@ async function fetchPositions(addr) {
     if (lastId) whereClauses.push(`id_gt: "${lastId}"`);
     const query = `{
       userPositions(
-        first: 500
+        first: 50
         orderBy: id
         where: { ${whereClauses.join(', ')} }
       ) {
@@ -117,7 +140,7 @@ async function fetchPositions(addr) {
         totalBought: parseFloat(it.totalBought || 0) / USDC_DIVISOR,
       });
     }
-    if (items.length < 500) break;
+    if (items.length < 50) break;
     lastId = items[items.length - 1].id;
   }
   return positions;
@@ -130,7 +153,7 @@ async function fetchPositionsWithRange(addr) {
   while (positions.length < 10000) {
     const query = `{
       userPositions(
-        first: 500
+        first: 50
         orderBy: id
         where: { id_gt: "${lastId}", id_lt: "${addr}~" }
       ) {
@@ -151,7 +174,7 @@ async function fetchPositionsWithRange(addr) {
         totalBought: parseFloat(it.totalBought || 0) / USDC_DIVISOR,
       });
     }
-    if (items.length < 500) break;
+    if (items.length < 50) break;
     lastId = items[items.length - 1].id;
   }
   return positions;
