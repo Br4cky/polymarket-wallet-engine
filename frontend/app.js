@@ -283,7 +283,13 @@ function renderWalletPool() {
       return `${v}d${badge}`;
     }},
     { field: 'resolved', render: v => String(v) },
-    { field: 'tradesPerWeek', render: v => (v || 0).toFixed(1) },
+    { field: 'tradesPerWeek', render: (v, row) => {
+      const val = (v || 0).toFixed(1);
+      const badge = row && row.tradesTruncated
+        ? ` <span title="Hit 3000-event API cap — based on the fixed 90-day recency window, not full history" style="color:#fdcb6e">⚠</span>`
+        : '';
+      return `${val}${badge}`;
+    }},
   ], walletData);
 
   renderScoreDistribution(lb);

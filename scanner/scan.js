@@ -909,7 +909,13 @@ async function fastLoop(state, walletPool, marketLookup) {
         ? Math.abs(w.stats.avgPnlPerWin / w.stats.avgPnlPerLoss) : 0,
       totalVolume: w.stats?.totalVolume || 0,
       openCount: 0,
-      positionsPerWeek: w.stats?.tradesPerActiveWeek || 0,
+      // Trades/week: use recentTradesPerDay (90-day fixed window) × 7 rather
+      // than tradesPerActiveWeek, which divides by a variable activeWeeks that
+      // collapses to ~1-2 when the 3000-event API cap truncates history. That
+      // bug produced dashboard values like "3000/wk" for wallets with <100
+      // resolved markets. The fixed 90-day denominator keeps the metric a
+      // stable proxy for "how actively and consistently does this wallet trade".
+      positionsPerWeek: +((w.stats?.recentTradesPerDay || 0) * 7).toFixed(1),
       activeWeeks: w.stats?.activeWeeks || 0,
       weeklyConsistency: w.stats?.weeklyConsistency || 0,
       tradingDays: w.stats?.activeDays || 0,
