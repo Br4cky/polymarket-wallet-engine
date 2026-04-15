@@ -173,27 +173,28 @@ async function fetchPositionsWithRange(addr, rangeLo = addr, rangeHi = `${addr}~
     }`;
     let data;
     try {
-      data = await gql(query);
+      // Only 1 retry here — if the range is too big, retrying the same
+      // query won't help, we need to shard. Fail fast to get there.
+      data = await gql(query, { retries: 1 });
     } catch (err) {
-      // Range still timing out even after retries — shard this range into
-      // 10 sub-ranges on the next char (tokenIds are decimal, so 0-9) and
-      // recurse. Give up if we're already on a single-digit shard.
+      // Range still timing out — shard this range into 10 sub-ranges on
+      // the next char (tokenIds are decimal, so 0-9) and fire them in
+      // parallel. Give up if we're already 3 levels deep.
       const suffix = rangeLo.slice(addr.length + 1); // chars after "{addr}-"
       if (/timeout/i.test(err.message) && suffix.length < 3) {
-        console.error(`  range ${rangeLo}..${rangeHi} timed out, sharding by next digit`);
-        const sharded = [];
+        console.error(`  range ${rangeLo.slice(0, 48)}.. timed out, sharding 10 sub-ranges in parallel`);
+        const shardPromises = [];
         for (const d of '0123456789') {
           const lo = `${addr}-${suffix}${d}`;
-          // Upper bound: next digit, or range's upper bound for '9'
           const hi = d === '9' ? rangeHi : `${addr}-${suffix}${String.fromCharCode(d.charCodeAt(0) + 1)}`;
-          try {
-            const shard = await fetchPositionsWithRange(addr, lo, hi, batch);
-            sharded.push(...shard);
-          } catch (shardErr) {
-            console.error(`    shard ${d} failed: ${shardErr.message.slice(0, 100)}`);
-          }
+          shardPromises.push(
+            fetchPositionsWithRange(addr, lo, hi, batch)
+              .then(p => { console.error(`    shard ${suffix}${d}: ${p.length} positions`); return p; })
+              .catch(e => { console.error(`    shard ${suffix}${d} failed: ${e.message.slice(0, 80)}`); return []; })
+          );
         }
-        return [...positions, ...sharded];
+        const shardResults = await Promise.all(shardPromises);
+        return [...positions, ...shardResults.flat()];
       }
       throw err;
     }
