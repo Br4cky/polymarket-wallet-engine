@@ -35,6 +35,7 @@ function flag(name) { return args.includes(name); }
 const MODE = flag('--bottom') ? 'bottom' : flag('--sample') ? 'sample' : 'top';
 const N = parseInt(arg('--top') || arg('--bottom') || arg('--sample') || '25', 10);
 const CONCURRENCY = parseInt(arg('--concurrency', '2'), 10);
+const TIMEOUT_SEC = parseInt(arg('--timeout', '180'), 10); // per wallet
 const OUT = arg('--out', `out/batch-ledger-${MODE}-${N}-${Date.now()}.csv`);
 
 function loadGz(p) { return JSON.parse(zlib.gunzipSync(fs.readFileSync(p))); }
@@ -70,11 +71,49 @@ async function withConcurrency(items, limit, worker) {
   return results;
 }
 
+function withTimeout(promise, seconds, label) {
+  let t;
+  const timer = new Promise((_, rej) => {
+    t = setTimeout(() => rej(new Error(`timeout after ${seconds}s (${label})`)), seconds * 1000);
+  });
+  return Promise.race([promise, timer]).finally(() => clearTimeout(t));
+}
+
+function rowToCsv(r) {
+  const w = r.wallet;
+  const a = r.aggregates;
+  return [
+    w.rank,
+    w.address,
+    w.score?.toFixed ? w.score.toFixed(2) : w.score,
+    w.stats?.winRate != null ? (w.stats.winRate * 100).toFixed(2) : '',
+    w.stats?.totalPnl?.toFixed ? w.stats.totalPnl.toFixed(2) : '',
+    w.stats?.resolvedMarkets ?? '',
+    a?.total ?? '',
+    a?.wins ?? '',
+    a?.losses ?? '',
+    a?.open ?? '',
+    a?.scratch ?? '',
+    (a ? (a.closedUndetermined + a.unresolvedMarket) : ''),
+    a?.winRate != null ? (a.winRate * 100).toFixed(2) : '',
+    a?.realizedPnl ?? '',
+    a?.decidedUnredeemedPnl ?? '',
+    a?.truePnl ?? '',
+    a?.totalCapitalDeployed ?? '',
+    a?.decidedCapitalDeployed ?? '',
+    a?.openCapitalAtRisk ?? '',
+    a?.roi != null ? (a.roi * 100).toFixed(2) : '',
+    a?.decidedROI != null ? (a.decidedROI * 100).toFixed(2) : '',
+    r.gammaCalls,
+    r.error || '',
+  ].map(csvEscape).join(',');
+}
+
 (async function main() {
   const walletsFile = loadGz('data/wallets.json.gz');
   const pool = walletsFile.pool || {};
   const picked = pickWallets(pool);
-  console.error(`Running ledger on ${picked.length} wallets (mode=${MODE}, concurrency=${CONCURRENCY})`);
+  console.error(`Running ledger on ${picked.length} wallets (mode=${MODE}, concurrency=${CONCURRENCY}, per-wallet timeout=${TIMEOUT_SEC}s)`);
 
   // Preload marketLookup once
   let marketLookup = new Map();
@@ -86,27 +125,8 @@ async function withConcurrency(items, limit, worker) {
     console.error('No local marketLookup; will hit Gamma for every still-held position.');
   }
 
-  const rows = await withConcurrency(picked, CONCURRENCY, async (w, idx) => {
-    const started = Date.now();
-    console.error(`[${idx + 1}/${picked.length}] rank=${w.rank} ${w.address} ...`);
-    try {
-      const res = await analyzeWallet(w.address.toLowerCase(), { marketLookup, quiet: true });
-      const a = res.aggregates;
-      const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-      console.error(
-        `    ${a.total} pos | ${a.wins}W/${a.losses}L | ` +
-        `ROI ${a.roi != null ? (a.roi * 100).toFixed(1) + '%' : 'n/a'} | ` +
-        `decROI ${a.decidedROI != null ? (a.decidedROI * 100).toFixed(1) + '%' : 'n/a'} | ` +
-        `${elapsed}s`
-      );
-      return { wallet: w, aggregates: a, gammaCalls: res.gammaCalls, error: null };
-    } catch (err) {
-      console.error(`    FAILED: ${err.message.slice(0, 120)}`);
-      return { wallet: w, aggregates: null, gammaCalls: 0, error: err.message.slice(0, 200) };
-    }
-  });
-
-  // Write CSV
+  // Open CSV and stream rows as each wallet finishes, so a crash/hang
+  // preserves everything we've already computed.
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   const headers = [
     'rank', 'address', 'engineScore', 'engineWR', 'engineTotalPnl', 'engineResolved',
@@ -115,38 +135,44 @@ async function withConcurrency(items, limit, worker) {
     'totalCapital', 'decidedCapital', 'openCapitalAtRisk',
     'roi', 'decidedROI', 'gammaCalls', 'error',
   ];
-  const lines = [headers.join(',')];
-  for (const r of rows) {
-    const w = r.wallet;
-    const a = r.aggregates;
-    const row = [
-      w.rank,
-      w.address,
-      w.score?.toFixed ? w.score.toFixed(2) : w.score,
-      w.stats?.winRate != null ? (w.stats.winRate * 100).toFixed(2) : '',
-      w.stats?.totalPnl?.toFixed ? w.stats.totalPnl.toFixed(2) : '',
-      w.stats?.resolvedMarkets ?? '',
-      a?.total ?? '',
-      a?.wins ?? '',
-      a?.losses ?? '',
-      a?.open ?? '',
-      a?.scratch ?? '',
-      (a ? (a.closedUndetermined + a.unresolvedMarket) : ''),
-      a?.winRate != null ? (a.winRate * 100).toFixed(2) : '',
-      a?.realizedPnl ?? '',
-      a?.decidedUnredeemedPnl ?? '',
-      a?.truePnl ?? '',
-      a?.totalCapitalDeployed ?? '',
-      a?.decidedCapitalDeployed ?? '',
-      a?.openCapitalAtRisk ?? '',
-      a?.roi != null ? (a.roi * 100).toFixed(2) : '',
-      a?.decidedROI != null ? (a.decidedROI * 100).toFixed(2) : '',
-      r.gammaCalls,
-      r.error || '',
-    ].map(csvEscape);
-    lines.push(row.join(','));
-  }
-  fs.writeFileSync(OUT, lines.join('\n'));
+  const csvStream = fs.createWriteStream(OUT);
+  csvStream.write(headers.join(',') + '\n');
+  console.error(`CSV: ${OUT}`);
+
+  process.on('SIGINT', () => {
+    console.error('\nSIGINT — flushing CSV and exiting');
+    csvStream.end(() => process.exit(130));
+  });
+
+  const rows = await withConcurrency(picked, CONCURRENCY, async (w, idx) => {
+    const started = Date.now();
+    console.error(`[${idx + 1}/${picked.length}] rank=${w.rank} ${w.address} ...`);
+    let row;
+    try {
+      const res = await withTimeout(
+        analyzeWallet(w.address.toLowerCase(), { marketLookup, quiet: true }),
+        TIMEOUT_SEC,
+        w.address
+      );
+      const a = res.aggregates;
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+      console.error(
+        `    ${a.total} pos | ${a.wins}W/${a.losses}L | ` +
+        `ROI ${a.roi != null ? (a.roi * 100).toFixed(1) + '%' : 'n/a'} | ` +
+        `decROI ${a.decidedROI != null ? (a.decidedROI * 100).toFixed(1) + '%' : 'n/a'} | ` +
+        `${elapsed}s`
+      );
+      row = { wallet: w, aggregates: a, gammaCalls: res.gammaCalls, error: null };
+    } catch (err) {
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+      console.error(`    FAILED after ${elapsed}s: ${err.message.slice(0, 120)}`);
+      row = { wallet: w, aggregates: null, gammaCalls: 0, error: err.message.slice(0, 200) };
+    }
+    csvStream.write(rowToCsv(row) + '\n');
+    return row;
+  });
+
+  await new Promise(res => csvStream.end(res));
 
   const ok = rows.filter(r => r.aggregates).length;
   const fail = rows.length - ok;
