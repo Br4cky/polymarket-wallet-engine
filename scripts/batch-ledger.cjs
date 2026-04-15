@@ -34,8 +34,9 @@ function flag(name) { return args.includes(name); }
 
 const MODE = flag('--bottom') ? 'bottom' : flag('--sample') ? 'sample' : 'top';
 const N = parseInt(arg('--top') || arg('--bottom') || arg('--sample') || '25', 10);
-const CONCURRENCY = parseInt(arg('--concurrency', '2'), 10);
-const TIMEOUT_SEC = parseInt(arg('--timeout', '180'), 10); // per wallet
+const CONCURRENCY = parseInt(arg('--concurrency', '1'), 10);
+const TIMEOUT_SEC = parseInt(arg('--timeout', '240'), 10); // per wallet
+const RESUME = arg('--resume'); // path to prior CSV to skip already-done wallets
 const OUT = arg('--out', `out/batch-ledger-${MODE}-${N}-${Date.now()}.csv`);
 
 function loadGz(p) { return JSON.parse(zlib.gunzipSync(fs.readFileSync(p))); }
@@ -112,8 +113,26 @@ function rowToCsv(r) {
 (async function main() {
   const walletsFile = loadGz('data/wallets.json.gz');
   const pool = walletsFile.pool || {};
-  const picked = pickWallets(pool);
-  console.error(`Running ledger on ${picked.length} wallets (mode=${MODE}, concurrency=${CONCURRENCY}, per-wallet timeout=${TIMEOUT_SEC}s)`);
+  let picked = pickWallets(pool);
+
+  // Resume: drop wallets we've already successfully processed in a
+  // prior CSV (any row with a non-empty truePositions value).
+  const alreadyDone = new Set();
+  if (RESUME && fs.existsSync(RESUME)) {
+    const txt = fs.readFileSync(RESUME, 'utf8');
+    const rows = txt.split('\n').slice(1).filter(Boolean);
+    for (const line of rows) {
+      const cells = line.split(',');
+      const addr = (cells[1] || '').toLowerCase();
+      const truePositions = cells[6];
+      if (addr && truePositions && truePositions !== '') alreadyDone.add(addr);
+    }
+    const before = picked.length;
+    picked = picked.filter(w => !alreadyDone.has(w.address.toLowerCase()));
+    console.error(`Resuming: skipping ${before - picked.length} already-done wallets from ${RESUME}`);
+  }
+
+  console.error(`Running ledger on ${picked.length} wallets (mode=${MODE}, concurrency=${CONCURRENCY}, per-wallet timeout=${TIMEOUT_SEC}s, GQL_MAX_INFLIGHT=${process.env.GQL_MAX_INFLIGHT || '4'})`);
 
   // Preload marketLookup once
   let marketLookup = new Map();

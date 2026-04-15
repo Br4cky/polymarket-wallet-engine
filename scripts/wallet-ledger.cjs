@@ -44,39 +44,78 @@ function loadGzJSON(p) {
   return JSON.parse(zlib.gunzipSync(fs.readFileSync(p)));
 }
 
-async function gql(query, { retries = 3 } = {}) {
-  let lastErr;
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const res = await fetch(GOLDSKY_PNL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
-      });
-      if (!res.ok) throw new Error(`Goldsky ${res.status}`);
-      const data = await res.json();
-      if (data.errors) {
-        const msg = JSON.stringify(data.errors);
-        // Retry on statement timeout — sometimes a single retry works when
-        // the query planner picks a better plan the second time.
-        if (/timeout/i.test(msg) && attempt < retries - 1) {
+// Global concurrency limiter for Goldsky queries. Even with batch
+// concurrency=2, the recursive parallel sharding inside a single
+// fetchPositionsWithRange can fire 10 (or 100 at 2 levels deep) queries
+// at once, trivially blowing past Goldsky's rate limit. This semaphore
+// caps ALL in-flight gql() calls across the process.
+const GQL_MAX_INFLIGHT = parseInt(process.env.GQL_MAX_INFLIGHT || '4', 10);
+let gqlInflight = 0;
+const gqlQueue = [];
+function gqlAcquire() {
+  return new Promise(resolve => {
+    if (gqlInflight < GQL_MAX_INFLIGHT) {
+      gqlInflight++;
+      resolve();
+    } else {
+      gqlQueue.push(resolve);
+    }
+  });
+}
+function gqlRelease() {
+  const next = gqlQueue.shift();
+  if (next) next();
+  else gqlInflight--;
+}
+
+async function gql(query, { retries = 5 } = {}) {
+  await gqlAcquire();
+  try {
+    let lastErr;
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        const res = await fetch(GOLDSKY_PNL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
+        if (res.status === 429) {
+          // Rate limited — back off with large increasing waits. Honour
+          // Retry-After if Goldsky sends it.
+          const retryAfter = parseInt(res.headers.get('retry-after') || '0', 10);
+          const waitMs = Math.max(retryAfter * 1000, 2000 * Math.pow(2, attempt)); // 2s, 4s, 8s, 16s, 32s
+          if (attempt < retries - 1) {
+            await new Promise(r => setTimeout(r, waitMs));
+            lastErr = new Error(`Goldsky 429 (waited ${waitMs}ms)`);
+            continue;
+          }
+          throw new Error('Goldsky 429');
+        }
+        if (!res.ok) throw new Error(`Goldsky ${res.status}`);
+        const data = await res.json();
+        if (data.errors) {
+          const msg = JSON.stringify(data.errors);
+          if (/timeout/i.test(msg) && attempt < retries - 1) {
+            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            lastErr = new Error(`GraphQL: ${msg}`);
+            continue;
+          }
+          throw new Error(`GraphQL: ${msg}`);
+        }
+        return data.data;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < retries - 1 && /timeout|ECONNRESET|fetch failed|Goldsky 5/i.test(err.message)) {
           await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-          lastErr = new Error(`GraphQL: ${msg}`);
           continue;
         }
-        throw new Error(`GraphQL: ${msg}`);
+        throw err;
       }
-      return data.data;
-    } catch (err) {
-      lastErr = err;
-      if (attempt < retries - 1 && /timeout|ECONNRESET|fetch failed/i.test(err.message)) {
-        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-        continue;
-      }
-      throw err;
     }
+    throw lastErr;
+  } finally {
+    gqlRelease();
   }
-  throw lastErr;
 }
 
 // Goldsky's user_position table isn't indexed on `user`, so filtering by
