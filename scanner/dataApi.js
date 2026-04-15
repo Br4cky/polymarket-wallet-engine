@@ -719,6 +719,105 @@ function computeWalletScore(stats) {
 }
 
 // ============================================================================
+// V2 scoring — position-centric, ROI-weighted, mean-picker-aware
+// ============================================================================
+//
+// Why a rewrite: the legacy formula above weights 40/100 on win rate and 15
+// on raw PnL. Both reward mean-pickers — wallets that buy $0.95 tokens and
+// collect $0.05 wins at 99% WR with ~2% ROI on $500k of capital. Cross-tab
+// analysis on 75 wallets showed Spearman(legacyScore, decidedROI) = -0.152
+// (literally inverted) and $6.76M of the pool was trapped in mean-picker
+// wallets ranked in the 80s.
+//
+// V2 keys on:
+//   - decidedROI as the primary driver (50 pts)
+//   - decidedCapital as a confidence weight (sqrt to $50k)
+//   - resolvedMarkets as a sample-size confidence weight (to 25)
+//   - recency as a multiplier (1.0 inside 7d, linear decay to 0 at 30d)
+//   - mean-picker shape as a 0.2x penalty (kept in pool for signal
+//     integration, but can't outrank real ROI wallets)
+//   - small activity bonus (0-5 pts) so otherwise-tied wallets with more
+//     fresh trades surface first
+//
+// Shadow mode: this function runs alongside computeWalletScore. Rankers
+// don't consume it yet — Phase 3 validates Spearman on fresh data before
+// Phase 5 makes scoreV2 authoritative.
+
+function roiPoints(decidedROI) {
+  // 0 at or below 0% ROI; ~15pts at 10%; ~30pts at 25%; ~42pts at 50%;
+  // saturates toward 50pts as ROI → ∞. Formula: 50 * (1 - e^(-roi*3)).
+  if (decidedROI == null || !isFinite(decidedROI) || decidedROI <= 0) return 0;
+  const pts = 50 * (1 - Math.exp(-decidedROI * 3));
+  return Math.min(50, pts);
+}
+
+function capConfidence(decidedCapital) {
+  if (!decidedCapital || decidedCapital <= 0) return 0;
+  // sqrt scaling: $5k → 0.32, $20k → 0.63, $50k → 1.0, capped
+  return Math.min(1, Math.sqrt(decidedCapital / 50000));
+}
+
+function sampleConfidence(resolvedMarkets) {
+  if (!resolvedMarkets || resolvedMarkets <= 0) return 0;
+  // Linear 0→1 over 0→25 resolved markets
+  return Math.min(1, resolvedMarkets / 25);
+}
+
+function recencyMultiplier(lastTradeTs) {
+  if (!lastTradeTs || lastTradeTs <= 0) return 0;
+  const days = (Date.now() / 1000 - lastTradeTs) / 86400;
+  if (days <= 7) return 1.0;
+  if (days >= 30) return 0;
+  return 1 - (days - 7) / 23;
+}
+
+function computeWalletScoreV2(stats) {
+  if (!stats) return { score: 0, reason: 'no_stats' };
+
+  // If the shadow measurement pass hasn't populated decided* yet (pool
+  // wallet not yet rescored since Phase 1 rolled out), we can't score V2.
+  // Caller falls back to legacy. Signal this with score=null.
+  if (stats.decidedROI == null || stats.decidedCapital == null) {
+    return { score: null, reason: 'no_decided_metrics' };
+  }
+
+  const resolved = stats.decidedWins != null && stats.decidedLosses != null
+    ? stats.decidedWins + stats.decidedLosses
+    : (stats.resolvedMarkets || 0);
+
+  const roi = roiPoints(stats.decidedROI);
+  const capConf = capConfidence(stats.decidedCapital);
+  const sampleConf = sampleConfidence(resolved);
+  const recency = recencyMultiplier(stats.lastTradeTs);
+  const meanPickerPenalty = stats.isMeanPickerShape === true ? 0.2 : 1.0;
+
+  // Activity bonus (0-5 pts, additive) — log-scaled trades/day, so a
+  // wallet with 0.1 trades/day → ~1pt, 1/day → ~3pts, 10+/day → 5pts.
+  const tpd = stats.recentTradesPerDay || 0;
+  const activityBonus = Math.min(5, Math.log10(1 + tpd * 10) * 2);
+
+  const core = roi * capConf * sampleConf * recency * meanPickerPenalty;
+  // Activity is a tiebreaker, not a floor — only award it when the wallet
+  // has a non-zero core. Otherwise losing/dormant wallets collect free points
+  // just for churning.
+  const total = core > 0 ? core + activityBonus : 0;
+
+  return {
+    score: Math.min(100, Math.round(total * 10) / 10),
+    reason: 'ok',
+    components: {
+      roi: +roi.toFixed(2),
+      capConf: +capConf.toFixed(3),
+      sampleConf: +sampleConf.toFixed(3),
+      recency: +recency.toFixed(3),
+      meanPickerPenalty,
+      activityBonus: +activityBonus.toFixed(2),
+      resolved,
+    },
+  };
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -731,4 +830,5 @@ export {
   fetchAllActivity,
   analyzeTradeHistory,
   computeWalletScore,
+  computeWalletScoreV2,
 };

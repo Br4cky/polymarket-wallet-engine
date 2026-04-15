@@ -37,6 +37,7 @@ import {
   fetchRecentTrades,
   analyzeTradeHistory,
   computeWalletScore,
+  computeWalletScoreV2,
 } from './dataApi.js';
 
 import {
@@ -729,6 +730,13 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         stats.decidedMeasuredAt = wallet.decidedMetrics.measuredAt;
       }
       wallet.score = computeWalletScore(stats);
+      // Shadow V2 score — not yet ranked on, but populated so Phase 3 can
+      // cross-tab it against decidedROI without another measurement pass.
+      const v2 = computeWalletScoreV2(stats);
+      if (v2 && v2.score != null) {
+        wallet.scoreV2 = v2.score;
+        wallet.scoreV2Components = v2.components;
+      }
       wallet.stats = stats;
       // decidedMetrics now lives on stats; clear the temporary ledge.
       delete wallet.decidedMetrics;
