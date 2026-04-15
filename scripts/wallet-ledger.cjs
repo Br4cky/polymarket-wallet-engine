@@ -27,12 +27,15 @@ const GOLDSKY_PNL = 'https://api.goldsky.com/api/public/project_cl6mb8i9h0003e20
 const GAMMA_MARKETS = 'https://gamma-api.polymarket.com/markets';
 const USDC_DIVISOR = 1e6;
 
+// CLI args are only required when this file is the entrypoint — when
+// required as a module (e.g. from batch-ledger.cjs) we skip validation
+// so the require() doesn't blow up.
 const args = process.argv.slice(2);
 const address = args.find(a => /^0x[0-9a-fA-F]{40}$/.test(a))?.toLowerCase();
 const wantJson = args.includes('--json');
 const verbose = args.includes('--verbose') || args.includes('-v');
 
-if (!address) {
+if (require.main === module && !address) {
   console.error('Usage: node scripts/wallet-ledger.cjs <0xaddress> [--json] [--verbose]');
   process.exit(1);
 }
