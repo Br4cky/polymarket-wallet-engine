@@ -1172,15 +1172,26 @@ async function fastLoop(state, walletPool, marketLookup) {
     analytics.trendline.splice(0, analytics.trendline.length - 2000);
   }
 
-  // 7b: Leaderboard — wallet list for Dashboard tab
+  // 7b: Leaderboard — wallet list for Dashboard tab.
+  // Sort order mirrors the pool ranker: V2 takes priority when present
+  // (Phase 5), legacy is the fallback for wallets that haven't been
+  // rescored under the new pipeline yet.
+  const leaderboardScoreOf = (w) =>
+    typeof w.scoreV2 === 'number' ? w.scoreV2 : (w.score || 0);
   const walletList = Object.values(walletPool)
-    .filter(w => w.score > 0 && w.status !== 'removed')
-    .sort((a, b) => b.score - a.score);
+    .filter(w => leaderboardScoreOf(w) > 0 && w.status !== 'removed')
+    .sort((a, b) => leaderboardScoreOf(b) - leaderboardScoreOf(a));
 
   analytics.leaderboard = walletList.map((w, idx) => ({
     rank: idx + 1,
     address: w.address,
     score: w.score,
+    // Phase 2 V2 fields — primary ranker post-redesign
+    scoreV2: typeof w.scoreV2 === 'number' ? w.scoreV2 : null,
+    scoreV2Components: w.scoreV2Components || null,
+    // Phase 4 shadow eviction flag — populated when a wallet matches an
+    // eviction rule but V2_EVICTION_MODE is 'shadow' rather than 'live'
+    v2WouldEvict: w.v2WouldEvict || null,
     lastActiveTimestamp: w.lastScored || w.discoveredScan ? new Date().toISOString() : null,
     stats: {
       // totalPnl   = Goldsky on-chain realized (only counts explicitly redeemed/sold positions).
@@ -1228,6 +1239,16 @@ async function fastLoop(state, walletPool, marketLookup) {
       // with the WR fix).
       unredeemedWins: w.stats?.unredeemedWins || 0,
       worthlessLosses: w.stats?.worthlessLosses || 0,
+      // Phase 1 ground-truth fields — null until rescored under new pipeline
+      decidedROI: w.stats?.decidedROI ?? null,
+      decidedCapital: w.stats?.decidedCapital ?? null,
+      decidedPnl: w.stats?.decidedPnl ?? null,
+      decidedWins: w.stats?.decidedWins ?? null,
+      decidedLosses: w.stats?.decidedLosses ?? null,
+      decidedWinRate: w.stats?.decidedWinRate ?? null,
+      decidedOpenCapitalAtRisk: w.stats?.decidedOpenCapitalAtRisk ?? null,
+      isMeanPickerShape: w.stats?.isMeanPickerShape === true,
+      decidedMeasuredAt: w.stats?.decidedMeasuredAt || null,
     },
   }));
 
@@ -1237,10 +1258,18 @@ async function fastLoop(state, walletPool, marketLookup) {
   const totalWins = walletList.reduce((s, w) => s + (w.stats?.wins || 0), 0);
   const totalResolved = walletList.reduce((s, w) => s + (w.stats?.resolvedMarkets || 0), 0);
 
+  // Summary scores use the same effective-score the ranker uses, with
+  // a V2-specific average exposed separately for dashboards that want to
+  // track the new scale independently.
+  const v2Wallets = walletList.filter(w => typeof w.scoreV2 === 'number');
   analytics.summary = {
     totalWallets,
     totalPnl,
-    avgScore: totalWallets > 0 ? walletList.reduce((s, w) => s + w.score, 0) / totalWallets : 0,
+    avgScore: totalWallets > 0 ? walletList.reduce((s, w) => s + leaderboardScoreOf(w), 0) / totalWallets : 0,
+    avgScoreV2: v2Wallets.length > 0 ? v2Wallets.reduce((s, w) => s + w.scoreV2, 0) / v2Wallets.length : 0,
+    v2Coverage: totalWallets > 0 ? v2Wallets.length / totalWallets : 0,
+    meanPickerCount: walletList.filter(w => w.stats?.isMeanPickerShape === true).length,
+    shadowEvictionCount: walletList.filter(w => w.v2WouldEvict).length,
     winRate: totalResolved > 0 ? totalWins / totalResolved : 0,
     totalWins,
     totalResolved,

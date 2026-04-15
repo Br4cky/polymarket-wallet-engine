@@ -45,6 +45,22 @@ function scoreClass(s) {
   return 'badge-low';
 }
 
+// V2 lives on a tighter scale: elite underdog tops out around 48, good
+// traders in the 15-25 range. Legacy thresholds would paint the whole V2
+// pool red. Calibrate separately.
+function scoreV2Class(s) {
+  if (s >= 25) return 'badge-high';
+  if (s >= 10) return 'badge-mid';
+  return 'badge-low';
+}
+
+function roiClass(roi) {
+  if (roi == null) return '';
+  if (roi >= 0.15) return 'badge-high';
+  if (roi >= 0.05) return 'badge-mid';
+  return 'badge-low';
+}
+
 function truncAddr(addr) {
   if (!addr || addr.length < 10) return addr || '';
   return addr.slice(0, 6) + '...' + addr.slice(-4);
@@ -237,6 +253,23 @@ function renderWalletPool() {
   document.getElementById('wp-total-pnl').textContent = fmtDollars(totalPnl);
   document.getElementById('wp-avg-wr').textContent = avgWR.toFixed(1) + '%';
 
+  // V2 rollout status — optional tiles, only populated if present in DOM.
+  // Gives you an at-a-glance view of how far the new ranker has spread and
+  // how many wallets the shadow-eviction pass wants to kick.
+  const v2Count = lb.filter(w => typeof w.scoreV2 === 'number').length;
+  const v2Coverage = lb.length > 0 ? (v2Count / lb.length * 100) : 0;
+  const meanPickerCount = lb.filter(w => w.stats?.isMeanPickerShape === true).length;
+  const wouldEvictCount = lb.filter(w => w.v2WouldEvict).length;
+  const meanPickerCap = lb
+    .filter(w => w.stats?.isMeanPickerShape === true)
+    .reduce((s, w) => s + (w.stats?.decidedCapital || 0), 0);
+  const covEl = document.getElementById('wp-v2-coverage');
+  if (covEl) covEl.textContent = `${v2Count}/${lb.length} (${v2Coverage.toFixed(0)}%)`;
+  const mpEl = document.getElementById('wp-mean-pickers');
+  if (mpEl) mpEl.textContent = `${meanPickerCount} wallets / ${fmtDollars(meanPickerCap)}`;
+  const evEl = document.getElementById('wp-would-evict');
+  if (evEl) evEl.textContent = `${wouldEvictCount} flagged`;
+
   // Three PnL numbers with different meanings:
   //   onChainPnl   — Goldsky realizedPnl. Only counts positions explicitly
   //                  redeemed/sold on-chain. Zero for unredeemed winners.
@@ -248,12 +281,19 @@ function renderWalletPool() {
   const walletData = lb.map((w, i) => ({
     rank: i + 1,
     score: w.score || 0,
+    scoreV2: typeof w.scoreV2 === 'number' ? w.scoreV2 : null,
     address: w.address || '',
     winRate: w.stats?.wr || 0,
     onChainPnl: w.stats?.totalPnl || 0,                 // Goldsky realized
     samplePnl: w.stats?.samplePnl || 0,                  // analyzer 3000-event sample
     effectivePnl: w.stats?.effectivePnl
       || Math.max(w.stats?.totalPnl || 0, w.stats?.samplePnl || 0),
+    // Phase 1-6 ground-truth metrics (null until the wallet has been
+    // rescored under the new pipeline)
+    decidedROI: w.stats?.decidedROI ?? null,
+    decidedCapital: w.stats?.decidedCapital ?? null,
+    isMeanPicker: w.stats?.isMeanPickerShape === true,
+    v2WouldEvict: w.v2WouldEvict ? w.v2WouldEvict.reason : null,
     statsSpanDays: w.stats?.statsSpanDays || 0,
     tradesTruncated: w.stats?.tradesTruncated === true,
     resolved: w.stats?.resolved || 0,
@@ -263,14 +303,37 @@ function renderWalletPool() {
 
   createSortableTable('wallet-table', [
     { field: 'rank', render: v => String(v) },
-    { field: 'score', render: (v, row) => {
-      // Flag wallets still on pre-fix stats (haven't been re-scored through
-      // the new analyzer yet — missing statsSpanDays field).
+    { field: 'scoreV2', label: 'V2', render: (v, row) => {
+      // Primary score post-redesign. null until the wallet has been rescored
+      // under the new pipeline — show a dim placeholder.
+      if (v == null) return '<span style="opacity:0.35" title="Not yet rescored under V2 pipeline">—</span>';
+      const badge = `<span class="badge ${scoreV2Class(v)}">${v.toFixed(1)}</span>`;
+      // Overlay a flag for anything the shadow-eviction pass wants to remove
+      const flag = row && row.v2WouldEvict
+        ? ` <span title="Shadow eviction flag: ${row.v2WouldEvict} — would be removed once V2_EVICTION_MODE flips to live" style="color:#e17055">✂</span>`
+        : (row && row.isMeanPicker
+          ? ` <span title="Mean-picker shape (high WR, tiny ROI) — score suppressed 5×" style="color:#fdcb6e">◇</span>`
+          : '');
+      return `${badge}${flag}`;
+    }},
+    { field: 'score', label: 'Legacy', render: (v, row) => {
+      // Shown only for comparison while V2 rolls out. Pre-fix wallets
+      // (no statsSpanDays) get a pending glyph.
       const pending = !row || row.statsSpanDays === 0;
-      const badge = `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>`;
+      const badge = `<span class="badge ${scoreClass(v)}" style="opacity:0.75">${v.toFixed(1)}</span>`;
       return pending ? `${badge} <span title="Pre-fix score — awaiting re-score" style="opacity:0.5">⏳</span>` : badge;
     }},
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
+    { field: 'decidedROI', label: 'Decided ROI', render: v => {
+      if (v == null) return '<span style="opacity:0.35">—</span>';
+      const cls = roiClass(v);
+      const pct = (v * 100).toFixed(1) + '%';
+      return `<span class="badge ${cls}" title="Ground-truth ROI on resolved capital: (realizedPnl + decidedPnl) / (totalCost − openCapitalAtRisk)">${pct}</span>`;
+    }},
+    { field: 'decidedCapital', label: 'Decided cap', render: v => {
+      if (v == null) return '<span style="opacity:0.35">—</span>';
+      return `<span title="Capital-at-risk on resolved positions (totalCost excluding open bets)">${fmtDollars(v)}</span>`;
+    }},
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
     { field: 'effectivePnl', label: 'PnL (effective)', render: v => `<span class="${pnlClass(v)}" title="max(on-chain realized, analyzer sample) — what scoring actually uses">${fmtDollars(v)}</span>` },
     { field: 'onChainPnl', label: 'On-chain', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold. $0 for unredeemed winners.">${fmtDollars(v)}</span>` },
@@ -298,12 +361,22 @@ function renderWalletPool() {
 
 function renderScoreDistribution(lb) {
   destroyChart('score-dist');
-  const scores = lb.map(w => w.score || 0);
+  // Prefer V2 scores (what the ranker uses post-redesign) when present.
+  // Fall back to legacy so pre-rescore wallets still count somewhere.
+  const useV2 = lb.some(w => typeof w.scoreV2 === 'number');
+  const scores = lb.map(w => {
+    if (typeof w.scoreV2 === 'number') return w.scoreV2;
+    return w.score || 0;
+  });
   const buckets = [0, 0, 0, 0, 0]; // 0-20, 20-40, 40-60, 60-80, 80-100
   scores.forEach(s => {
     const idx = Math.min(4, Math.floor(s / 20));
     buckets[idx]++;
   });
+  // Surface which score family is being histogrammed so a user isn't
+  // confused when the V2 distribution skews left vs the legacy one.
+  const labelEl = document.getElementById('wp-score-dist-label');
+  if (labelEl) labelEl.textContent = useV2 ? 'Score distribution (V2 primary)' : 'Score distribution (legacy)';
 
   const ctx = document.getElementById('chart-score-dist');
   if (!ctx) return;

@@ -56,11 +56,26 @@
           <div class="metric-value" id="wp-avg-wr">0%</div>
           <div class="metric-unit">resolved markets</div>
         </div>
+        <div class="metric-card" title="Percent of pool that has been rescored under the V2 pipeline (has scoreV2 + decidedROI). Ranker uses V2 once coverage ≥ 50%.">
+          <div class="metric-label">V2 Coverage</div>
+          <div class="metric-value" id="wp-v2-coverage">—</div>
+          <div class="metric-unit">wallets rescored</div>
+        </div>
+        <div class="metric-card" title="Wallets with isMeanPickerShape=true (≥95% WR, ≥25 resolved, ≥$50k decided capital, <5% decidedROI). V2 scores these 5× lower to push them out of the ranker.">
+          <div class="metric-label">Mean-pickers</div>
+          <div class="metric-value" id="wp-mean-pickers">—</div>
+          <div class="metric-unit">in pool</div>
+        </div>
+        <div class="metric-card" title="Wallets the Phase 4 shadow eviction pass wants to remove (mean-picker strikes, low-V2 strikes, negative-ROI with sample, or >30d dormant). Flip V2_EVICTION_MODE='live' to actually remove them.">
+          <div class="metric-label">Shadow Evictions</div>
+          <div class="metric-value" id="wp-would-evict">—</div>
+          <div class="metric-unit">awaiting review</div>
+        </div>
       </div>
 
       <div class="charts-section">
         <div class="chart-container">
-          <h3>Score Distribution</h3>
+          <h3 id="wp-score-dist-label">Score Distribution</h3>
           <div style="position: relative; height: 300px;">
             <canvas id="chart-score-dist"></canvas>
           </div>
@@ -80,19 +95,22 @@
             <thead>
               <tr>
                 <th data-field="rank">#</th>
-                <th data-field="score" class="sortable">Score</th>
+                <th data-field="scoreV2" class="sortable" title="V2 score — primary ranker post-redesign. Keys on decidedROI weighted by capital + sample confidence + recency, with 5× mean-picker suppression. ✂ = flagged for shadow eviction, ◇ = mean-picker shape. — means the wallet hasn't been rescored under the new pipeline yet.">V2</th>
+                <th data-field="score" class="sortable" title="Legacy score. Kept for comparison during rollout. Known to inversely correlate with ground truth (Spearman -0.152) — do not rank on this alone.">Legacy</th>
                 <th data-field="address">Address</th>
+                <th data-field="decidedROI" class="sortable" title="Ground-truth ROI on resolved capital: (realizedPnl + decidedPnl) / (totalCost − openCapitalAtRisk). Rolls up closed wins/losses, unredeemed winners, and worthless losers. This is what V2 is designed to track.">Decided ROI</th>
+                <th data-field="decidedCapital" class="sortable" title="Capital-at-risk on resolved positions only — totalCost minus capital still sitting in open bets. Sample-confidence weight for V2.">Decided Cap</th>
                 <th data-field="winRate" class="sortable" title="Win rate over the sample window (last N days, see Span column)">WR (sample)</th>
-                <th data-field="effectivePnl" class="sortable" title="max(on-chain, sample). What scoring uses. Both measurement systems miss things — on-chain misses unredeemed winners, sample misses history beyond 3000 events. Taking the max credits whichever saw more.">PnL (effective)</th>
-                <th data-field="onChainPnl" class="sortable" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold on-chain. $0 for unredeemed winners (common when a wallet hasn't cashed out a won market yet).">On-chain</th>
-                <th data-field="samplePnl" class="sortable" title="Analyzer PnL from /activity events, capped at 3000 events. Handles unredeemed winners via marketLookup, but truncates deep history for power users.">Sample</th>
+                <th data-field="effectivePnl" class="sortable" title="max(on-chain, sample). What legacy scoring uses. Both measurement systems miss things — on-chain misses unredeemed winners, sample misses history beyond 3000 events.">PnL (effective)</th>
+                <th data-field="onChainPnl" class="sortable" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold on-chain. $0 for unredeemed winners.">On-chain</th>
+                <th data-field="samplePnl" class="sortable" title="Analyzer PnL from /activity events, capped at 3000 events. Handles unredeemed winners via marketLookup, but truncates deep history.">Sample</th>
                 <th data-field="statsSpanDays" class="sortable" title="How many days of trading history the sample covers. ⚠ marker means the 3000-event API cap cut off earlier history.">Span</th>
                 <th data-field="resolved" class="sortable">Resolved</th>
                 <th data-field="tradesPerWeek" class="sortable">Trades/Wk</th>
               </tr>
             </thead>
             <tbody id="wallet-tbody">
-              <tr><td colspan="10" class="empty-state">Loading wallets...</td></tr>
+              <tr><td colspan="13" class="empty-state">Loading wallets...</td></tr>
             </tbody>
           </table>
         </div>
