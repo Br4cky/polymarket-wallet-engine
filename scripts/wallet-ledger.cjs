@@ -131,14 +131,22 @@ async function fetchPositions(addr) {
       // (shouldn't happen with starts_with, but guards against lexicographic
       // surprises on the range path).
       if (!it.id.toLowerCase().startsWith(addr)) continue;
-      positions.push({
+      const pos = {
         id: it.id,
         tokenId: it.tokenId,
         sharesHeld: parseFloat(it.amount || 0) / USDC_DIVISOR,
         avgPrice: parseFloat(it.avgPrice || 0) / USDC_DIVISOR,
         realizedPnl: parseFloat(it.realizedPnl || 0) / USDC_DIVISOR,
         totalBought: parseFloat(it.totalBought || 0) / USDC_DIVISOR,
-      });
+      };
+      // Skip phantom subgraph records (all-zero rows from intermediate sync
+      // states). See fetchPositionsWithRange for full explanation.
+      const isPhantom = pos.sharesHeld < 0.01
+        && Math.abs(pos.realizedPnl) < 0.01
+        && pos.totalBought < 0.01
+        && pos.avgPrice < 0.001;
+      if (isPhantom) continue;
+      positions.push(pos);
     }
     if (items.length < 50) break;
     lastId = items[items.length - 1].id;
@@ -165,14 +173,24 @@ async function fetchPositionsWithRange(addr) {
     if (items.length === 0) break;
     for (const it of items) {
       if (!it.id.toLowerCase().startsWith(addr)) continue;
-      positions.push({
+      const pos = {
         id: it.id,
         tokenId: it.tokenId,
         sharesHeld: parseFloat(it.amount || 0) / USDC_DIVISOR,
         avgPrice: parseFloat(it.avgPrice || 0) / USDC_DIVISOR,
         realizedPnl: parseFloat(it.realizedPnl || 0) / USDC_DIVISOR,
         totalBought: parseFloat(it.totalBought || 0) / USDC_DIVISOR,
-      });
+      };
+      // Skip phantom subgraph records: rows where every numeric field is
+      // zero. These aren't real positions — they show up when the subgraph
+      // creates an entry during an intermediate sync state and then zeroes
+      // it out. Counting them pollutes win/loss tallies and ROI math.
+      const isPhantom = pos.sharesHeld < 0.01
+        && Math.abs(pos.realizedPnl) < 0.01
+        && pos.totalBought < 0.01
+        && pos.avgPrice < 0.001;
+      if (isPhantom) continue;
+      positions.push(pos);
     }
     if (items.length < 50) break;
     lastId = items[items.length - 1].id;
@@ -180,49 +198,93 @@ async function fetchPositionsWithRange(addr) {
   return positions;
 }
 
+// Gamma lookup for a single tokenId. Tries two URL shapes because Gamma
+// has historically been picky about which parameter name it accepts, and
+// the token arrays inside the response can be JSON-encoded strings.
 async function gammaLookup(tokenId) {
-  try {
-    const res = await fetch(`${GAMMA_MARKETS}?clob_token_ids=${tokenId}&limit=1`);
-    if (!res.ok) return null;
-    const arr = await res.json();
-    if (!Array.isArray(arr) || arr.length === 0) return null;
-    const m = arr[0];
-    let tokens = m.clobTokenIds;
-    if (typeof tokens === 'string') { try { tokens = JSON.parse(tokens); } catch { tokens = null; } }
-    let outcomes = m.outcomes;
-    if (typeof outcomes === 'string') { try { outcomes = JSON.parse(outcomes); } catch { outcomes = null; } }
-    let prices = m.outcomePrices;
-    if (typeof prices === 'string') { try { prices = JSON.parse(prices); } catch { prices = null; } }
-    const closed = m.closed === true || m.closed === 'true';
-    let idx = -1;
-    if (Array.isArray(tokens)) idx = tokens.indexOf(tokenId);
-    let tokenWon = null;
-    let currentPrice = null;
-    if (idx !== -1 && Array.isArray(prices)) {
-      const p = parseFloat(prices[idx] || 0);
-      currentPrice = p;
-      if (closed) {
-        if (p >= 0.99) tokenWon = true;
-        else if (p <= 0.01) tokenWon = false;
+  const urls = [
+    `${GAMMA_MARKETS}?clob_token_ids=${tokenId}&limit=1`,
+    `${GAMMA_MARKETS}?clobTokenIds=${tokenId}&limit=1`,
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const arr = await res.json();
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      const m = arr[0];
+      let tokens = m.clobTokenIds;
+      if (typeof tokens === 'string') { try { tokens = JSON.parse(tokens); } catch { tokens = null; } }
+      let outcomes = m.outcomes;
+      if (typeof outcomes === 'string') { try { outcomes = JSON.parse(outcomes); } catch { outcomes = null; } }
+      let prices = m.outcomePrices;
+      if (typeof prices === 'string') { try { prices = JSON.parse(prices); } catch { prices = null; } }
+      const closed = m.closed === true || m.closed === 'true';
+      let idx = -1;
+      if (Array.isArray(tokens)) {
+        idx = tokens.findIndex(t => String(t) === String(tokenId));
       }
+      let tokenWon = null;
+      let currentPrice = null;
+      if (idx !== -1 && Array.isArray(prices)) {
+        const p = parseFloat(prices[idx] || 0);
+        currentPrice = p;
+        if (closed) {
+          // Be more permissive — some closed markets settle at 0.97-0.99
+          // or 0.01-0.03 rather than exactly 1/0.
+          if (p >= 0.95) tokenWon = true;
+          else if (p <= 0.05) tokenWon = false;
+        }
+      }
+      // If market is closed but we couldn't determine tokenWon from price,
+      // try the `winner` field on the market itself + our outcome position.
+      if (closed && tokenWon === null && m.winner && Array.isArray(outcomes) && idx !== -1) {
+        const ourOutcome = outcomes[idx];
+        if (ourOutcome) {
+          tokenWon = String(ourOutcome).toLowerCase().trim() === String(m.winner).toLowerCase().trim();
+        }
+      }
+      return {
+        closed,
+        tokenWon,
+        currentPrice,
+        question: m.question || '',
+      };
+    } catch {
+      continue;
     }
-    return {
-      closed,
-      tokenWon,
-      currentPrice,
-      question: m.question || '',
-    };
-  } catch {
-    return null;
   }
+  return null;
 }
 
 function classify(pos, market) {
   // Fully closed: realizedPnl is the whole story.
   if (pos.sharesHeld < 0.01) {
+    // Distinguish three sub-cases:
+    //   realizedPnl > 0  → closed win (sold/redeemed for profit)
+    //   realizedPnl < 0  → closed loss (sold at a loss, ate the cost)
+    //   realizedPnl ≈ 0 AND totalBought ≈ 0  → not a real position, skip
+    //     (but we already filtered these as phantoms upstream)
+    //   realizedPnl ≈ 0 AND totalBought > 0  → closed at breakeven, rare
+    //     but possible when someone buys and sells at the same price
+    if (Math.abs(pos.realizedPnl) < 0.01 && pos.totalBought < 0.01) {
+      return {
+        status: 'phantom',
+        outcome: 'phantom',
+        truePnl: 0,
+        decidedPnl: 0,
+      };
+    }
+    if (pos.realizedPnl > 0.01) {
+      return { status: 'closed_win', outcome: 'win', truePnl: pos.realizedPnl, decidedPnl: 0 };
+    }
+    if (pos.realizedPnl < -0.01) {
+      return { status: 'closed_loss', outcome: 'loss', truePnl: pos.realizedPnl, decidedPnl: 0 };
+    }
+    // Breakeven — traded in and out at same price, or scaled out at cost.
     return {
-      status: 'closed',
-      outcome: pos.realizedPnl > 0 ? 'win' : (pos.realizedPnl < 0 ? 'loss' : 'scratch'),
+      status: 'closed_breakeven',
+      outcome: 'scratch',
       truePnl: pos.realizedPnl,
       decidedPnl: 0,
     };
@@ -337,16 +399,20 @@ function classify(pos, market) {
 
   // Aggregate
   let realized = 0, decided = 0, openMtm = 0;
-  let wins = 0, losses = 0, open = 0, unknown = 0;
+  let wins = 0, losses = 0, open = 0, scratch = 0, unresolvedMarket = 0, closedUndetermined = 0;
   let totalCost = 0;
+  let openCapitalAtRisk = 0;
   for (const e of enriched) {
     realized += e.realizedPnl;
     if (e.decidedPnl != null) decided += e.decidedPnl;
     if (e.status === 'open' && e.mtm != null) openMtm += e.mtm;
     if (e.outcome === 'win') wins++;
     else if (e.outcome === 'loss') losses++;
-    else if (e.outcome === 'pending') open++;
-    else unknown++;
+    else if (e.outcome === 'pending') { open++; openCapitalAtRisk += e.totalBought; }
+    else if (e.outcome === 'scratch') scratch++;
+    else if (e.status === 'closed_undetermined') closedUndetermined++;
+    else if (e.status === 'unknown') unresolvedMarket++;
+    // 'phantom' status intentionally not counted — they're subgraph noise.
     totalCost += e.totalBought;
   }
   const truePnl = realized + decided;
@@ -359,12 +425,18 @@ function classify(pos, market) {
       address,
       positions: enriched.length,
       aggregates: {
-        wins, losses, open, unknown,
+        wins,
+        losses,
+        open,
+        scratch,
+        closedUndetermined,
+        unresolvedMarket,
         resolvedCount,
         winRate: wr,
         realizedPnl: +realized.toFixed(2),
         decidedUnredeemedPnl: +decided.toFixed(2),
         openMtm: +openMtm.toFixed(2),
+        openCapitalAtRisk: +openCapitalAtRisk.toFixed(2),
         truePnl: +truePnl.toFixed(2),
         totalCapitalDeployed: +totalCost.toFixed(2),
         roi,
@@ -380,10 +452,12 @@ function classify(pos, market) {
   console.log(`Lifetime positions:            ${enriched.length}`);
   console.log(`  - wins:                      ${wins}`);
   console.log(`  - losses:                    ${losses}`);
-  console.log(`  - open (unresolved):         ${open}`);
-  console.log(`  - unknown:                   ${unknown}`);
+  console.log(`  - open (unresolved):         ${open}  ($${openCapitalAtRisk.toFixed(2)} at risk)`);
+  console.log(`  - scratch (breakeven):       ${scratch}`);
+  console.log(`  - closed, winner undetermined: ${closedUndetermined}`);
+  console.log(`  - market not found:          ${unresolvedMarket}`);
   console.log('');
-  console.log(`Win rate (resolved only):      ${wr != null ? (wr * 100).toFixed(2) + '%' : 'n/a'}`);
+  console.log(`Win rate (resolved only):      ${wr != null ? (wr * 100).toFixed(2) + '%' : 'n/a'}  (${wins}W / ${losses}L)`);
   console.log(`Total capital deployed:        $${totalCost.toFixed(2)}`);
   console.log('');
   console.log(`Realized PnL (Goldsky):        $${realized.toFixed(2)}`);
