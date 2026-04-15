@@ -515,11 +515,11 @@ module.exports = { analyzeWallet, fetchPositions, gammaLookup, classify };
 if (require.main === module) (async function main() {
   let marketLookup = new Map();
   try {
-    const analytics = loadGzJSON('data/analytics.json.gz');
-    for (const [tid, m] of Object.entries(analytics.marketLookup || {})) {
+    const markets = loadGzJSON('data/markets.json.gz');
+    for (const [tid, m] of Object.entries(markets || {})) {
       marketLookup.set(tid, m);
     }
-    console.error(`Loaded ${marketLookup.size} markets from analytics.json.gz`);
+    console.error(`Loaded ${marketLookup.size} markets from markets.json.gz`);
   } catch {
     console.error('No local marketLookup; will hit Gamma for every position.');
   }

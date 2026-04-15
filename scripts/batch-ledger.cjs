@@ -24,6 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { analyzeWallet } = require('./wallet-ledger.cjs');
+const { loadHistory, recencyFor } = require('./wallet-recency.cjs');
 
 const args = process.argv.slice(2);
 function arg(name, def) {
@@ -105,6 +106,11 @@ function rowToCsv(r) {
     a?.openCapitalAtRisk ?? '',
     a?.roi != null ? (a.roi * 100).toFixed(2) : '',
     a?.decidedROI != null ? (a.decidedROI * 100).toFixed(2) : '',
+    r.recency?.daysSinceChange ?? '',
+    r.recency?.pnlDelta ?? '',
+    r.recency?.positionsDelta ?? '',
+    r.recency?.windowDays ?? '',
+    r.recency?.snapshotCount ?? '',
     r.gammaCalls,
     r.error || '',
   ].map(csvEscape).join(',');
@@ -137,11 +143,20 @@ function rowToCsv(r) {
   // Preload marketLookup once
   let marketLookup = new Map();
   try {
-    const analytics = loadGz('data/analytics.json.gz');
-    for (const [tid, m] of Object.entries(analytics.marketLookup || {})) marketLookup.set(tid, m);
-    console.error(`Loaded ${marketLookup.size} markets from analytics.json.gz`);
+    const markets = loadGz('data/markets.json.gz');
+    for (const [tid, m] of Object.entries(markets || {})) marketLookup.set(tid, m);
+    console.error(`Loaded ${marketLookup.size} markets from markets.json.gz`);
   } catch {
     console.error('No local marketLookup; will hit Gamma for every still-held position.');
+  }
+
+  // Preload wallet history for recency signal
+  let history = new Map();
+  try {
+    history = loadHistory('data/wallet-history.json.gz');
+    console.error(`Loaded history for ${history.size} wallets`);
+  } catch (err) {
+    console.error('No wallet-history.json.gz; recency columns will be empty');
   }
 
   // Open CSV and stream rows as each wallet finishes, so a crash/hang
@@ -152,7 +167,9 @@ function rowToCsv(r) {
     'truePositions', 'trueWins', 'trueLosses', 'trueOpen', 'trueScratch', 'trueUnknown',
     'trueWR', 'realizedPnl', 'decidedPnl', 'truePnl',
     'totalCapital', 'decidedCapital', 'openCapitalAtRisk',
-    'roi', 'decidedROI', 'gammaCalls', 'error',
+    'roi', 'decidedROI',
+    'daysSincePnlChange', 'pnlDelta', 'positionsDelta', 'historyWindowDays', 'historySnapshots',
+    'gammaCalls', 'error',
   ];
   const csvStream = fs.createWriteStream(OUT);
   csvStream.write(headers.join(',') + '\n');
@@ -181,11 +198,11 @@ function rowToCsv(r) {
         `decROI ${a.decidedROI != null ? (a.decidedROI * 100).toFixed(1) + '%' : 'n/a'} | ` +
         `${elapsed}s`
       );
-      row = { wallet: w, aggregates: a, gammaCalls: res.gammaCalls, error: null };
+      row = { wallet: w, aggregates: a, gammaCalls: res.gammaCalls, error: null, recency: recencyFor(history, w.address) };
     } catch (err) {
       const elapsed = ((Date.now() - started) / 1000).toFixed(1);
       console.error(`    FAILED after ${elapsed}s: ${err.message.slice(0, 120)}`);
-      row = { wallet: w, aggregates: null, gammaCalls: 0, error: err.message.slice(0, 200) };
+      row = { wallet: w, aggregates: null, gammaCalls: 0, error: err.message.slice(0, 200), recency: recencyFor(history, w.address) };
     }
     csvStream.write(rowToCsv(row) + '\n');
     return row;
