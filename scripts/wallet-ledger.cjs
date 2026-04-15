@@ -53,15 +53,34 @@ async function gql(query) {
   return data.data;
 }
 
+// Goldsky's user_position table isn't indexed on `user`, so filtering by
+// `where: { user: "0x..." }` scans the whole table and times out. But the
+// `id` field IS indexed (primary key) and follows the format
+// `{user}-{tokenId}`, so we can filter by id_starts_with — which uses the
+// primary-key index and returns instantly. Fall back to id-range bounds
+// if the subgraph doesn't support _starts_with.
 async function fetchPositions(addr) {
   const positions = [];
   let lastId = '';
-  while (positions.length < 5000) {
+  // Use two approaches in order: id_starts_with (cleanest if supported),
+  // then id_gte/id_lt range bounds (universally supported).
+  const tryStartsWith = true;
+  while (positions.length < 10000) {
+    const whereClauses = [];
+    if (tryStartsWith) {
+      whereClauses.push(`id_starts_with: "${addr}"`);
+    } else {
+      // ID range: everything lexicographically between addr and addr+"~".
+      // "~" (0x7E) is greater than all hex chars and '-' (0x2D), so it
+      // serves as an inclusive upper bound for any id that begins with addr.
+      whereClauses.push(`id_gte: "${addr}"`, `id_lt: "${addr}~"`);
+    }
+    if (lastId) whereClauses.push(`id_gt: "${lastId}"`);
     const query = `{
       userPositions(
-        first: 1000
+        first: 500
         orderBy: id
-        where: { user: "${addr}"${lastId ? `, id_gt: "${lastId}"` : ''} }
+        where: { ${whereClauses.join(', ')} }
       ) {
         id
         tokenId
@@ -71,10 +90,24 @@ async function fetchPositions(addr) {
         totalBought
       }
     }`;
-    const data = await gql(query);
+    let data;
+    try {
+      data = await gql(query);
+    } catch (err) {
+      // If starts_with isn't supported, swap to range bounds and retry the batch
+      if (tryStartsWith && /starts_with|Unknown argument|Cannot query/i.test(err.message)) {
+        console.error('  id_starts_with not supported, falling back to id range');
+        return fetchPositionsWithRange(addr);
+      }
+      throw err;
+    }
     const items = data?.userPositions || [];
     if (items.length === 0) break;
     for (const it of items) {
+      // Defensive: skip any rows where the id prefix doesn't match our address
+      // (shouldn't happen with starts_with, but guards against lexicographic
+      // surprises on the range path).
+      if (!it.id.toLowerCase().startsWith(addr)) continue;
       positions.push({
         id: it.id,
         tokenId: it.tokenId,
@@ -84,7 +117,41 @@ async function fetchPositions(addr) {
         totalBought: parseFloat(it.totalBought || 0) / USDC_DIVISOR,
       });
     }
-    if (items.length < 1000) break;
+    if (items.length < 500) break;
+    lastId = items[items.length - 1].id;
+  }
+  return positions;
+}
+
+// Fallback: id range bounds. Same result, more portable.
+async function fetchPositionsWithRange(addr) {
+  const positions = [];
+  let lastId = addr; // start cursor at the address itself
+  while (positions.length < 10000) {
+    const query = `{
+      userPositions(
+        first: 500
+        orderBy: id
+        where: { id_gt: "${lastId}", id_lt: "${addr}~" }
+      ) {
+        id tokenId amount avgPrice realizedPnl totalBought
+      }
+    }`;
+    const data = await gql(query);
+    const items = data?.userPositions || [];
+    if (items.length === 0) break;
+    for (const it of items) {
+      if (!it.id.toLowerCase().startsWith(addr)) continue;
+      positions.push({
+        id: it.id,
+        tokenId: it.tokenId,
+        sharesHeld: parseFloat(it.amount || 0) / USDC_DIVISOR,
+        avgPrice: parseFloat(it.avgPrice || 0) / USDC_DIVISOR,
+        realizedPnl: parseFloat(it.realizedPnl || 0) / USDC_DIVISOR,
+        totalBought: parseFloat(it.totalBought || 0) / USDC_DIVISOR,
+      });
+    }
+    if (items.length < 500) break;
     lastId = items[items.length - 1].id;
   }
   return positions;
