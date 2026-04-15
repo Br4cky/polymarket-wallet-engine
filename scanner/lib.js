@@ -2463,10 +2463,8 @@ function closeSignal(active, history, signalId, reason, scanIndex, timestamp, ou
   }
   delete active[signalId];
 
-  // Keep history at a manageable size (last 500 signals)
-  if (history.length > 500) {
-    history.splice(0, history.length - 500);
-  }
+  // History is retained in full — no cap. Every resolved signal is preserved
+  // for downstream WR / cohort / return analysis across the engine's lifetime.
 }
 
 /**

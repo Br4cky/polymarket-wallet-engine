@@ -64,6 +64,12 @@ const CONFIG = {
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
   MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
+  // Max capital-weighted avg entry price. 0.85 ⇒ wallet's typical trade must
+  // have ≥17.6% implied max ROI. Keeps the pool aligned with the signal
+  // engine's MIN_OPEN_ROI (15%) — scrap-graders can no longer ride WR into
+  // the pool just to produce signals we'd then filter out anyway.
+  // 0 or 1 = disabled.
+  MAX_WALLET_AVG_ENTRY_PRICE: 0.85,
   MAX_INACTIVE_DAYS: 60,           // Must have traded within last 60 days
   DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
   RESCORE_BATCH_SIZE: 100,         // Wallets to rescore per discovery cycle
@@ -493,6 +499,17 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
+      // Reject scrap-graders: wallets whose capital-weighted typical entry
+      // is above our ROI-floor ceiling. Their WR may look great but the
+      // signal engine would filter every trade they make at MIN_OPEN_ROI.
+      if (CONFIG.MAX_WALLET_AVG_ENTRY_PRICE > 0 &&
+          CONFIG.MAX_WALLET_AVG_ENTRY_PRICE < 1 &&
+          stats.avgEntryPrice > 0 &&
+          stats.avgEntryPrice > CONFIG.MAX_WALLET_AVG_ENTRY_PRICE) {
+        processed++;
+        continue;
+      }
+
       pool[address] = {
         address,
         score,
@@ -587,6 +604,17 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       if (!stats || (stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
         wallet.status = 'removed';
         wallet.removeReason = 'insufficient_resolved';
+        decayed++;
+        continue;
+      }
+      // Evict scrap-graders whose typical entry price leaves no ROI headroom
+      // for the signal engine's MIN_OPEN_ROI gate to ever accept their plays.
+      if (CONFIG.MAX_WALLET_AVG_ENTRY_PRICE > 0 &&
+          CONFIG.MAX_WALLET_AVG_ENTRY_PRICE < 1 &&
+          stats.avgEntryPrice > 0 &&
+          stats.avgEntryPrice > CONFIG.MAX_WALLET_AVG_ENTRY_PRICE) {
+        wallet.status = 'removed';
+        wallet.removeReason = 'entry_price_too_high';
         decayed++;
         continue;
       }

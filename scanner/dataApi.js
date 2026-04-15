@@ -533,14 +533,43 @@ function analyzeTradeHistory(events, opts = {}) {
   const recentWeeklyConsistency = +(recentActiveWeeks / recentTotalWeeks).toFixed(3);
   const recentTradesPerActiveWeek = recentActiveWeeks > 0 ? +(recentTradeCount / recentActiveWeeks).toFixed(1) : 0;
 
-  // Edge ratio: average win / average loss
+  // Edge ratio: DOLLAR-based average win / loss (legacy — retained for dashboard
+  // and backcompat). See note below: prefer `roiEdgeRatio` for scoring.
   const avgWin = wins > 0
     ? marketResults.filter(r => r.outcome === 'win').reduce((s, r) => s + r.pnl, 0) / wins
     : 0;
   const avgLoss = losses > 0
     ? Math.abs(marketResults.filter(r => r.outcome === 'loss').reduce((s, r) => s + r.pnl, 0) / losses)
-    : 1;
-  const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+    : 0; // no losses yet — avoid bogus $1 fallback that produced huge ratios
+  const edgeRatio = avgLoss > 0 ? avgWin / avgLoss : null;
+
+  // ROI-based per-trade metrics. Each resolved market has a known dollar cost
+  // (avgBuyPrice * buySize) and known $ PnL, so ROI% = pnl / cost. This lets us
+  // distinguish wallets that grind 5% wins on 95¢ scraps (roiEdge ≈ 0.05) from
+  // wallets that buy 30¢ underdogs and collect 233% on hits (roiEdge ≈ 2.33).
+  // NOTE: buySize is SHARES, not $. Dollar cost is avgBuyPrice * buySize.
+  const resolvedWithSize = marketResults.filter(r => r.buySize > 0 && r.avgBuyPrice > 0);
+  const marketCost = (r) => r.avgBuyPrice * r.buySize;
+  const totalEntryCapital = resolvedWithSize.reduce((s, r) => s + marketCost(r), 0);
+  // Capital-weighted avg entry price — reflects where the wallet actually deploys $.
+  const avgEntryPrice = totalEntryCapital > 0
+    ? resolvedWithSize.reduce((s, r) => s + (r.avgBuyPrice * marketCost(r)), 0) / totalEntryCapital
+    : 0;
+  const tradeRois = resolvedWithSize.map(r => r.pnl / marketCost(r));
+  const avgTradeRoi = tradeRois.length > 0
+    ? tradeRois.reduce((s, x) => s + x, 0) / tradeRois.length
+    : 0;
+  const winRois = resolvedWithSize.filter(r => r.outcome === 'win').map(r => r.pnl / marketCost(r));
+  const lossRois = resolvedWithSize.filter(r => r.outcome === 'loss').map(r => Math.abs(r.pnl) / marketCost(r));
+  const avgWinRoi = winRois.length > 0 ? winRois.reduce((s, x) => s + x, 0) / winRois.length : 0;
+  const avgLossRoi = lossRois.length > 0 ? lossRois.reduce((s, x) => s + x, 0) / lossRois.length : 0;
+  // roiEdgeRatio: avg %return on wins / avg %return on losses. Losses on prediction
+  // markets are always close to 100% (shares go to $0), so this ratio is roughly
+  // equivalent to avgWinRoi — but keeping the ratio form normalises for markets
+  // where a loss might be partial (rare). Null when insufficient data to compute.
+  const roiEdgeRatio = (avgLossRoi > 0 && winRois.length > 0)
+    ? avgWinRoi / avgLossRoi
+    : null;
 
   return {
     // Core performance
@@ -553,7 +582,13 @@ function analyzeTradeHistory(events, opts = {}) {
     totalPnl: +totalPnl.toFixed(2),
     recentPnl: +recentPnl.toFixed(2),
     avgPnlPerTrade: +avgPnlPerTrade.toFixed(2),
-    edgeRatio: +edgeRatio.toFixed(2),
+    edgeRatio: edgeRatio != null ? +edgeRatio.toFixed(2) : null,
+    // ROI-based per-trade economics (preferred over edgeRatio for scoring)
+    avgEntryPrice: +avgEntryPrice.toFixed(4),
+    avgTradeRoi: +avgTradeRoi.toFixed(4),
+    avgWinRoi: +avgWinRoi.toFixed(4),
+    avgLossRoi: +avgLossRoi.toFixed(4),
+    roiEdgeRatio: roiEdgeRatio != null ? +roiEdgeRatio.toFixed(3) : null,
 
     // Activity
     totalTrades: allEvents.length,
@@ -659,11 +694,25 @@ function computeWalletScore(stats) {
   const frequencyFactor = Math.min(1, Math.log10(1 + stats.recentTradesPerDay * 10) / 2);
   const activityScore = (recencyFactor * 10 + frequencyFactor * 5);
 
-  // Edge quality (15 pts) — avg win / avg loss ratio
-  // edgeRatio of 1.0 = break even, 2.0 = good, 5.0+ = elite
-  const edgeScore = stats.edgeRatio > 0
-    ? Math.min(1, Math.log2(1 + Math.max(0, stats.edgeRatio - 0.5)) / 3) * 15
-    : 0;
+  // Edge quality (15 pts) — ROI-based avg-win-ROI / avg-loss-ROI ratio.
+  // Losses on prediction markets always go to ~$0, so avgLossRoi ≈ 1.0 and
+  // roiEdgeRatio ≈ avgWinRoi. Calibration:
+  //   0.15 = wallet grinds scrap bets (aligned with signal MIN_ROI floor) → 0 pts
+  //   0.50 = wallet averages 50% ROI on winners → mid-range
+  //   2.00 = wallet averages 200% ROI on winners → near-top
+  //   5.00+ = elite underdog hunter → saturates at 15
+  // null → no losses recorded yet with sufficient sample; grant 3 pts benefit
+  // of doubt (mirrors consistencyScore fallback). Old dollar-based edgeRatio
+  // is retained on the stats object for dashboard backcompat but is no longer
+  // used for scoring — it was saturated/noisy due to the dollar-asymmetry bug.
+  let edgeScore;
+  if (stats.roiEdgeRatio == null) {
+    edgeScore = 3;
+  } else if (stats.roiEdgeRatio <= 0.15) {
+    edgeScore = 0;
+  } else {
+    edgeScore = Math.min(1, Math.log2(1 + (stats.roiEdgeRatio - 0.15)) / 3) * 15;
+  }
 
   const total = recentWrScore + allTimeWrScore + pnlScore + consistencyScore + activityScore + edgeScore;
   return Math.min(100, Math.round(total * 10) / 10);

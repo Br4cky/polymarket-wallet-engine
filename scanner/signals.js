@@ -45,15 +45,28 @@ const SIGNAL_THRESHOLDS = {
   STALE_HOURS: 96,                  // Close signal if no new buys for 96 hours
   MAX_SIGNAL_LIFETIME_HOURS: 600,   // ~25 days max lifetime (safety valve)
 
-  // EV filter — price-based. Enforced at signal OPEN on BOTH the wallet's
+  // EV filter — implied-ROI based. Enforced at signal OPEN on BOTH the wallet's
   // average fill price AND the live market price (what a follower would pay).
-  // 0.95 kills ~36% of historical signals, all of them near-worthless settlement
-  // scraps averaging +0.2% return. Lifts avgReturn 43.7% → 87.1% and raises EV
-  // from +3.5% to +5.1% per signal despite lowering headline WR 72% → 56%.
+  // Works symmetrically for YES/NO — currentPrice is always the price of the
+  // token the wallet bought (and the token a follower would buy), so a buy on
+  // the NO side at 10¢ correctly shows as 900% max ROI, not 10¢ = bad.
+  //
+  // Max ROI on a binary outcome token = (1 / price) - 1. A 15% floor maps to a
+  // price ceiling of ~0.8696. What-if on 479 historical signals: dropping the
+  // sub-15% cohort (199 signals, cum return −48%) raises avgReturn 6.54%→11.36%
+  // while preserving cumulative return — the killed bucket is 98% WR noise of
+  // near-resolved scraps where single losses wipe out many tiny wins.
   MIN_ENTRY_PRICE: 0,               // 0 = disabled. Set to e.g. 0.10 to filter
-  MAX_ENTRY_PRICE: 0.95,            // Wallet avg fill threshold. 1 = disabled.
-  MAX_OPEN_PRICE: 0.95,             // Live market price threshold at publish. 1 = disabled.
+  MIN_WALLET_ROI: 0.15,             // Wallet's fill must have ≥15% max upside. 0 = disabled.
+  MIN_OPEN_ROI: 0.15,               // Live price at publish must have ≥15% max upside. 0 = disabled.
 };
+
+// Implied-ROI helper: for a binary outcome token priced at p ∈ (0,1),
+// max ROI if it resolves TRUE = (1 / p) - 1. E.g. p=0.10 → 900%, p=0.87 → 15%.
+function impliedMaxROI(price) {
+  if (!(price > 0) || price >= 1) return 0;
+  return (1 / price) - 1;
+}
 
 // ============================================================================
 // Trade Convergence Detection
@@ -247,9 +260,10 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       continue; // Below minimum wallet count
     }
 
-    // EV filter (when enabled)
+    // EV filter — wallet fill price floor (rare) and implied-ROI ceiling.
     if (SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE > 0 && candidate.avgEntryPrice < SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE) continue;
-    if (SIGNAL_THRESHOLDS.MAX_ENTRY_PRICE < 1 && candidate.avgEntryPrice > SIGNAL_THRESHOLDS.MAX_ENTRY_PRICE) continue;
+    if (SIGNAL_THRESHOLDS.MIN_WALLET_ROI > 0 &&
+        impliedMaxROI(candidate.avgEntryPrice) < SIGNAL_THRESHOLDS.MIN_WALLET_ROI) continue;
 
     if (active[signalId]) {
       // --- UPDATE existing signal ---
@@ -298,14 +312,14 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
 
       // Require a valid live price — without it we can't track return,
-      // can't run the MAX_OPEN_PRICE filter, and the dashboard shows "-".
+      // can't run the MIN_OPEN_ROI filter, and the dashboard shows "-".
       if (!(currentPrice > 0)) continue;
 
       // EV filter on live market price — what a follower would actually pay.
-      // Skips end-of-market sweep signals where the market has already moved
-      // to ≥MAX_OPEN_PRICE and the edge is gone.
-      if (SIGNAL_THRESHOLDS.MAX_OPEN_PRICE < 1 &&
-          currentPrice > SIGNAL_THRESHOLDS.MAX_OPEN_PRICE) continue;
+      // Rejects signals where implied max ROI on the signal side is below
+      // MIN_OPEN_ROI (e.g. YES at 0.90 = 11.1% ROI, cut at 15% floor).
+      if (SIGNAL_THRESHOLDS.MIN_OPEN_ROI > 0 &&
+          impliedMaxROI(currentPrice) < SIGNAL_THRESHOLDS.MIN_OPEN_ROI) continue;
 
       active[signalId] = {
         signalId,
@@ -403,10 +417,11 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       const buySize = data.trades.reduce((s, t) => s + (t.size * t.price), 0);
       if (buySize < SIGNAL_THRESHOLDS.SOLO_MIN_BUY_SIZE) continue;
 
-      // EV filter — wallet's avg fill price (applies to solo path too)
+      // EV filter — wallet's avg fill price floor + implied-ROI ceiling.
       const soloAvgPrice = data.trades.reduce((s, t) => s + t.price, 0) / data.trades.length;
       if (SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE > 0 && soloAvgPrice < SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE) continue;
-      if (SIGNAL_THRESHOLDS.MAX_ENTRY_PRICE < 1 && soloAvgPrice > SIGNAL_THRESHOLDS.MAX_ENTRY_PRICE) continue;
+      if (SIGNAL_THRESHOLDS.MIN_WALLET_ROI > 0 &&
+          impliedMaxROI(soloAvgPrice) < SIGNAL_THRESHOLDS.MIN_WALLET_ROI) continue;
 
       const signalId = `sig_solo_${wallet.slice(0, 10)}_${cid.slice(0, 10)}`;
       if (active[signalId]) {
@@ -439,8 +454,9 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         if (!(currentPrice > 0)) continue;
 
         // EV filter on live market price — what a follower would actually pay.
-        if (SIGNAL_THRESHOLDS.MAX_OPEN_PRICE < 1 &&
-            currentPrice > SIGNAL_THRESHOLDS.MAX_OPEN_PRICE) continue;
+        // Reject if implied max ROI on the signal side is below MIN_OPEN_ROI.
+        if (SIGNAL_THRESHOLDS.MIN_OPEN_ROI > 0 &&
+            impliedMaxROI(currentPrice) < SIGNAL_THRESHOLDS.MIN_OPEN_ROI) continue;
 
         const confidence = computeSoloConfidence(walletInfo, buySize, avgPrice);
 
@@ -738,9 +754,8 @@ function closeSignal(active, history, signalId, reason, scanIndex, timestamp, ou
   }
   delete active[signalId];
 
-  if (history.length > 500) {
-    history.splice(0, history.length - 500);
-  }
+  // History is retained in full — no cap. Every resolved signal is preserved
+  // for downstream WR / cohort / return analysis across the engine's lifetime.
 }
 
 // ============================================================================
