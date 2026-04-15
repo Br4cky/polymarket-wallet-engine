@@ -7,3 +7,6 @@ node_modules/
 data/wallets.json
 data/markets.json
 data/analytics.json
+
+# Batch ledger CSV outputs (local-only)
+out/

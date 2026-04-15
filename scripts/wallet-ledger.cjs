@@ -376,22 +376,14 @@ function classify(pos, market) {
   };
 }
 
-(async function main() {
-  console.error(`Fetching Goldsky positions for ${address}...`);
-  const positions = await fetchPositions(address);
-  console.error(`Got ${positions.length} positions from subgraph.`);
-
-  // Load our marketLookup if available (saves Gamma API calls)
-  let marketLookup = new Map();
-  try {
-    const analytics = loadGzJSON('data/analytics.json.gz');
-    for (const [tid, m] of Object.entries(analytics.marketLookup || {})) {
-      marketLookup.set(tid, m);
-    }
-    console.error(`Loaded ${marketLookup.size} markets from analytics.json.gz`);
-  } catch {
-    console.error('No local marketLookup; will hit Gamma for every position.');
-  }
+// Core analyzer — exported so batch runners can reuse it without
+// reimplementing the reconcile/classify pipeline. Pass in a preloaded
+// marketLookup Map to avoid reloading analytics.json.gz per wallet.
+async function analyzeWallet(addr, { marketLookup = new Map(), quiet = false } = {}) {
+  const log = quiet ? () => {} : (msg) => console.error(msg);
+  log(`Fetching Goldsky positions for ${addr}...`);
+  const positions = await fetchPositions(addr);
+  log(`Got ${positions.length} positions from subgraph.`);
 
   const enriched = [];
   let gammaCalls = 0;
@@ -448,28 +440,62 @@ function classify(pos, market) {
   const resolvedCount = wins + losses;
   const wr = resolvedCount > 0 ? wins / resolvedCount : null;
   const roi = totalCost > 0 ? truePnl / totalCost : null;
+  // decidedROI = pure resolved ROI (excludes open MtM), which is what
+  // scoring should key on — open positions are still "pending" truth.
+  const decidedCapital = totalCost - openCapitalAtRisk;
+  const decidedROI = decidedCapital > 0 ? (realized + decided) / decidedCapital : null;
+
+  return {
+    address: addr,
+    positions: enriched,
+    aggregates: {
+      total: enriched.length,
+      wins, losses, open, scratch, closedUndetermined, unresolvedMarket,
+      resolvedCount,
+      winRate: wr,
+      realizedPnl: +realized.toFixed(2),
+      decidedUnredeemedPnl: +decided.toFixed(2),
+      openMtm: +openMtm.toFixed(2),
+      openCapitalAtRisk: +openCapitalAtRisk.toFixed(2),
+      truePnl: +truePnl.toFixed(2),
+      totalCapitalDeployed: +totalCost.toFixed(2),
+      decidedCapitalDeployed: +decidedCapital.toFixed(2),
+      roi,
+      decidedROI,
+    },
+    gammaCalls,
+  };
+}
+
+module.exports = { analyzeWallet, fetchPositions, gammaLookup, classify };
+
+// CLI entry point — only runs when invoked directly
+if (require.main === module) (async function main() {
+  let marketLookup = new Map();
+  try {
+    const analytics = loadGzJSON('data/analytics.json.gz');
+    for (const [tid, m] of Object.entries(analytics.marketLookup || {})) {
+      marketLookup.set(tid, m);
+    }
+    console.error(`Loaded ${marketLookup.size} markets from analytics.json.gz`);
+  } catch {
+    console.error('No local marketLookup; will hit Gamma for every position.');
+  }
+
+  const result = await analyzeWallet(address, { marketLookup });
+  const { aggregates: a, positions: enriched, gammaCalls } = result;
+  const {
+    wins, losses, open, scratch, closedUndetermined, unresolvedMarket,
+    winRate: wr, realizedPnl: realized, decidedUnredeemedPnl: decided,
+    openMtm, openCapitalAtRisk, truePnl, totalCapitalDeployed: totalCost,
+    roi, decidedROI,
+  } = a;
 
   if (wantJson) {
     console.log(JSON.stringify({
       address,
       positions: enriched.length,
-      aggregates: {
-        wins,
-        losses,
-        open,
-        scratch,
-        closedUndetermined,
-        unresolvedMarket,
-        resolvedCount,
-        winRate: wr,
-        realizedPnl: +realized.toFixed(2),
-        decidedUnredeemedPnl: +decided.toFixed(2),
-        openMtm: +openMtm.toFixed(2),
-        openCapitalAtRisk: +openCapitalAtRisk.toFixed(2),
-        truePnl: +truePnl.toFixed(2),
-        totalCapitalDeployed: +totalCost.toFixed(2),
-        roi,
-      },
+      aggregates: a,
       positionsDetail: verbose ? enriched : undefined,
     }, null, 2));
     return;
@@ -493,7 +519,8 @@ function classify(pos, market) {
   console.log(`Unredeemed decided PnL:        $${decided.toFixed(2)}  (wins never redeemed + worthless losers)`);
   console.log(`  --------`);
   console.log(`TRUE lifetime PnL:             $${truePnl.toFixed(2)}`);
-  console.log(`ROI (truePnl / capital):       ${roi != null ? (roi * 100).toFixed(2) + '%' : 'n/a'}`);
+  console.log(`ROI (truePnl / total capital): ${roi != null ? (roi * 100).toFixed(2) + '%' : 'n/a'}`);
+  console.log(`Decided ROI (resolved only):   ${decidedROI != null ? (decidedROI * 100).toFixed(2) + '%' : 'n/a'}`);
   console.log(`Open positions mark-to-market: $${openMtm.toFixed(2)}`);
   console.log('');
   console.log(`(${gammaCalls} Gamma calls used for missing resolutions)`);
