@@ -105,6 +105,17 @@ const CONFIG = {
   USE_SCORE_V2: true,
   V2_MIN_POOL_COVERAGE_PCT: 50,
 
+  // Phase 6 discovery gates: reject candidates at the door on the same
+  // shape the rescore loop would evict. Cheaper than admit-then-evict and
+  // keeps the pool clean from first contact. Set DISCOVERY_V2_GATE='off'
+  // to revert to legacy-only admission.
+  DISCOVERY_V2_GATE: 'on',
+  DISCOVERY_MAX_INACTIVE_DAYS: 30,           // tighter than MAX_INACTIVE_DAYS
+  DISCOVERY_MIN_DECIDED_CAPITAL: 5000,       // must have risked $5k+ on resolved plays
+  DISCOVERY_MIN_DECIDED_ROI: 0.08,           // must average 8%+ ROI on resolved capital
+  DISCOVERY_MAX_WIN_RATE: 0.98,              // reject obvious mean-picker shape at door
+  DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED: 25,   // only apply WR cap when sample is meaningful
+
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
   LOOKBACK_HOURS: 4,                       // Check trades from last 4 hours each loop
@@ -588,11 +599,16 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
-      // Must have traded recently — no ghost wallets
+      // Must have traded recently — Phase 6 tightens this for fresh entries
+      // (existing pool members still get the gentler MAX_INACTIVE_DAYS grace
+      // in the rescore loop).
       const daysSinceLastTrade = stats.lastTradeTs > 0
         ? (Date.now() / 1000 - stats.lastTradeTs) / 86400
         : Infinity;
-      if (daysSinceLastTrade > CONFIG.MAX_INACTIVE_DAYS) {
+      const freshInactiveFloor = CONFIG.DISCOVERY_V2_GATE === 'on'
+        ? CONFIG.DISCOVERY_MAX_INACTIVE_DAYS
+        : CONFIG.MAX_INACTIVE_DAYS;
+      if (daysSinceLastTrade > freshInactiveFloor) {
         processed++;
         continue;
       }
@@ -608,9 +624,73 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
+      // ── Phase 6: V2 discovery gates ───────────────────────────────────
+      // Fetch per-position decided metrics so we can reject mean-pickers
+      // and zero-edge traders at the door instead of admitting them and
+      // relying on eviction to clean up. One extra Goldsky query per
+      // qualified candidate — acceptable given we're already mid-analyze.
+      let decidedMetrics = null;
+      if (CONFIG.DISCOVERY_V2_GATE === 'on') {
+        try {
+          const fresh = await fetchGoldskyWalletPnl(address, entityName, fields, { marketLookup });
+          if (fresh && fresh.decided) decidedMetrics = fresh.decided;
+        } catch (err) {
+          // Non-fatal — fall through to legacy gates
+        }
+
+        if (decidedMetrics) {
+          // Reject obvious mean-picker shape on sight
+          if (decidedMetrics.isMeanPickerShape === true) {
+            processed++;
+            continue;
+          }
+          // Require meaningful capital-at-risk on resolved bets
+          if ((decidedMetrics.decidedCapital || 0) < CONFIG.DISCOVERY_MIN_DECIDED_CAPITAL) {
+            processed++;
+            continue;
+          }
+          // Require real edge, not just WR
+          if (decidedMetrics.decidedROI == null
+              || decidedMetrics.decidedROI < CONFIG.DISCOVERY_MIN_DECIDED_ROI) {
+            processed++;
+            continue;
+          }
+          // Hard cap on WR when sample is meaningful — 99%+ WR is almost
+          // always a mean-picker, even if other gates passed by a whisker
+          const resolvedNow = (decidedMetrics.wins || 0) + (decidedMetrics.losses || 0);
+          if (resolvedNow >= CONFIG.DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED
+              && decidedMetrics.winRate != null
+              && decidedMetrics.winRate > CONFIG.DISCOVERY_MAX_WIN_RATE) {
+            processed++;
+            continue;
+          }
+        }
+      }
+
+      // Fold decided metrics onto stats so the wallet admits with full
+      // V2 data already populated — no waiting for first rescore.
+      if (decidedMetrics) {
+        stats.decidedPnl = decidedMetrics.decidedPnl;
+        stats.decidedCapital = decidedMetrics.decidedCapital;
+        stats.decidedROI = decidedMetrics.decidedROI;
+        stats.decidedWins = decidedMetrics.wins;
+        stats.decidedLosses = decidedMetrics.losses;
+        stats.decidedWinRate = decidedMetrics.winRate;
+        stats.decidedOpenPositions = decidedMetrics.open;
+        stats.decidedOpenCapitalAtRisk = decidedMetrics.openCapitalAtRisk;
+        stats.decidedUnredeemedWinsPositions = decidedMetrics.unredeemedWins;
+        stats.decidedWorthlessLosses = decidedMetrics.worthlessLosses;
+        stats.isMeanPickerShape = decidedMetrics.isMeanPickerShape;
+        stats.decidedMeasuredAt = new Date().toISOString();
+      }
+      // Compute V2 score too so the wallet is ranker-ready on day zero
+      const v2Disc = computeWalletScoreV2(stats);
+
       pool[address] = {
         address,
         score,
+        scoreV2: v2Disc && v2Disc.score != null ? v2Disc.score : undefined,
+        scoreV2Components: v2Disc && v2Disc.components ? v2Disc.components : undefined,
         stats,
         goldskyPnl: summary.totalPnl,
         goldskyPositions: summary.positionCount,
