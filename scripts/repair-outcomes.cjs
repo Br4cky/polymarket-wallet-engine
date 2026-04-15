@@ -143,11 +143,19 @@ async function main() {
       continue;
     }
 
-    // Repair the signal
+    // Repair the signal.
+    // IMPORTANT: flip status back to 'closed' too. Historic bug here was that
+    // voided-then-repaired entries kept status='voided', producing "ghost"
+    // signals with outcome='win' but still excluded from WR calcs by the
+    // `status === 'voided'` guard. Also use the canonical `closeReason`
+    // field (not the misspelled `closedReason`).
     const oldOutcome = signal.outcome;
+    const oldStatus = signal.status;
     signal.outcome = result.outcome;
     signal.resolvedBy = result.resolvedBy;
-    signal.closedReason = 'resolved';
+    signal.closeReason = 'resolved';
+    signal.status = 'closed';
+    delete signal.closedReason; // scrub legacy misspelled field if present
 
     // Compute return
     const openPrice = signal.openMarketPrice || signal.avgEntryPrice || 0;
@@ -157,7 +165,7 @@ async function main() {
       signal.signalReturn = -100;
     }
 
-    console.log(`  REPAIRED ${signal.signalId}: ${oldOutcome} → ${result.outcome} (${result.resolvedBy}) | dir=${signal.direction} winner=${winningOutcome || 'inferred'} | ${(market.question || '').slice(0, 50)}`);
+    console.log(`  REPAIRED ${signal.signalId}: ${oldOutcome}/${oldStatus} → ${result.outcome}/closed (${result.resolvedBy}) | dir=${signal.direction} winner=${winningOutcome || 'inferred'} | ${(market.question || '').slice(0, 50)}`);
     repaired++;
 
     await new Promise(r => setTimeout(r, 150)); // Rate limit
