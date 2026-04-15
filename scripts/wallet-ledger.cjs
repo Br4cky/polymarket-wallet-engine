@@ -155,20 +155,48 @@ async function fetchPositions(addr) {
 }
 
 // Fallback: id range bounds. Same result, more portable.
-async function fetchPositionsWithRange(addr) {
+// For whales with thousands of positions even batch=50 can time out,
+// so we shrink to batch=20 and auto-shard by first char of tokenId
+// (0-9, since tokenIds are decimal) when a range still times out.
+async function fetchPositionsWithRange(addr, rangeLo = addr, rangeHi = `${addr}~`, batch = 20) {
   const positions = [];
-  let lastId = addr; // start cursor at the address itself
+  let lastId = rangeLo;
   while (positions.length < 10000) {
     const query = `{
       userPositions(
-        first: 50
+        first: ${batch}
         orderBy: id
-        where: { id_gt: "${lastId}", id_lt: "${addr}~" }
+        where: { id_gt: "${lastId}", id_lt: "${rangeHi}" }
       ) {
         id tokenId amount avgPrice realizedPnl totalBought
       }
     }`;
-    const data = await gql(query);
+    let data;
+    try {
+      data = await gql(query);
+    } catch (err) {
+      // Range still timing out even after retries — shard this range into
+      // 10 sub-ranges on the next char (tokenIds are decimal, so 0-9) and
+      // recurse. Give up if we're already on a single-digit shard.
+      const suffix = rangeLo.slice(addr.length + 1); // chars after "{addr}-"
+      if (/timeout/i.test(err.message) && suffix.length < 3) {
+        console.error(`  range ${rangeLo}..${rangeHi} timed out, sharding by next digit`);
+        const sharded = [];
+        for (const d of '0123456789') {
+          const lo = `${addr}-${suffix}${d}`;
+          // Upper bound: next digit, or range's upper bound for '9'
+          const hi = d === '9' ? rangeHi : `${addr}-${suffix}${String.fromCharCode(d.charCodeAt(0) + 1)}`;
+          try {
+            const shard = await fetchPositionsWithRange(addr, lo, hi, batch);
+            sharded.push(...shard);
+          } catch (shardErr) {
+            console.error(`    shard ${d} failed: ${shardErr.message.slice(0, 100)}`);
+          }
+        }
+        return [...positions, ...sharded];
+      }
+      throw err;
+    }
     const items = data?.userPositions || [];
     if (items.length === 0) break;
     for (const it of items) {
@@ -192,7 +220,7 @@ async function fetchPositionsWithRange(addr) {
       if (isPhantom) continue;
       positions.push(pos);
     }
-    if (items.length < 50) break;
+    if (items.length < batch) break;
     lastId = items[items.length - 1].id;
   }
   return positions;
