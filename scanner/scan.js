@@ -592,6 +592,36 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       const withinHardFloor = ageMs < DISCOVERY_RESCORE_COOLDOWN_MS;
       const withinMaxFloor = ageMs < DISCOVERY_RESCORE_MAX_COOLDOWN_MS;
       if (withinHardFloor || (withinMaxFloor && !tradedSinceScored)) {
+        // Even though we're skipping the full rescore, populate V2 from
+        // cursor positions if this wallet hasn't been V2-scored yet. This
+        // is cheap (no API call — pure in-memory aggregation) and prevents
+        // the 50% coverage gate from stalling for days while wallets sit
+        // in cooldown with no scoreV2.
+        if (typeof pool[address].scoreV2 !== 'number' && walletPositions) {
+          const cursorPos = walletPositions.get(address);
+          if (cursorPos && cursorPos.length > 0) {
+            const agg = aggregatePositions(cursorPos, marketLookup);
+            if (agg && agg.decidedROI != null && pool[address].stats) {
+              pool[address].stats.decidedPnl = agg.decidedPnl;
+              pool[address].stats.decidedCapital = agg.decidedCapital;
+              pool[address].stats.decidedROI = agg.decidedROI;
+              pool[address].stats.decidedWins = agg.wins;
+              pool[address].stats.decidedLosses = agg.losses;
+              pool[address].stats.decidedWinRate = agg.winRate;
+              pool[address].stats.decidedOpenPositions = agg.open;
+              pool[address].stats.decidedOpenCapitalAtRisk = agg.openCapitalAtRisk;
+              pool[address].stats.decidedUnredeemedWinsPositions = agg.unredeemedWins;
+              pool[address].stats.decidedWorthlessLosses = agg.worthlessLosses;
+              pool[address].stats.isMeanPickerShape = agg.isMeanPickerShape;
+              pool[address].stats.decidedMeasuredAt = new Date().toISOString();
+              const v2 = computeWalletScoreV2(pool[address].stats);
+              if (v2 && v2.score != null) {
+                pool[address].scoreV2 = v2.score;
+                pool[address].scoreV2Components = v2.components;
+              }
+            }
+          }
+        }
         qualified++;
         processed++;
         if (processed % 100 === 0) console.log(`  Processed ${processed}/${candidates.length} (${qualified} qualified)...`);
@@ -1081,12 +1111,23 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
 
   const trimmedPool = {};
   let rank = 0;
+  let v2Protected = 0;
   for (const [addr, wallet] of ranked) {
     rank++;
     if (rank <= CONFIG.TARGET_POOL_SIZE) {
       wallet.rank = rank;
       trimmedPool[addr] = wallet;
+    } else if (useV2 && typeof wallet.scoreV2 !== 'number') {
+      // V2 protection: don't evict wallets that haven't been assessed
+      // under the new scoring pipeline yet. They keep their pool spot
+      // until they get a scoreV2, at which point they compete fairly.
+      wallet.rank = rank;
+      trimmedPool[addr] = wallet;
+      v2Protected++;
     }
+  }
+  if (v2Protected > 0) {
+    console.log(`  🛡 V2 protection: ${v2Protected} wallets kept in pool pending V2 assessment`);
   }
 
   console.log(`\n  ✅ Wallet pool: ${Object.keys(trimmedPool).length} wallets (from ${qualified} qualified)`);
