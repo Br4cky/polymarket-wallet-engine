@@ -418,6 +418,10 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
   }
   console.log(`  Fetching wallet positions from Goldsky...${resumeCursor ? ' (resuming from cursor)' : ' (starting fresh)'}`);
   const walletSummaries = new Map(); // address → { totalPnl, positionCount, totalBought }
+  // Per-position detail for decided-metrics (V2 scoring). Populated during the
+  // cursor scan so we never need per-wallet Goldsky queries (which timeout
+  // because the subgraph has no index on the user field).
+  const walletPositions = CONFIG.ENABLE_DECIDED_METRICS ? new Map() : null; // address → position[]
 
   let cursor = resumeCursor;
   const cursorAtStart = cursor;
@@ -433,10 +437,15 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     const amountField = fields.amount;
 
     // Build query with only the fields that exist
+    const tokenField = fields.token;
     const queryFields = ['id', `${userField} { id }`];
     if (pnlField) queryFields.push(pnlField);
     if (boughtField) queryFields.push(boughtField);
-    if (amountField) queryFields.push(amountField);
+    // Per-position detail for decided-metrics — only request extra fields when
+    // we're actually going to use them (avoids wasting bandwidth otherwise).
+    if (walletPositions && tokenField) queryFields.push(tokenField);
+    if (walletPositions && amountField) queryFields.push(amountField);
+    if (walletPositions && tokenField) queryFields.push('avgPrice');
 
     const query = `{
       ${entityName}s(
@@ -485,6 +494,22 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       ws.totalPnl += pnl;
       ws.positionCount++;
       ws.totalBought += bought;
+
+      // Store per-position detail for aggregatePositions (V2 scoring).
+      // Cap at 2000 positions per wallet to bound memory (~400 bytes/pos).
+      if (walletPositions && tokenField) {
+        if (!walletPositions.has(address)) walletPositions.set(address, []);
+        const posArr = walletPositions.get(address);
+        if (posArr.length < 2000) {
+          posArr.push({
+            tokenId: item[tokenField],
+            sharesHeld: parseFloat(item[amountField] || 0) / USDC_DIVISOR,
+            avgPrice: parseFloat(item.avgPrice || 0) / USDC_DIVISOR,
+            realizedPnl: pnl,
+            totalBought: bought,
+          });
+        }
+      }
     }
 
     cursor = items[items.length - 1].id;
@@ -523,6 +548,17 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     .slice(0, CONFIG.MAX_DISCOVERY_WALLETS);
 
   console.log(`  ${candidates.length} candidates pass PnL/position filters`);
+
+  // Free position data for wallets that didn't make the candidate cut — they'll
+  // never be used and releasing early keeps peak memory bounded. We keep positions
+  // for existing pool members too (they may need decided metrics on rescore).
+  if (walletPositions) {
+    const keepAddrs = new Set(candidates.map(([addr]) => addr));
+    for (const addr of Object.keys(existingPool)) keepAddrs.add(addr);
+    for (const addr of walletPositions.keys()) {
+      if (!keepAddrs.has(addr)) walletPositions.delete(addr);
+    }
+  }
 
   // Step 4: Fetch trade histories from Data API and score
   console.log('  Fetching trade histories from Data API...');
@@ -625,17 +661,29 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       }
 
       // ── Phase 6: V2 discovery gates ───────────────────────────────────
-      // Fetch per-position decided metrics so we can reject mean-pickers
-      // and zero-edge traders at the door instead of admitting them and
-      // relying on eviction to clean up. One extra Goldsky query per
-      // qualified candidate — acceptable given we're already mid-analyze.
+      // Use per-position data captured during the cursor scan to compute
+      // decided metrics. This avoids per-wallet Goldsky queries which
+      // timeout because the subgraph has no index on the user field.
       let decidedMetrics = null;
-      if (CONFIG.DISCOVERY_V2_GATE === 'on') {
-        try {
-          const fresh = await fetchGoldskyWalletPnl(address, entityName, fields, { marketLookup });
-          if (fresh && fresh.decided) decidedMetrics = fresh.decided;
-        } catch (err) {
-          // Non-fatal — fall through to legacy gates
+      if (CONFIG.DISCOVERY_V2_GATE === 'on' && walletPositions) {
+        const cursorPositions = walletPositions.get(address);
+        if (cursorPositions && cursorPositions.length > 0) {
+          const agg = aggregatePositions(cursorPositions, marketLookup);
+          if (agg) {
+            decidedMetrics = {
+              decidedPnl: agg.decidedPnl,
+              decidedCapital: agg.decidedCapital,
+              openCapitalAtRisk: agg.openCapitalAtRisk,
+              decidedROI: agg.decidedROI,
+              wins: agg.wins,
+              losses: agg.losses,
+              open: agg.open,
+              winRate: agg.winRate,
+              unredeemedWins: agg.unredeemedWins,
+              worthlessLosses: agg.worthlessLosses,
+              isMeanPickerShape: agg.isMeanPickerShape,
+            };
+          }
         }
 
         if (decidedMetrics) {
@@ -748,37 +796,69 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       continue;
     }
 
-    // Refresh the lifetime PnL from Goldsky. If it's dropped below the
-    // admission floor, evict — we never want a sub-threshold wallet in the pool.
-    // When marketLookup is available we also collect per-position decided
-    // truth (decidedROI, mean-picker shape, unredeemed counts) so the new
-    // scoring formula has something to key on. Attached to wallet.stats.* as
-    // shadow data until Phase 2 flips the ranker over.
-    try {
-      const fresh = await fetchGoldskyWalletPnl(addr, entityName, fields, { marketLookup });
-      if (fresh && fresh.positionCount > 0) {
-        wallet.goldskyPnl = +fresh.totalPnl.toFixed(2);
-        wallet.goldskyPositions = fresh.positionCount;
-        if (wallet.goldskyPnl < CONFIG.MIN_PNL_DISCOVERY) {
-          wallet.status = 'removed';
-          wallet.removeReason = 'pnl_below_floor';
-          pnlDecayed++;
-          decayed++;
-          continue;
-        }
-        // Stash the decided-truth rollup directly on the wallet so it
-        // survives the subsequent `wallet.stats = stats` overwrite further
-        // down (analyzeTradeHistory rebuilds stats from scratch). We re-
-        // merge these fields onto stats after it's built.
-        if (fresh.decided) {
-          wallet.decidedMetrics = {
-            ...fresh.decided,
-            measuredAt: new Date().toISOString(),
-          };
-        }
+    // Refresh lifetime PnL + decided metrics from cursor-scan data when
+    // available. Falls back to per-wallet Goldsky query only if the wallet
+    // wasn't in this cycle's cursor window. Per-wallet queries often timeout
+    // because the subgraph has no index on the user field — the cursor-scan
+    // approach avoids that entirely.
+    const cursorPos = walletPositions?.get(addr);
+    if (cursorPos && cursorPos.length > 0) {
+      // Derive PnL + decided from cursor positions (fast, no network call)
+      let cursorPnl = 0, cursorBought = 0;
+      for (const p of cursorPos) { cursorPnl += p.realizedPnl; cursorBought += p.totalBought; }
+      wallet.goldskyPnl = +cursorPnl.toFixed(2);
+      wallet.goldskyPositions = cursorPos.length;
+      if (wallet.goldskyPnl < CONFIG.MIN_PNL_DISCOVERY) {
+        wallet.status = 'removed';
+        wallet.removeReason = 'pnl_below_floor';
+        pnlDecayed++;
+        decayed++;
+        continue;
       }
-    } catch (err) {
-      // Non-fatal — keep existing goldskyPnl
+      const agg = aggregatePositions(cursorPos, marketLookup);
+      if (agg) {
+        wallet.decidedMetrics = {
+          decidedPnl: agg.decidedPnl,
+          decidedCapital: agg.decidedCapital,
+          openCapitalAtRisk: agg.openCapitalAtRisk,
+          decidedROI: agg.decidedROI,
+          wins: agg.wins,
+          losses: agg.losses,
+          open: agg.open,
+          winRate: agg.winRate,
+          unredeemedWins: agg.unredeemedWins,
+          worthlessLosses: agg.worthlessLosses,
+          isMeanPickerShape: agg.isMeanPickerShape,
+          measuredAt: new Date().toISOString(),
+        };
+      }
+    } else {
+      // Wallet wasn't in cursor window — fall back to per-wallet query.
+      // This may timeout on the unindexed subgraph; if so goldskyPnl keeps
+      // its prior value and decided metrics stay null until the cursor
+      // covers this wallet's address range in a future cycle.
+      try {
+        const fresh = await fetchGoldskyWalletPnl(addr, entityName, fields, { marketLookup });
+        if (fresh && fresh.positionCount > 0) {
+          wallet.goldskyPnl = +fresh.totalPnl.toFixed(2);
+          wallet.goldskyPositions = fresh.positionCount;
+          if (wallet.goldskyPnl < CONFIG.MIN_PNL_DISCOVERY) {
+            wallet.status = 'removed';
+            wallet.removeReason = 'pnl_below_floor';
+            pnlDecayed++;
+            decayed++;
+            continue;
+          }
+          if (fresh.decided) {
+            wallet.decidedMetrics = {
+              ...fresh.decided,
+              measuredAt: new Date().toISOString(),
+            };
+          }
+        }
+      } catch (err) {
+        // Non-fatal — keep existing goldskyPnl
+      }
     }
 
     // Re-score from fresh activity data (trades + redemptions)
@@ -912,6 +992,49 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
   }
   if (decayed > 0 || rescored > 0) {
     console.log(`  Pool maintenance: ${rescored} re-scored, ${decayed} removed${pnlDecayed > 0 ? ` (${pnlDecayed} below PnL floor)` : ''}`);
+  }
+
+  // Step 5b: V2 backfill — populate decided metrics + scoreV2 for existing
+  // pool wallets that were cooldown-skipped during qualification but whose
+  // positions appeared in this cycle's cursor scan. Without this, V2 coverage
+  // stays at 0% because cooldown-skipped wallets never hit the V2 code path.
+  let v2Backfilled = 0;
+  if (walletPositions && CONFIG.ENABLE_DECIDED_METRICS) {
+    for (const [addr, wallet] of Object.entries(pool)) {
+      if (wallet.status === 'removed') continue;
+      if (typeof wallet.scoreV2 === 'number') continue; // already has V2
+      const cursorPos = walletPositions.get(addr);
+      if (!cursorPos || cursorPos.length === 0) continue;
+
+      const agg = aggregatePositions(cursorPos, marketLookup);
+      if (!agg || agg.decidedROI == null) continue;
+
+      // Fold decided metrics onto stats (non-destructively — only add decided.* fields)
+      if (wallet.stats) {
+        wallet.stats.decidedPnl = agg.decidedPnl;
+        wallet.stats.decidedCapital = agg.decidedCapital;
+        wallet.stats.decidedROI = agg.decidedROI;
+        wallet.stats.decidedWins = agg.wins;
+        wallet.stats.decidedLosses = agg.losses;
+        wallet.stats.decidedWinRate = agg.winRate;
+        wallet.stats.decidedOpenPositions = agg.open;
+        wallet.stats.decidedOpenCapitalAtRisk = agg.openCapitalAtRisk;
+        wallet.stats.decidedUnredeemedWinsPositions = agg.unredeemedWins;
+        wallet.stats.decidedWorthlessLosses = agg.worthlessLosses;
+        wallet.stats.isMeanPickerShape = agg.isMeanPickerShape;
+        wallet.stats.decidedMeasuredAt = new Date().toISOString();
+      }
+
+      const v2 = computeWalletScoreV2(wallet.stats || {});
+      if (v2 && v2.score != null) {
+        wallet.scoreV2 = v2.score;
+        wallet.scoreV2Components = v2.components;
+        v2Backfilled++;
+      }
+    }
+    if (v2Backfilled > 0) {
+      console.log(`  V2 backfill: ${v2Backfilled} pool wallets scored from cursor positions`);
+    }
   }
 
   // Step 6: Rank and trim to top N (with minimum score floor)
