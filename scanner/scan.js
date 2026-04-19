@@ -270,6 +270,99 @@ async function fetchGoldskyWalletPnl(wallet, entityName, fields, { marketLookup 
 }
 
 /**
+ * Fetch all positions for a specific wallet using id_gt on the primary key
+ * instead of filtering by user field. Position IDs are formatted as
+ * "{wallet_address}-{token_id}", so we can start a cursor at "{addr}-" and
+ * page forward until we hit a position belonging to a different wallet.
+ *
+ * This avoids the timeout caused by the unindexed user field filter in
+ * fetchGoldskyWalletPnl. The primary key index makes this fast even for
+ * wallets with thousands of positions.
+ *
+ * Returns { positions, totalPnl, totalBought, positionCount } or null on error.
+ */
+async function fetchPositionsByIdRange(walletAddr, marketLookup) {
+  const addr = walletAddr.toLowerCase();
+  const prefix = `${addr}-`;
+  const positions = [];
+  let totalPnl = 0;
+  let totalBought = 0;
+  let cursor = `${addr},`; // comma (0x2C) sorts just before dash (0x2D)
+
+  while (positions.length < 2000) {
+    const query = `{
+      userPositions(
+        first: 1000
+        orderBy: id
+        where: { id_gt: "${cursor}" }
+      ) {
+        id tokenId amount avgPrice realizedPnl totalBought
+      }
+    }`;
+
+    let data;
+    try {
+      data = await gqlQuery(GOLDSKY_PNL, query);
+    } catch (err) {
+      return null;
+    }
+
+    const items = data?.userPositions || [];
+    if (items.length === 0) break;
+
+    let foundAny = false;
+    for (const item of items) {
+      if (!item.id.startsWith(prefix)) {
+        // Reached a different wallet's positions — we're done
+        return buildResult(positions, totalPnl, totalBought, marketLookup);
+      }
+      foundAny = true;
+      const pnl = parseFloat(item.realizedPnl || 0) / USDC_DIVISOR;
+      const bought = parseFloat(item.totalBought || 0) / USDC_DIVISOR;
+      totalPnl += pnl;
+      totalBought += bought;
+      positions.push({
+        tokenId: item.tokenId,
+        sharesHeld: parseFloat(item.amount || 0) / USDC_DIVISOR,
+        avgPrice: parseFloat(item.avgPrice || 0) / USDC_DIVISOR,
+        realizedPnl: pnl,
+        totalBought: bought,
+      });
+    }
+
+    if (items.length < 1000) break;
+    cursor = items[items.length - 1].id;
+    if (!foundAny) break; // all items were from other wallets
+  }
+
+  return buildResult(positions, totalPnl, totalBought, marketLookup);
+}
+
+function buildResult(positions, totalPnl, totalBought, marketLookup) {
+  if (positions.length === 0) return null;
+  const agg = aggregatePositions(positions, marketLookup);
+  return {
+    totalPnl,
+    totalBought,
+    positionCount: positions.length,
+    decided: agg ? {
+      decidedPnl: agg.decidedPnl,
+      decidedCapital: agg.decidedCapital,
+      openCapitalAtRisk: agg.openCapitalAtRisk,
+      decidedROI: agg.decidedROI,
+      wins: agg.wins,
+      losses: agg.losses,
+      open: agg.open,
+      winRate: agg.winRate,
+      unredeemedWins: agg.unredeemedWins,
+      worthlessLosses: agg.worthlessLosses,
+      phantomSkipped: agg.phantomSkipped,
+      isMeanPickerShape: agg.isMeanPickerShape,
+    } : null,
+  };
+}
+
+/**
  * Ensure the global marketLookup has resolution data for all tokens in a
  * wallet's activity events. The fast loop only resolves tokens it sees in
  * recent trades, so older markets (especially worthless losers that nobody
@@ -1024,22 +1117,51 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     console.log(`  Pool maintenance: ${rescored} re-scored, ${decayed} removed${pnlDecayed > 0 ? ` (${pnlDecayed} below PnL floor)` : ''}`);
   }
 
-  // Step 5b: V2 backfill — populate decided metrics + scoreV2 for existing
-  // pool wallets that were cooldown-skipped during qualification but whose
-  // positions appeared in this cycle's cursor scan. Without this, V2 coverage
-  // stays at 0% because cooldown-skipped wallets never hit the V2 code path.
+  // Step 5b: V2 backfill — populate decided metrics + scoreV2 for pool
+  // wallets that don't have a V2 score yet. Two data sources:
+  //   1. Cursor positions (walletPositions) — for wallets in this cycle's window
+  //   2. fetchPositionsByIdRange — for wallets outside the cursor window.
+  //      Uses id_gt on the primary key (fast, indexed) instead of the broken
+  //      user-field filter that times out.
+  // This ensures the entire pool gets V2 in a single discovery cycle rather
+  // than waiting weeks for the cursor to wrap around the address space.
   let v2Backfilled = 0;
-  if (walletPositions && CONFIG.ENABLE_DECIDED_METRICS) {
-    for (const [addr, wallet] of Object.entries(pool)) {
-      if (wallet.status === 'removed') continue;
-      if (typeof wallet.scoreV2 === 'number') continue; // already has V2
-      const cursorPos = walletPositions.get(addr);
-      if (!cursorPos || cursorPos.length === 0) continue;
+  let v2BackfillFetched = 0;
+  if (CONFIG.ENABLE_DECIDED_METRICS) {
+    const needsV2 = Object.entries(pool).filter(
+      ([, w]) => w.status !== 'removed' && typeof w.scoreV2 !== 'number'
+    );
+    if (needsV2.length > 0) {
+      console.log(`  V2 backfill: ${needsV2.length} pool wallets need scoring...`);
+    }
 
-      const agg = aggregatePositions(cursorPos, marketLookup);
+    for (const [addr, wallet] of needsV2) {
+      // Try cursor positions first (free, already in memory)
+      let agg = null;
+      const cursorPos = walletPositions?.get(addr);
+      if (cursorPos && cursorPos.length > 0) {
+        agg = aggregatePositions(cursorPos, marketLookup);
+      }
+
+      // Fall back to targeted id-range fetch for wallets outside cursor window
+      if (!agg || agg.decidedROI == null) {
+        try {
+          const result = await fetchPositionsByIdRange(addr, marketLookup);
+          if (result && result.decided) {
+            agg = result.decided;
+            // Also refresh goldskyPnl from the full position set
+            wallet.goldskyPnl = +result.totalPnl.toFixed(2);
+            wallet.goldskyPositions = result.positionCount;
+            v2BackfillFetched++;
+          }
+        } catch (err) {
+          // Non-fatal — wallet stays without V2 this cycle
+        }
+      }
+
       if (!agg || agg.decidedROI == null) continue;
 
-      // Fold decided metrics onto stats (non-destructively — only add decided.* fields)
+      // Fold decided metrics onto stats
       if (wallet.stats) {
         wallet.stats.decidedPnl = agg.decidedPnl;
         wallet.stats.decidedCapital = agg.decidedCapital;
@@ -1061,9 +1183,14 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         wallet.scoreV2Components = v2.components;
         v2Backfilled++;
       }
+
+      // Progress log every 50 wallets
+      if ((v2Backfilled + v2BackfillFetched) % 50 === 0 && v2Backfilled > 0) {
+        console.log(`    V2 backfill progress: ${v2Backfilled} scored (${v2BackfillFetched} via id-range fetch)...`);
+      }
     }
     if (v2Backfilled > 0) {
-      console.log(`  V2 backfill: ${v2Backfilled} pool wallets scored from cursor positions`);
+      console.log(`  V2 backfill: ${v2Backfilled} pool wallets scored (${v2BackfillFetched} via id-range fetch)`);
     }
   }
 
