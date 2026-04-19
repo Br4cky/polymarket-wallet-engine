@@ -63,7 +63,8 @@ const CONFIG = {
   // Wallet discovery (slow loop)
   MAX_DISCOVERY_WALLETS: 5000,     // Candidates to discover from Goldsky
   TARGET_POOL_SIZE: 1000,          // Top N to keep after scoring
-  MIN_SCORE_POOL: 50,              // Minimum score to enter the pool — filters out noise
+  MIN_SCORE_POOL: 50,              // Minimum score to enter the pool — filters out noise (legacy 0-100)
+  MIN_SCORE_POOL_V2: 25,           // V2 equivalent (V2 scores cap ~55; 25 ≈ same selectivity as 50/100)
   MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
   MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
   MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
@@ -1232,9 +1233,24 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     console.log(`  V2 ranker coverage: ${v2CoverageCount}/${activePool.length} (${(v2Coverage * 100).toFixed(0)}%) — ${useV2 ? '✓ using scoreV2 as primary' : `↻ below ${CONFIG.V2_MIN_POOL_COVERAGE_PCT}% floor, staying on legacy`}`);
   }
 
-  const ranked = Object.entries(pool)
-    .filter(([, w]) => w.status !== 'removed' && (graceActive || scoreOf(w) >= CONFIG.MIN_SCORE_POOL))
+  // Use V2-calibrated floor when V2 is the active ranking score.
+  // V2 practical max ~55 vs legacy 100 — applying the legacy floor (50) to V2
+  // scores would filter out virtually everything (only perfect wallets survive).
+  const effectiveMinScore = useV2 ? CONFIG.MIN_SCORE_POOL_V2 : CONFIG.MIN_SCORE_POOL;
+
+  let ranked = Object.entries(pool)
+    .filter(([, w]) => w.status !== 'removed' && (graceActive || scoreOf(w) >= effectiveMinScore))
     .sort((a, b) => scoreOf(b[1]) - scoreOf(a[1]));
+
+  // Safety net: if score filtering wiped >50% of active wallets, something is
+  // miscalibrated (e.g. scale mismatch). Fall back to keeping all non-removed
+  // wallets rather than silently collapsing the pool.
+  if (!graceActive && ranked.length < activePool.length * 0.5) {
+    console.log(`  ⚠ Score filter would keep only ${ranked.length}/${activePool.length} wallets — likely miscalibrated. Bypassing MIN_SCORE filter this cycle.`);
+    ranked = Object.entries(pool)
+      .filter(([, w]) => w.status !== 'removed')
+      .sort((a, b) => scoreOf(b[1]) - scoreOf(a[1]));
+  }
 
   const trimmedPool = {};
   let rank = 0;
