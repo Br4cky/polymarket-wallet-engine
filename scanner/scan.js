@@ -1244,10 +1244,12 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     if (rank <= CONFIG.TARGET_POOL_SIZE) {
       wallet.rank = rank;
       trimmedPool[addr] = wallet;
-    } else if (useV2 && typeof wallet.scoreV2 !== 'number') {
+    } else if (CONFIG.USE_SCORE_V2 && typeof wallet.scoreV2 !== 'number') {
       // V2 protection: don't evict wallets that haven't been assessed
       // under the new scoring pipeline yet. They keep their pool spot
       // until they get a scoreV2, at which point they compete fairly.
+      // Gate on CONFIG.USE_SCORE_V2 (not useV2) so protection is active
+      // during the entire rollout — not just after 50% coverage.
       wallet.rank = rank;
       trimmedPool[addr] = wallet;
       v2Protected++;
