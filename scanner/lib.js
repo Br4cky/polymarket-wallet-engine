@@ -2748,6 +2748,15 @@ function processPaperTrades(signals, paperState, scanIndex) {
 // Exports
 // ============================================================================
 
+// Public surface — only functions with active callers are exported. The
+// following lib.js internals were retired in the consolidation and are
+// no longer part of the public surface (replaced by signals.js / dataApi.js):
+//   analyzePositions, computeScore, computeConsensus, computeWinPatterns,
+//   computeActivePositions, processSignals, SIGNAL_THRESHOLDS,
+//   getSignalTier, computeSignalConfidence, computeClusterConfidence,
+//   computeSoloConfidence, refreshTrackedWallets
+// They are function-body-dead-code awaiting a cleanup pass; unexporting
+// here prevents any future accidental import.
 export {
   GOLDSKY_PNL,
   GAMMA_MARKETS,
@@ -2757,17 +2766,9 @@ export {
   introspectEntity,
   discoverEntities,
   fetchPositions,
-  analyzePositions,
-  computeScore,
   resolveMarkets,
   refreshSignalMarkets,
   matchesWinningOutcome,
-  computeConsensus,
-  computeWinPatterns,
-  computeActivePositions,
-  processSignals,
-  SIGNAL_THRESHOLDS,
-  refreshTrackedWallets,
   initPaperTrading,
   processPaperTrades,
   PAPER_TRADE_CONFIG,

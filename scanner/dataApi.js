@@ -138,6 +138,27 @@ async function fetchAllTrades(wallet, opts = {}) {
 }
 
 /**
+ * Fetch trades on a specific market (by conditionId).
+ * Powers the Stage 3 market-participant harvest — when our top alpha
+ * wallets win a market, the other bidders are all interesting candidates.
+ *
+ * @param {string} conditionId - The market's conditionId
+ * @param {object} opts - Options
+ * @param {number} opts.limit - Max trades to return (default 500)
+ * @param {number} opts.offset - Pagination offset
+ * @returns {Promise<Array>} Array of trade objects (newest first)
+ */
+async function fetchMarketTrades(conditionId, opts = {}) {
+  const params = {
+    market: conditionId,
+    limit: opts.limit || 500,
+  };
+  if (opts.offset) params.offset = opts.offset;
+  const data = await apiRequest('/trades', params);
+  return Array.isArray(data) ? data : [];
+}
+
+/**
  * Fetch recent trades for multiple wallets (since a given timestamp).
  * Designed for the fast loop — check what tracked wallets have done recently.
  *
@@ -277,15 +298,105 @@ function analyzeTradeHistory(events, opts = {}) {
   const marketLookup = opts.marketLookup instanceof Map ? opts.marketLookup : null;
 
   // Normalise every event into either a BUY, a SELL, or a synthetic SELL from
-  // a REDEEM. Anything else (REWARD, SPLIT, MERGE, CONVERSION, …) is ignored.
+  // a REDEEM. MERGE events are also converted to synthetic SELLs (see below).
+  // REWARD / MAKER_REBATE / SPLIT / CONVERSION are accumulated into separate
+  // counters so downstream classifiers (MM detector, true-economic-PnL) can
+  // see the full picture — these were previously silently dropped, which
+  // caused whale-01-class wallets ($3.5M in maker rebates over 7 months) to
+  // be completely invisible to scoring.
+  //
   // A normalised event always carries: timestamp, conditionId, size, price,
   // side, plus market metadata when present.
   const allEvents = [];
+
+  // ── Stage 0 additions: non-trade event accumulators ────────────────────────
+  // These power (a) accurate economic PnL and (b) the MM classifier's six
+  // signals (merge rate, rebate income, reward income, etc.).
+  let mergeCount = 0;
+  let mergeUsdcTotal = 0;
+  let splitCount = 0;
+  let splitUsdcTotal = 0;
+  let conversionCount = 0;
+  let rewardUsdcTotal = 0;
+  let rebateUsdcTotal = 0;
+  const mergeMarkets = new Set(); // unique conditionIds that saw ≥1 MERGE
+  const splitMarkets = new Set();
+
   for (const ev of events) {
     if (!ev || typeof ev !== 'object') continue;
     const type = (ev.type || '').toUpperCase();
     const cid = ev.conditionId;
+
+    // REWARD / MAKER_REBATE events don't always carry a conditionId — they're
+    // protocol-level USDC distributions. Accumulate them BEFORE the cid gate.
+    if (type === 'REWARD') {
+      rewardUsdcTotal += parseFloat(ev.usdcSize || ev.size || 0) || 0;
+      continue;
+    }
+    if (type === 'MAKER_REBATE' || type === 'REBATE') {
+      // Some Polymarket API variants fold rebates into REWARD; others expose
+      // MAKER_REBATE explicitly. Handle both so we never silently miss this.
+      // This is the single biggest signal for whale-01-style market makers.
+      rebateUsdcTotal += parseFloat(ev.usdcSize || ev.size || 0) || 0;
+      continue;
+    }
+
     if (!cid) continue;
+
+    if (type === 'MERGE') {
+      // MERGE: wallet combined N YES + N NO shares for N USDC. Convert to a
+      // synthetic SELL at the implied per-share price so the position closes
+      // out cleanly in the per-market PnL loop. Without this, MERGE-terminated
+      // positions looked open forever (inflated openPositions, undercounted
+      // resolvedMarkets, hid real PnL on positions that actually resolved
+      // via pair merge rather than outcome redemption).
+      //
+      // Also track per-market counts for the MM classifier — a high merge
+      // rate (>10% of markets) is one of whale-01's six MM signals.
+      const size = parseFloat(ev.size || ev.shares || 0) || 0;
+      const usdcSize = parseFloat(ev.usdcSize || ev.payout || 0) || 0;
+      mergeCount++;
+      mergeUsdcTotal += usdcSize;
+      mergeMarkets.add(cid);
+      if (size > 0) {
+        const impliedPrice = usdcSize > 0 ? usdcSize / size : 0.5;
+        allEvents.push({
+          timestamp: ev.timestamp,
+          conditionId: cid,
+          asset: ev.asset || ev.tokenId || '',
+          side: 'SELL',
+          size,
+          price: impliedPrice,
+          title: ev.title || '',
+          slug: ev.slug || '',
+          eventSlug: ev.eventSlug || '',
+          outcome: ev.outcome || '',
+          outcomeIndex: ev.outcomeIndex,
+          _fromMerge: true,
+        });
+      }
+      continue;
+    }
+
+    if (type === 'SPLIT') {
+      // SPLIT: wallet deposited N USDC, received N YES + N NO shares. Doesn't
+      // directly create PnL (cost basis splits across two positions that enter
+      // the TRADE stream separately) but correlates with MM arb plumbing —
+      // worth counting for the classifier.
+      const size = parseFloat(ev.size || 0) || 0;
+      const usdcSize = parseFloat(ev.usdcSize || 0) || 0;
+      splitCount++;
+      splitUsdcTotal += usdcSize > 0 ? usdcSize : size; // fallback if only size
+      splitMarkets.add(cid);
+      continue;
+    }
+
+    if (type === 'CONVERSION') {
+      // CONVERSION: wallet swapped shares of one outcome for another on a
+      // multi-outcome market. Cost-basis transformation, not realised PnL.
+      conversionCount++;
+      continue;
+    }
 
     if (type === 'REDEEM') {
       // Redemption: wallet cashed `size` shares for `usdcSize` USDC payout.
@@ -332,7 +443,9 @@ function analyzeTradeHistory(events, opts = {}) {
         outcomeIndex: ev.outcomeIndex,
       });
     }
-    // Other activity types (REWARD, SPLIT, MERGE, CONVERSION) are dropped.
+    // All non-TRADE event types are now handled above (MERGE / REDEEM into
+    // the synthetic-SELL stream, REWARD / MAKER_REBATE / SPLIT / CONVERSION
+    // into their respective counters). No silent drops.
   }
 
   if (allEvents.length === 0) return null;
@@ -377,6 +490,15 @@ function analyzeTradeHistory(events, opts = {}) {
   const marketResults = [];
   const categories = new Map(); // category → { wins, losses, pnl }
 
+  // MM-classifier signals: dual-side markets (wallet bought both YES + NO
+  // on same conditionId) and the average sum of their per-outcome avg buy
+  // prices. Market-makers typically post limit bids on both sides below $1,
+  // so priceSum < 1.01 for dual-side markets is a strong MM tell.
+  let dualSideMarkets = 0;
+  const dualSidePriceSums = [];
+  let totalBuys = 0;
+  let totalSells = 0;
+
   // Recent window stats
   let recentResolved = 0;
   let recentWins = 0;
@@ -393,6 +515,34 @@ function analyzeTradeHistory(events, opts = {}) {
     const totalSellSize = mt.sells.reduce((sum, t) => sum + t.size, 0);
     const avgBuyPrice = totalBuySize > 0 ? totalBought / totalBuySize : 0;
     const avgSellPrice = totalSellSize > 0 ? totalSoldRaw / totalSellSize : 0;
+
+    // Aggregate buy/sell counts + detect dual-side markets (wallet bought
+    // both YES and NO on same conditionId). Core MM-classifier inputs.
+    totalBuys += mt.buys.length;
+    totalSells += mt.sells.length;
+    const buyOutcomes = new Map(); // outcome → { cost, size }
+    for (const b of mt.buys) {
+      const o = String(b.outcome || '').trim().toLowerCase();
+      if (!o) continue;
+      if (!buyOutcomes.has(o)) buyOutcomes.set(o, { cost: 0, size: 0 });
+      const entry = buyOutcomes.get(o);
+      entry.cost += b.size * b.price;
+      entry.size += b.size;
+    }
+    const isSingleSide = buyOutcomes.size === 1;
+    if (buyOutcomes.size >= 2) {
+      dualSideMarkets++;
+      // Sum the two outcomes' capital-weighted avg buy prices. On a 2-outcome
+      // market, (price_yes + price_no) < 1.0 is a free-arbitrage MM play.
+      const avgPrices = [];
+      for (const { cost, size } of buyOutcomes.values()) {
+        if (size > 0) avgPrices.push(cost / size);
+      }
+      avgPrices.sort((a, b) => b - a); // top two by price
+      if (avgPrices.length >= 2) {
+        dualSidePriceSums.push(avgPrices[0] + avgPrices[1]);
+      }
+    }
 
     const firstBuy = mt.buys.length > 0 ? Math.min(...mt.buys.map(t => t.timestamp)) : 0;
     const lastTrade = Math.max(
@@ -472,6 +622,8 @@ function analyzeTradeHistory(events, opts = {}) {
         lastTrade,
         holdTime: lastTrade - firstBuy,
         closeKind: syntheticCloseKind || 'traded',
+        isSingleSide,                     // Stage 2: for edge_pp calculation
+        buyOutcomeCount: buyOutcomes.size,
       });
 
       // Category tracking
@@ -571,6 +723,47 @@ function analyzeTradeHistory(events, opts = {}) {
     ? avgWinRoi / avgLossRoi
     : null;
 
+  // ── Stage 2: Single-side alpha test (edge_pp) ─────────────────────────────
+  // Measures whether the wallet beat the market's implied probability at
+  // entry. Filters to markets where the wallet bought only ONE outcome
+  // (single-side). Compares realized hit rate against capital-weighted
+  // average entry price. Mean-pickers who buy $0.95 and win 95% score
+  // edge_pp ≈ 0 (no edge, market was right). Insight-driven bettors who
+  // buy $0.40 and win 55% score edge_pp ≈ +15pp (real alpha).
+  //
+  // This complements decidedROI: decidedROI answers "did they make money",
+  // edge_pp answers "did they outperform the market's pricing". A wallet
+  // needs both to qualify as a Tier A directional alpha.
+  const singleSideResolved = marketResults.filter(
+    r => r.isSingleSide && (r.outcome === 'win' || r.outcome === 'loss')
+  );
+  let edgePP = null;
+  let singleSideHitRate = null;
+  let singleSideAvgEntry = null;
+  let singleSideWins = 0;
+  let singleSideLosses = 0;
+  let singleSidePnl = 0;
+  let singleSideCapital = 0;
+  if (singleSideResolved.length > 0) {
+    singleSideWins = singleSideResolved.filter(r => r.outcome === 'win').length;
+    singleSideLosses = singleSideResolved.length - singleSideWins;
+    singleSidePnl = singleSideResolved.reduce((s, r) => s + r.pnl, 0);
+    const capitalByMarket = singleSideResolved.map(r => r.avgBuyPrice * r.buySize);
+    singleSideCapital = capitalByMarket.reduce((s, c) => s + c, 0);
+    // Capital-weighted average entry price — what implied probability did
+    // this wallet's $ actually assume, across all single-side bets?
+    if (singleSideCapital > 0) {
+      const weightedEntrySum = singleSideResolved.reduce((s, r, i) =>
+        s + r.avgBuyPrice * capitalByMarket[i], 0);
+      singleSideAvgEntry = weightedEntrySum / singleSideCapital;
+    }
+    singleSideHitRate = singleSideWins / singleSideResolved.length;
+    // edge_pp in percentage points (e.g. +3.5pp, -2.1pp)
+    if (singleSideAvgEntry != null) {
+      edgePP = +(100 * (singleSideHitRate - singleSideAvgEntry)).toFixed(2);
+    }
+  }
+
   return {
     // Core performance
     winRate: +winRate.toFixed(4),
@@ -604,6 +797,61 @@ function analyzeTradeHistory(events, opts = {}) {
     unredeemedWins,                     // WR fix: winners closed via marketLookup
     worthlessLosses,                    // WR fix: losers closed via marketLookup
 
+    // ── Event-type breakdown (Stage 0 — MM classifier + true economic PnL) ──
+    // These expose non-trade income streams that were previously silently
+    // dropped. The MM classifier consumes `mergeRate`, `rebateUsdcTotal`, and
+    // `rewardUsdcTotal` as three of its six signals. `economicPnl` replaces
+    // naive `totalPnl` as the input to `effectivePnl` downstream.
+    mergeCount,
+    mergeMarkets: mergeMarkets.size,
+    mergeUsdcTotal: +mergeUsdcTotal.toFixed(2),
+    mergeRate: marketTrades.size > 0 ? +(mergeCount / marketTrades.size).toFixed(3) : 0,
+    splitCount,
+    splitMarkets: splitMarkets.size,
+    splitUsdcTotal: +splitUsdcTotal.toFixed(2),
+    conversionCount,
+    rewardUsdcTotal: +rewardUsdcTotal.toFixed(2),
+    rebateUsdcTotal: +rebateUsdcTotal.toFixed(2),
+    // nonDirectionalIncome: USDC income received without holding directional
+    // risk (LP rewards + maker rebates). Whale-01 earned ~$3.5M here over 7
+    // months with near-zero directional PnL — the single biggest tell for
+    // non-copyable MM wallets.
+    nonDirectionalIncome: +(rewardUsdcTotal + rebateUsdcTotal).toFixed(2),
+    // economicPnl: total wallet income visible from /activity.
+    //   trade PnL (totalPnl — already includes MERGE closures via synthetic SELL)
+    //   + non-directional income (rewards + rebates)
+    // Use this, not totalPnl, for effectivePnl. Leaves totalPnl untouched so
+    // any dashboard/legacy consumer that read the old meaning still works.
+    economicPnl: +(totalPnl + rewardUsdcTotal + rebateUsdcTotal).toFixed(2),
+
+    // Buy/sell balance — MM wallets have near-equal B:S counts (closes via
+    // MERGE or opposing trades), directional wallets buy much more than sell.
+    totalBuys,
+    totalSells,
+    sellRatio: totalBuys > 0 ? +(totalSells / totalBuys).toFixed(3) : null,
+
+    // Dual-side markets — wallet bought both YES and NO on same conditionId.
+    // High rate (>40%) + low price sum (<1.01) is the MM arb signature.
+    dualSideMarkets,
+    dualSideRate: marketTrades.size > 0 ? +(dualSideMarkets / marketTrades.size).toFixed(3) : 0,
+    avgDualSidePriceSum: dualSidePriceSums.length > 0
+      ? +(dualSidePriceSums.reduce((a, b) => a + b, 0) / dualSidePriceSums.length).toFixed(4)
+      : null,
+
+    // ── Stage 2: Single-side directional alpha test ─────────────────────────
+    // edge_pp: percentage-point outperformance vs market's implied probability.
+    // Positive = real alpha (wallet predicted better than prices suggested).
+    // Zero/negative = mean-picker or worse. Required ≥ 3pp for Tier A.
+    singleSideResolved: singleSideResolved.length,
+    singleSideWins,
+    singleSideLosses,
+    singleSideHitRate: singleSideHitRate != null ? +singleSideHitRate.toFixed(4) : null,
+    singleSideAvgEntry: singleSideAvgEntry != null ? +singleSideAvgEntry.toFixed(4) : null,
+    singleSideCapital: +singleSideCapital.toFixed(2),
+    singleSidePnl: +singleSidePnl.toFixed(2),
+    singleSideROI: singleSideCapital > 0 ? +(singleSidePnl / singleSideCapital).toFixed(4) : null,
+    edgePP, // percentage points. null if no single-side resolved sample.
+
     // Consistency metrics — measures how regularly a wallet trades
     activeDays,                         // distinct days with at least one trade
     activeWeeks,                        // distinct weeks with at least one trade
@@ -633,116 +881,29 @@ function analyzeTradeHistory(events, opts = {}) {
 // ============================================================================
 
 /**
- * Compute a wallet's quality score from their trade history stats.
- * Replaces the old snapshot-based computeScore().
+ * Compute a wallet's quality score — SINGLE authoritative scoring function.
  *
- * Score is 0–100, built from:
- *   - Recent win rate (30 pts) — last 90 days, weighted by sample size
- *   - All-time win rate (10 pts) — long-term track record
- *   - Profitability (15 pts) — total PnL on log scale
- *   - Consistency (15 pts) — recent vs all-time performance similarity
- *   - Activity (15 pts) — trading frequency, recency
- *   - Edge quality (15 pts) — avg win / avg loss ratio
+ * Keys on decided-truth data (decidedROI + decidedCapital, supplied by
+ * positionLedger.aggregatePositions) with a multi-stage penalty pipeline:
+ *   - decidedROI    → roi points (exponential saturation to 50 pts at high ROI)
+ *   - decidedCapital→ capConf multiplier (sqrt-scaled; $50k → 1.0)
+ *   - resolvedMarkets → sampleConf multiplier (linear to 25 resolved)
+ *   - lastTradeTs   → recency multiplier (1.0 ≤ 7d, linear decay to 0 at 30d)
+ *   - mean-picker   → 0.2× penalty if WR ≥ 95% + decidedROI < 5% + $50k+ cap
+ *   - MM classifier → 0.0–0.5× penalty (set by attachMMClassification)
+ *   - activity bonus→ additive 0–5 pts on log-scaled trades/day
  *
- * @param {object} stats - Output from analyzeTradeHistory()
- * @returns {number} Score 0–100
+ * Return shape: { score, reason, components }.
+ *   reason: 'ok' | 'no_stats' | 'no_decided_metrics'
+ *   score: null if reason !== 'ok' (caller must handle — usually treat as unranked)
+ *
+ * Callers MUST run attachMMClassification(stats) and attachAlphaEvaluation(stats)
+ * BEFORE calling this so stats.mmPenalty + stats.alphaVerdict are populated.
+ *
+ * Evolution: this replaces a legacy win-rate-weighted formula that had
+ * Spearman(score, decidedROI) = -0.152 (inverted on ground truth). Current
+ * formula hits ~0.618 on the live pool.
  */
-function computeWalletScore(stats) {
-  if (!stats || stats.resolvedMarkets === 0) return 0;
-
-  // Recent win rate (30 pts) — most important, but needs sample backing
-  // Scale: 50% WR = 0pts, 100% WR = 30pts, with sample size damping
-  // Falls back to all-time WR if no recent resolved markets (long-duration traders)
-  const effectiveRecentWR = stats.recentResolved >= 3 ? stats.recentWinRate : stats.winRate;
-  const recentSampleFactor = stats.recentResolved >= 3
-    ? Math.min(1, Math.sqrt(stats.recentResolved) / 5) // plateaus at ~25 resolved
-    : Math.min(0.6, Math.sqrt(stats.resolvedMarkets) / 10); // damped fallback from all-time
-  const recentWrScore = Math.max(0, (effectiveRecentWR - 0.5) * 2) * recentSampleFactor * 30;
-
-  // All-time win rate (10 pts) — long-term verification
-  const allTimeSampleFactor = Math.min(1, Math.sqrt(stats.resolvedMarkets) / 8); // plateaus at ~64 resolved
-  const allTimeWrScore = Math.max(0, (stats.winRate - 0.5) * 2) * allTimeSampleFactor * 10;
-
-  // Profitability (15 pts) — log scale to avoid saturation.
-  // Use effectivePnl = max(sample analyzer, Goldsky on-chain) when present —
-  // credits both unredeemed winners (analyzer > Goldsky) and wallets with
-  // >3000-event history beyond our sample window (Goldsky > analyzer).
-  // Falls back to totalPnl for legacy entries without effectivePnl.
-  // $100 PnL ≈ 5pts, $1k ≈ 10pts, $10k ≈ 13pts, $100k ≈ 15pts
-  const scorePnl = (stats.effectivePnl != null ? stats.effectivePnl : stats.totalPnl) || 0;
-  const pnlScore = scorePnl > 0
-    ? Math.min(1, Math.log10(1 + scorePnl) / 5) * 15
-    : 0;
-
-  // Consistency (15 pts) — penalise wallets whose recent performance diverges from all-time
-  // If recent WR is close to all-time WR, high consistency. Big drop = low consistency.
-  const wrDiff = Math.abs(stats.recentWinRate - stats.winRate);
-  const consistencyScore = stats.recentResolved >= 5
-    ? Math.max(0, 1 - wrDiff * 3) * 15  // 33% WR difference = 0 pts
-    : 3; // Not enough recent data — small benefit of doubt, not half marks
-
-  // Activity (15 pts) — recent trading frequency and recency
-  const daysSinceLastTrade = stats.lastTradeTs > 0
-    ? (Date.now() / 1000 - stats.lastTradeTs) / 86400
-    : 999;
-  const recencyFactor = daysSinceLastTrade <= 3 ? 1.0
-    : daysSinceLastTrade <= 7 ? 0.9
-    : daysSinceLastTrade <= 14 ? 0.75
-    : daysSinceLastTrade <= 30 ? 0.5
-    : daysSinceLastTrade <= 60 ? 0.25
-    : 0;
-  const frequencyFactor = Math.min(1, Math.log10(1 + stats.recentTradesPerDay * 10) / 2);
-  const activityScore = (recencyFactor * 10 + frequencyFactor * 5);
-
-  // Edge quality (15 pts) — ROI-based avg-win-ROI / avg-loss-ROI ratio.
-  // Losses on prediction markets always go to ~$0, so avgLossRoi ≈ 1.0 and
-  // roiEdgeRatio ≈ avgWinRoi. Calibration:
-  //   0.15 = wallet grinds scrap bets (aligned with signal MIN_ROI floor) → 0 pts
-  //   0.50 = wallet averages 50% ROI on winners → mid-range
-  //   2.00 = wallet averages 200% ROI on winners → near-top
-  //   5.00+ = elite underdog hunter → saturates at 15
-  // null → no losses recorded yet with sufficient sample; grant 3 pts benefit
-  // of doubt (mirrors consistencyScore fallback). Old dollar-based edgeRatio
-  // is retained on the stats object for dashboard backcompat but is no longer
-  // used for scoring — it was saturated/noisy due to the dollar-asymmetry bug.
-  let edgeScore;
-  if (stats.roiEdgeRatio == null) {
-    edgeScore = 3;
-  } else if (stats.roiEdgeRatio <= 0.15) {
-    edgeScore = 0;
-  } else {
-    edgeScore = Math.min(1, Math.log2(1 + (stats.roiEdgeRatio - 0.15)) / 3) * 15;
-  }
-
-  const total = recentWrScore + allTimeWrScore + pnlScore + consistencyScore + activityScore + edgeScore;
-  return Math.min(100, Math.round(total * 10) / 10);
-}
-
-// ============================================================================
-// V2 scoring — position-centric, ROI-weighted, mean-picker-aware
-// ============================================================================
-//
-// Why a rewrite: the legacy formula above weights 40/100 on win rate and 15
-// on raw PnL. Both reward mean-pickers — wallets that buy $0.95 tokens and
-// collect $0.05 wins at 99% WR with ~2% ROI on $500k of capital. Cross-tab
-// analysis on 75 wallets showed Spearman(legacyScore, decidedROI) = -0.152
-// (literally inverted) and $6.76M of the pool was trapped in mean-picker
-// wallets ranked in the 80s.
-//
-// V2 keys on:
-//   - decidedROI as the primary driver (50 pts)
-//   - decidedCapital as a confidence weight (sqrt to $50k)
-//   - resolvedMarkets as a sample-size confidence weight (to 25)
-//   - recency as a multiplier (1.0 inside 7d, linear decay to 0 at 30d)
-//   - mean-picker shape as a 0.2x penalty (kept in pool for signal
-//     integration, but can't outrank real ROI wallets)
-//   - small activity bonus (0-5 pts) so otherwise-tied wallets with more
-//     fresh trades surface first
-//
-// Shadow mode: this function runs alongside computeWalletScore. Rankers
-// don't consume it yet — Phase 3 validates Spearman on fresh data before
-// Phase 5 makes scoreV2 authoritative.
-
 function roiPoints(decidedROI) {
   // 0 at or below 0% ROI; ~15pts at 10%; ~30pts at 25%; ~42pts at 50%;
   // saturates toward 50pts as ROI → ∞. Formula: 50 * (1 - e^(-roi*3)).
@@ -771,14 +932,14 @@ function recencyMultiplier(lastTradeTs) {
   return 1 - (days - 7) / 23;
 }
 
-function computeWalletScoreV2(stats) {
-  if (!stats) return { score: 0, reason: 'no_stats' };
+function computeWalletScore(stats) {
+  if (!stats) return { score: null, reason: 'no_stats', components: null };
 
-  // If the shadow measurement pass hasn't populated decided* yet (pool
-  // wallet not yet rescored since Phase 1 rolled out), we can't score V2.
-  // Caller falls back to legacy. Signal this with score=null.
+  // Scoring requires decided-truth metrics. Wallets without them (not yet
+  // rescored, or freshly discovered) get score=null so callers can decide
+  // whether to skip ranking or provisionally admit.
   if (stats.decidedROI == null || stats.decidedCapital == null) {
-    return { score: null, reason: 'no_decided_metrics' };
+    return { score: null, reason: 'no_decided_metrics', components: null };
   }
 
   const resolved = stats.decidedWins != null && stats.decidedLosses != null
@@ -790,13 +951,14 @@ function computeWalletScoreV2(stats) {
   const sampleConf = sampleConfidence(resolved);
   const recency = recencyMultiplier(stats.lastTradeTs);
   const meanPickerPenalty = stats.isMeanPickerShape === true ? 0.2 : 1.0;
+  const mmPenalty = (typeof stats.mmPenalty === 'number') ? stats.mmPenalty : 1.0;
 
   // Activity bonus (0-5 pts, additive) — log-scaled trades/day, so a
   // wallet with 0.1 trades/day → ~1pt, 1/day → ~3pts, 10+/day → 5pts.
   const tpd = stats.recentTradesPerDay || 0;
   const activityBonus = Math.min(5, Math.log10(1 + tpd * 10) * 2);
 
-  const core = roi * capConf * sampleConf * recency * meanPickerPenalty;
+  const core = roi * capConf * sampleConf * recency * meanPickerPenalty * mmPenalty;
   // Activity is a tiebreaker, not a floor — only award it when the wallet
   // has a non-zero core. Otherwise losing/dormant wallets collect free points
   // just for churning.
@@ -811,6 +973,8 @@ function computeWalletScoreV2(stats) {
       sampleConf: +sampleConf.toFixed(3),
       recency: +recency.toFixed(3),
       meanPickerPenalty,
+      mmPenalty,
+      mmScore: stats.mmScore ?? null,
       activityBonus: +activityBonus.toFixed(2),
       resolved,
     },
@@ -828,7 +992,7 @@ export {
   fetchRecentTrades,
   fetchActivity,
   fetchAllActivity,
+  fetchMarketTrades,
   analyzeTradeHistory,
   computeWalletScore,
-  computeWalletScoreV2,
 };

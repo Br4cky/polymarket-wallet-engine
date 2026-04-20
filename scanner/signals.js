@@ -16,27 +16,40 @@
 import { resolveMarkets, matchesWinningOutcome, loadGzJSON, saveGzJSON } from './lib.js';
 
 // ============================================================================
-// Signal Thresholds v2
+// Signal Thresholds
 // ============================================================================
+//
+// Scale note: wallet.score runs 0–55 in practice (top decile ≥ 25). All
+// score-based thresholds below are calibrated for that range. Do not bump
+// to legacy 0–100 values without also rescaling the confidence formulas
+// (computeConvergenceConfidence / computeSoloConfidence) — they have a
+// bunch of divisors (score / 45, avgScore / 40) that must stay in sync.
 
 const SIGNAL_THRESHOLDS = {
   // Convergence window — how recent trades must be to count as "active convergence"
   CONVERGENCE_WINDOW_HOURS: 48,     // Trades within last 48 hours count
 
-  // Consensus signals — multiple wallets buying into same market recently
-  CONSENSUS_MIN_WALLETS: 8,         // 8+ wallets (lower than v1's 12 because timing-confirmed)
-  CONSENSUS_MIN_AVG_SCORE: 60,
+  // Consensus signals — larger group of tracked wallets converging on a market
+  CONSENSUS_MIN_WALLETS: 8,         // 8+ wallets
+  CONSENSUS_MIN_AVG_SCORE: 12,      // avg ≥ 12 on 0–55 scale ≈ solid pool median
   CONSENSUS_MIN_TOTAL_SIZE: 1000,   // $1000+ total buy size across wallets
 
   // Cluster signals — small group of strong wallets
   CLUSTER_MIN_WALLETS: 3,
   CLUSTER_MAX_WALLETS: 7,
-  CLUSTER_MIN_AVG_SCORE: 75,
+  CLUSTER_MIN_AVG_SCORE: 18,        // higher bar than consensus (fewer wallets = need quality)
   CLUSTER_MIN_TOTAL_SIZE: 500,
 
-  // Solo signals — single elite wallet, significant new buy
-  SOLO_MIN_SCORE: 80,
-  SOLO_MIN_WIN_RATE: 0.80,
+  // Per-wallet score floor for any wallet contributing to consensus/cluster.
+  // Without this, a single low-scoring wallet (e.g. score=5) can sneak into
+  // a cluster whose AVERAGE still passes — diluting edge. Every contributing
+  // wallet must individually meet this bar. Applies BEFORE the avg-score
+  // check so low-quality wallets are simply excluded from the candidate.
+  PER_WALLET_MIN_SCORE: 10,
+
+  // Solo signals — single top-tier wallet, significant new buy
+  SOLO_MIN_SCORE: 25,               // top decile on new scale
+  SOLO_MIN_WIN_RATE: 0.55,          // WR is secondary to decided edge now; 55% = real edge
   SOLO_MIN_RESOLVED: 50,
   SOLO_MIN_BUY_SIZE: 500,           // $500+ buy in a single market
   SOLO_MAX_PER_WALLET: 3,
@@ -59,6 +72,15 @@ const SIGNAL_THRESHOLDS = {
   MIN_ENTRY_PRICE: 0,               // 0 = disabled. Set to e.g. 0.10 to filter
   MIN_WALLET_ROI: 0.15,             // Wallet's fill must have ≥15% max upside. 0 = disabled.
   MIN_OPEN_ROI: 0.15,               // Live price at publish must have ≥15% max upside. 0 = disabled.
+
+  // Stale-follower gate. A follower entering a signal at live price gets
+  // a worse entry than the sourcing wallet if the market has moved. Cap
+  // the acceptable premium — 0.15 means the follower's price cannot be
+  // more than 15% above the wallet's avg entry. Mathematically: if alpha
+  // bought at 0.40 and live is now 0.46 (+15%), signal allowed; at 0.47,
+  // signal rejected because the follower has already lost 50%+ of the move.
+  // 0 = disabled.
+  STALE_FOLLOWER_MAX_PREMIUM: 0.15,
 };
 
 // Implied-ROI helper: for a binary outcome token priced at p ∈ (0,1),
@@ -92,6 +114,21 @@ function detectConvergence(recentTrades, walletPool, marketLookup) {
   for (const [wallet, trades] of recentTrades) {
     const walletInfo = walletPool.get(wallet);
     if (!walletInfo) continue;
+
+    // Hard sourcing gates — a wallet contributing to a signal must have
+    // proven it's directional alpha, not market-maker, not mean-picker,
+    // not known-failed on the alpha test. These are individually checked
+    // at eviction time but the rescore loop only runs every 24h. Without
+    // this gate, a still-in-pool MM wallet would emit signals until the
+    // next rescore catches it. Applying here closes that leak window.
+    const stats = walletInfo.stats || {};
+    if (stats.isLikelyMM === true) continue;
+    if (stats.isMeanPickerShape === true) continue;
+    if (stats.alphaVerdict === 'fails') continue;
+
+    // Per-wallet score floor — filters wallets that pass all quality
+    // gates but are still too weak to contribute meaningful edge.
+    if ((walletInfo.score || 0) < SIGNAL_THRESHOLDS.PER_WALLET_MIN_SCORE) continue;
 
     for (const trade of trades) {
       if (trade.side !== 'BUY') continue;
@@ -321,6 +358,17 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       if (SIGNAL_THRESHOLDS.MIN_OPEN_ROI > 0 &&
           impliedMaxROI(currentPrice) < SIGNAL_THRESHOLDS.MIN_OPEN_ROI) continue;
 
+      // Stale-follower gate — reject if the live price has already run past
+      // the wallet's entry by more than STALE_FOLLOWER_MAX_PREMIUM. If the
+      // alpha got in at 30¢ and it's now 50¢, a follower entering at 50¢
+      // has already given up 67% of the move. We'd be emitting a signal
+      // for a trade already won on paper.
+      if (SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM > 0
+          && candidate.avgEntryPrice > 0
+          && currentPrice > candidate.avgEntryPrice * (1 + SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM)) {
+        continue;
+      }
+
       active[signalId] = {
         signalId,
         signalType,
@@ -384,14 +432,36 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     }
   }
 
-  // --- Phase 1b: Solo signals — single elite wallet, big recent buy ---
+  // --- Phase 1b: Solo signals — single top-tier wallet, big recent buy ---
   const soloCountByWallet = new Map(); // track max per wallet
   for (const [wallet, trades] of recentTrades) {
     const walletInfo = walletPool.get(wallet);
     if (!walletInfo) continue;
+
+    // Same sourcing gates as consensus/cluster — MM, mean-picker, or
+    // alpha-failed wallets cannot source solo signals regardless of score.
+    // A wallet hitting SOLO_MIN_SCORE but failing these is almost always a
+    // false-positive we'd otherwise have to chase down in post-hoc analysis.
+    const stats = walletInfo.stats || {};
+    if (stats.isLikelyMM === true) continue;
+    if (stats.isMeanPickerShape === true) continue;
+    if (stats.alphaVerdict === 'fails') continue;
+
     if ((walletInfo.score || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_SCORE) continue;
-    if ((walletInfo.stats?.recentWinRate || walletInfo.stats?.winRate || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_WIN_RATE) continue;
-    if ((walletInfo.stats?.resolvedMarkets || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_RESOLVED) continue;
+    if ((stats.recentWinRate || stats.winRate || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_WIN_RATE) continue;
+    if ((stats.resolvedMarkets || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_RESOLVED) continue;
+    // Solo signals prefer proven single-side alpha. Require either a good
+    // alpha verdict (tier_a / tier_b) OR genuinely insufficient sample
+    // (still learning). Explicit 'fails' already rejected above.
+    if (stats.alphaVerdict === 'tier_b' || stats.alphaVerdict === 'tier_a') {
+      // best case — fall through
+    } else if (stats.alphaVerdict === 'insufficient_sample' || stats.alphaVerdict === 'insufficient_capital') {
+      // acceptable — unproven but not disqualified
+    } else if (!stats.alphaVerdict) {
+      // pre-Stage-2 wallet — allow on the assumption score + WR carry enough signal
+    } else {
+      continue; // any other verdict (no_edge_computed, etc.) — skip
+    }
 
     // Count existing solo signals for this wallet
     const existingSoloCount = Object.values(active).filter(s =>
@@ -457,6 +527,13 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         // Reject if implied max ROI on the signal side is below MIN_OPEN_ROI.
         if (SIGNAL_THRESHOLDS.MIN_OPEN_ROI > 0 &&
             impliedMaxROI(currentPrice) < SIGNAL_THRESHOLDS.MIN_OPEN_ROI) continue;
+
+        // Stale-follower gate (see convergence path for rationale).
+        if (SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM > 0
+            && avgPrice > 0
+            && currentPrice > avgPrice * (1 + SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM)) {
+          continue;
+        }
 
         const confidence = computeSoloConfidence(walletInfo, buySize, avgPrice);
 
@@ -676,6 +753,11 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 // Confidence Scoring
 // ============================================================================
 
+// Score-scale constant — the practical max of computeWalletScore on the
+// live pool. Elite wallets land around 30-45; top 1% push toward 50.
+// If the score formula in dataApi.js ever rescales, update here too.
+const MAX_PRACTICAL_SCORE = 45;
+
 function computeConvergenceConfidence(candidate, signalType) {
   // Wallet count factor (30 pts)
   const minWallets = signalType === 'consensus'
@@ -683,8 +765,8 @@ function computeConvergenceConfidence(candidate, signalType) {
     : SIGNAL_THRESHOLDS.CLUSTER_MIN_WALLETS;
   const walletFactor = Math.min(1, candidate.walletCount / (minWallets * 2)) * 30;
 
-  // Score factor (25 pts) — average wallet quality
-  const scoreFactor = Math.min(1, candidate.avgScore / 90) * 25;
+  // Score factor (25 pts) — average wallet quality on the 0–55 scale
+  const scoreFactor = Math.min(1, (candidate.avgScore || 0) / MAX_PRACTICAL_SCORE) * 25;
 
   // Size factor (20 pts) — total $ committed (log scale)
   const sizeFactor = Math.min(1, Math.log10(1 + candidate.totalBuySize) / 4) * 20;
@@ -704,8 +786,8 @@ function computeConvergenceConfidence(candidate, signalType) {
 }
 
 function computeSoloConfidence(walletInfo, buySize, avgPrice) {
-  // Wallet quality (40 pts)
-  const qualityFactor = Math.min(1, (walletInfo.score || 0) / 95) * 40;
+  // Wallet quality (40 pts) — score on the 0–55 scale
+  const qualityFactor = Math.min(1, (walletInfo.score || 0) / MAX_PRACTICAL_SCORE) * 40;
 
   // Position size (30 pts, log scale)
   const sizeFactor = Math.min(1, Math.log10(1 + buySize) / 4) * 30;
@@ -714,16 +796,28 @@ function computeSoloConfidence(walletInfo, buySize, avgPrice) {
   const price = avgPrice || 0.5;
   const priceFactor = price > 0 && price < 1 ? (1 - price) * 15 : 7.5;
 
-  // Win rate bonus (15 pts)
-  const wr = walletInfo.stats?.recentWinRate || walletInfo.stats?.winRate || 0;
-  const wrFactor = Math.max(0, (wr - 0.5) * 2) * 15;
+  // Decided-ROI bonus (15 pts) — preferred over raw WR for directional edge.
+  // Falls back to winRate if decidedROI not yet populated for the wallet.
+  const roi = walletInfo.stats?.decidedROI;
+  let edgeFactor;
+  if (typeof roi === 'number') {
+    // 0 at 0%, saturates at 15pts around 30% decided ROI
+    edgeFactor = Math.min(1, Math.max(0, roi) / 0.30) * 15;
+  } else {
+    const wr = walletInfo.stats?.recentWinRate || walletInfo.stats?.winRate || 0;
+    edgeFactor = Math.max(0, (wr - 0.5) * 2) * 15;
+  }
 
-  return Math.min(100, qualityFactor + sizeFactor + priceFactor + wrFactor);
+  return Math.min(100, qualityFactor + sizeFactor + priceFactor + edgeFactor);
 }
 
+// Confidence → signal tier. Confidence stays on a 0–100 scale regardless
+// of wallet-score rescales (the formulas above are the translation layer).
+// Tier cutoffs are marketing-side product decisions — see REVIEW.md for
+// the reasoning and historical calibration.
 function getSignalTier(confidence) {
-  if (confidence >= 80) return 'elite';
-  if (confidence >= 55) return 'pro';
+  if (confidence >= 75) return 'elite';
+  if (confidence >= 50) return 'pro';
   return 'starter';
 }
 

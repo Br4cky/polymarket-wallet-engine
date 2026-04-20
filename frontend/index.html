@@ -56,17 +56,17 @@
           <div class="metric-value" id="wp-avg-wr">0%</div>
           <div class="metric-unit">resolved markets</div>
         </div>
-        <div class="metric-card" title="Percent of pool that has been rescored under the V2 pipeline (has scoreV2 + decidedROI). Ranker uses V2 once coverage ≥ 50%.">
-          <div class="metric-label">V2 Coverage</div>
-          <div class="metric-value" id="wp-v2-coverage">—</div>
-          <div class="metric-unit">wallets rescored</div>
+        <div class="metric-card" title="Percent of pool that has a populated score (decidedROI measured + ranked). Wallets without a score are unranked until their next rescore cycle.">
+          <div class="metric-label">Scoring Coverage</div>
+          <div class="metric-value" id="wp-scoring-coverage">—</div>
+          <div class="metric-unit">wallets scored</div>
         </div>
-        <div class="metric-card" title="Wallets with isMeanPickerShape=true (≥95% WR, ≥25 resolved, ≥$50k decided capital, <5% decidedROI). V2 scores these 5× lower to push them out of the ranker.">
+        <div class="metric-card" title="Wallets with isMeanPickerShape=true (≥95% WR, ≥25 resolved, ≥$50k decided capital, <5% decidedROI). Score penalised 5× to push them out of the ranker.">
           <div class="metric-label">Mean-pickers</div>
           <div class="metric-value" id="wp-mean-pickers">—</div>
           <div class="metric-unit">in pool</div>
         </div>
-        <div class="metric-card" title="Wallets the Phase 4 shadow eviction pass wants to remove (mean-picker strikes, low-V2 strikes, negative-ROI with sample, or >30d dormant). Flip V2_EVICTION_MODE='live' to actually remove them.">
+        <div class="metric-card" title="Wallets the shadow eviction pass wants to remove (mean-picker strikes, low-score strikes, negative-ROI with sample, or >30d dormant). Flip EVICTION_MODE='live' to actually remove them.">
           <div class="metric-label">Shadow Evictions</div>
           <div class="metric-value" id="wp-would-evict">—</div>
           <div class="metric-unit">awaiting review</div>
@@ -95,11 +95,10 @@
             <thead>
               <tr>
                 <th data-field="rank">#</th>
-                <th data-field="scoreV2" class="sortable" title="V2 score — primary ranker post-redesign. Keys on decidedROI weighted by capital + sample confidence + recency, with 5× mean-picker suppression. ✂ = flagged for shadow eviction, ◇ = mean-picker shape. — means the wallet hasn't been rescored under the new pipeline yet.">V2</th>
-                <th data-field="score" class="sortable" title="Legacy score. Kept for comparison during rollout. Known to inversely correlate with ground truth (Spearman -0.152) — do not rank on this alone.">Legacy</th>
+                <th data-field="score" class="sortable" title="Wallet quality score. Keys on decidedROI weighted by capital + sample confidence + recency, with 5× mean-picker suppression and up to 10× market-maker suppression. ✂ = flagged for shadow eviction, ◇ = mean-picker shape. — means the wallet hasn't been scored yet.">Score</th>
                 <th data-field="address">Address</th>
-                <th data-field="decidedROI" class="sortable" title="Ground-truth ROI on resolved capital: (realizedPnl + decidedPnl) / (totalCost − openCapitalAtRisk). Rolls up closed wins/losses, unredeemed winners, and worthless losers. This is what V2 is designed to track.">Decided ROI</th>
-                <th data-field="decidedCapital" class="sortable" title="Capital-at-risk on resolved positions only — totalCost minus capital still sitting in open bets. Sample-confidence weight for V2.">Decided Cap</th>
+                <th data-field="decidedROI" class="sortable" title="Ground-truth ROI on resolved capital: (realizedPnl + decidedPnl) / (totalCost − openCapitalAtRisk). Rolls up closed wins/losses, unredeemed winners, and worthless losers. Primary driver of score.">Decided ROI</th>
+                <th data-field="decidedCapital" class="sortable" title="Capital-at-risk on resolved positions only — totalCost minus capital still sitting in open bets. Sample-confidence weight.">Decided Cap</th>
                 <th data-field="winRate" class="sortable" title="Win rate over the sample window (last N days, see Span column)">WR (sample)</th>
                 <th data-field="effectivePnl" class="sortable" title="max(on-chain, sample). What legacy scoring uses. Both measurement systems miss things — on-chain misses unredeemed winners, sample misses history beyond 3000 events.">PnL (effective)</th>
                 <th data-field="onChainPnl" class="sortable" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold on-chain. $0 for unredeemed winners.">On-chain</th>

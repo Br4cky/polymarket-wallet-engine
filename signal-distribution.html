@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Signal Distribution — Polymarket Engine</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --blue: #58a6ff;
+    --purple: #bc8cff;
+    --orange: #d29922;
+    --cyan: #39d353;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 14px;
+    margin-bottom: 24px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+
+  .card h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 16px;
+  }
+
+  .card.full { grid-column: 1 / -1; }
+
+  .stat-row {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    min-width: 140px;
+    flex: 1;
+  }
+
+  .stat .label {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .stat .value {
+    font-size: 28px;
+    font-weight: 700;
+    margin-top: 4px;
+  }
+
+  .stat .value.green { color: var(--green); }
+  .stat .value.red { color: var(--red); }
+  .stat .value.blue { color: var(--blue); }
+  .stat .value.purple { color: var(--purple); }
+
+  canvas { max-height: 300px; }
+
+  .no-data {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 40px;
+    font-size: 14px;
+  }
+
+  .legend-custom {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+
+  #loadStatus {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 16px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: inline-block;
+  }
+</style>
+</head>
+<body>
+
+<h1>Signal Distribution</h1>
+<p class="subtitle">How signals are generated, typed, and resolved across scans</p>
+<div id="loadStatus">Loading data...</div>
+
+<div class="stat-row" id="statsRow">
+  <div class="stat"><div class="label">Total Signals</div><div class="value blue" id="totalSignals">—</div></div>
+  <div class="stat"><div class="label">Active</div><div class="value purple" id="activeSignals">—</div></div>
+  <div class="stat"><div class="label">Win Rate</div><div class="value green" id="winRate">—</div></div>
+  <div class="stat"><div class="label">Total PnL</div><div class="value" id="totalPnl">—</div></div>
+  <div class="stat"><div class="label">Scans Tracked</div><div class="value blue" id="scanCount">—</div></div>
+</div>
+
+<div class="grid">
+  <div class="card full">
+    <h2>Signals Opened Per Scan</h2>
+    <canvas id="signalsPerScan"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Signal Type Breakdown</h2>
+    <canvas id="typeBreakdown"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Outcomes (Closed Signals)</h2>
+    <canvas id="outcomeChart"></canvas>
+  </div>
+
+  <div class="card full">
+    <h2>Cumulative PnL Over Scans</h2>
+    <canvas id="cumulativePnl"></canvas>
+  </div>
+
+  <div class="card full">
+    <h2>Signal Lifespan (Scans Active Before Close)</h2>
+    <canvas id="lifespanChart"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Confidence Distribution</h2>
+    <canvas id="confidenceChart"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Conviction Distribution</h2>
+    <canvas id="convictionChart"></canvas>
+  </div>
+</div>
+
+<script>
+Chart.defaults.color = '#8b949e';
+Chart.defaults.borderColor = '#30363d';
+Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
+
+const COLORS = {
+  green: '#3fb950',
+  red: '#f85149',
+  blue: '#58a6ff',
+  purple: '#bc8cff',
+  orange: '#d29922',
+  cyan: '#39d353',
+  greenAlpha: 'rgba(63,185,80,0.6)',
+  redAlpha: 'rgba(248,81,73,0.6)',
+  blueAlpha: 'rgba(88,166,255,0.6)',
+  purpleAlpha: 'rgba(188,140,255,0.6)',
+  orangeAlpha: 'rgba(210,153,34,0.6)',
+};
+
+async function loadData() {
+  // Try loading from analytics.json.gz (GitHub CDN) or local
+  const sources = [
+    'data/analytics.json.gz',
+    'https://raw.githubusercontent.com/polymarket-wallet-engine/data/main/analytics.json.gz'
+  ];
+
+  let data = null;
+
+  // First try: fetch the gzipped file and decompress
+  for (const src of sources) {
+    try {
+      const resp = await fetch(src);
+      if (!resp.ok) continue;
+
+      const contentType = resp.headers.get('content-type') || '';
+      if (src.endsWith('.gz') || contentType.includes('gzip')) {
+        const blob = await resp.blob();
+        const ds = new DecompressionStream('gzip');
+        const decompressed = blob.stream().pipeThrough(ds);
+        const text = await new Response(decompressed).text();
+        data = JSON.parse(text);
+      } else {
+        data = await resp.json();
+      }
+      break;
+    } catch(e) { continue; }
+  }
+
+  // Fallback: try non-gzipped
+  if (!data) {
+    try {
+      const resp = await fetch('data/analytics.json');
+      if (resp.ok) data = await resp.json();
+    } catch(e) {}
+  }
+
+  return data;
+}
+
+function processSignals(analytics) {
+  const signals = analytics.signals || {};
+  const active = signals.active || [];
+  const history = signals.history || [];
+  const all = [...history, ...active];
+
+  // Build per-scan data
+  const scanMap = {};
+
+  for (const s of all) {
+    const scan = s.openedScan;
+    if (scan == null) continue;
+    if (!scanMap[scan]) scanMap[scan] = { opened: [], closed: [], types: {consensus: 0, cluster: 0, solo: 0} };
+    scanMap[scan].opened.push(s);
+
+    const type = s.signalType || 'consensus';
+    scanMap[scan].types[type] = (scanMap[scan].types[type] || 0) + 1;
+  }
+
+  for (const s of history) {
+    const scan = s.closedScan;
+    if (scan == null) continue;
+    if (!scanMap[scan]) scanMap[scan] = { opened: [], closed: [], types: {consensus: 0, cluster: 0, solo: 0} };
+    scanMap[scan].closed.push(s);
+  }
+
+  return { active, history, all, scanMap, stats: signals.stats || {} };
+}
+
+function renderCharts(analytics) {
+  const { active, history, all, scanMap, stats } = processSignals(analytics);
+
+  const scanNums = Object.keys(scanMap).map(Number).sort((a, b) => a - b);
+  const totalResolved = history.length;
+  const wins = history.filter(s => s.outcome === 'win').length;
+  const losses = history.filter(s => s.outcome === 'loss').length;
+  const totalPnl = history.reduce((sum, s) => sum + (s.walletPnl || s.closedPnl || 0), 0);
+
+  // Stats row
+  document.getElementById('totalSignals').textContent = all.length;
+  document.getElementById('activeSignals').textContent = active.length;
+  document.getElementById('winRate').textContent = totalResolved > 0 ? (wins / totalResolved * 100).toFixed(1) + '%' : '—';
+  const pnlEl = document.getElementById('totalPnl');
+  pnlEl.textContent = totalPnl >= 0 ? '+$' + totalPnl.toFixed(2) : '-$' + Math.abs(totalPnl).toFixed(2);
+  pnlEl.className = 'value ' + (totalPnl >= 0 ? 'green' : 'red');
+  document.getElementById('scanCount').textContent = scanNums.length > 0 ? `${scanNums[0]}–${scanNums[scanNums.length-1]}` : '—';
+
+  // 1) Signals Opened Per Scan (stacked bar by type)
+  const scanLabels = scanNums.map(n => `Scan ${n}`);
+  new Chart(document.getElementById('signalsPerScan'), {
+    type: 'bar',
+    data: {
+      labels: scanLabels,
+      datasets: [
+        {
+          label: 'Consensus',
+          data: scanNums.map(n => scanMap[n].types.consensus || 0),
+          backgroundColor: COLORS.blueAlpha,
+          borderColor: COLORS.blue,
+          borderWidth: 1
+        },
+        {
+          label: 'Cluster',
+          data: scanNums.map(n => scanMap[n].types.cluster || 0),
+          backgroundColor: COLORS.purpleAlpha,
+          borderColor: COLORS.purple,
+          borderWidth: 1
+        },
+        {
+          label: 'Solo',
+          data: scanNums.map(n => scanMap[n].types.solo || 0),
+          backgroundColor: COLORS.orangeAlpha,
+          borderColor: COLORS.orange,
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'top' } },
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Signals Opened' } }
+      }
+    }
+  });
+
+  // 2) Type Breakdown (doughnut)
+  const typeCounts = { consensus: 0, cluster: 0, solo: 0 };
+  for (const s of all) {
+    const t = s.signalType || 'consensus';
+    typeCounts[t] = (typeCounts[t] || 0) + 1;
+  }
+  new Chart(document.getElementById('typeBreakdown'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Consensus', 'Cluster', 'Solo'],
+      datasets: [{
+        data: [typeCounts.consensus, typeCounts.cluster, typeCounts.solo],
+        backgroundColor: [COLORS.blueAlpha, COLORS.purpleAlpha, COLORS.orangeAlpha],
+        borderColor: [COLORS.blue, COLORS.purple, COLORS.orange],
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const total = ctx.dataset.data.reduce((a,b) => a + b, 0);
+              return `${ctx.label}: ${ctx.raw} (${(ctx.raw/total*100).toFixed(1)}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+
+  // 3) Outcomes (doughnut)
+  const pushes = history.filter(s => s.outcome === 'push').length;
+  const other = totalResolved - wins - losses - pushes;
+  new Chart(document.getElementById('outcomeChart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Wins', 'Losses', 'Push', 'Unknown'],
+      datasets: [{
+        data: [wins, losses, pushes, other],
+        backgroundColor: [COLORS.greenAlpha, COLORS.redAlpha, 'rgba(139,148,158,0.4)', 'rgba(48,54,61,0.6)'],
+        borderColor: [COLORS.green, COLORS.red, '#8b949e', '#30363d'],
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom' } }
+    }
+  });
+
+  // 4) Cumulative PnL
+  let cumPnl = 0;
+  const pnlData = [];
+  const pnlLabels = [];
+  for (const scan of scanNums) {
+    const closed = scanMap[scan].closed || [];
+    for (const s of closed) {
+      cumPnl += (s.walletPnl || s.closedPnl || 0);
+    }
+    if (closed.length > 0) {
+      pnlLabels.push(`Scan ${scan}`);
+      pnlData.push(parseFloat(cumPnl.toFixed(2)));
+    }
+  }
+  new Chart(document.getElementById('cumulativePnl'), {
+    type: 'line',
+    data: {
+      labels: pnlLabels,
+      datasets: [{
+        label: 'Cumulative PnL ($)',
+        data: pnlData,
+        borderColor: pnlData[pnlData.length - 1] >= 0 ? COLORS.green : COLORS.red,
+        backgroundColor: pnlData[pnlData.length - 1] >= 0 ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 4,
+        pointHoverRadius: 6
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: {
+          title: { display: true, text: 'PnL ($)' },
+          grid: { color: 'rgba(48,54,61,0.5)' }
+        },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+
+  // 5) Signal Lifespan
+  const lifespans = history
+    .filter(s => s.openedScan != null && s.closedScan != null)
+    .map(s => s.closedScan - s.openedScan);
+
+  const lifespanBuckets = {};
+  for (const l of lifespans) {
+    const key = l <= 5 ? `${l}` : l <= 10 ? '6-10' : l <= 20 ? '11-20' : '20+';
+    lifespanBuckets[key] = (lifespanBuckets[key] || 0) + 1;
+  }
+  const lifespanLabels = ['0', '1', '2', '3', '4', '5', '6-10', '11-20', '20+'];
+  new Chart(document.getElementById('lifespanChart'), {
+    type: 'bar',
+    data: {
+      labels: lifespanLabels.filter(l => lifespanBuckets[l]),
+      datasets: [{
+        label: 'Signals',
+        data: lifespanLabels.filter(l => lifespanBuckets[l]).map(l => lifespanBuckets[l] || 0),
+        backgroundColor: COLORS.blueAlpha,
+        borderColor: COLORS.blue,
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: 'Scans Active' }, grid: { display: false } },
+        y: { beginAtZero: true, title: { display: true, text: 'Count' } }
+      }
+    }
+  });
+
+  // 6) Confidence Distribution
+  const confidences = all.filter(s => s.confidence != null).map(s => s.confidence);
+  const confBuckets = [0,0,0,0,0]; // 0-20, 20-40, 40-60, 60-80, 80-100
+  for (const c of confidences) {
+    const idx = Math.min(4, Math.floor(c / 20));
+    confBuckets[idx]++;
+  }
+  new Chart(document.getElementById('confidenceChart'), {
+    type: 'bar',
+    data: {
+      labels: ['0-20', '20-40', '40-60', '60-80', '80-100'],
+      datasets: [{
+        label: 'Signals',
+        data: confBuckets,
+        backgroundColor: confBuckets.map((_, i) => {
+          const alpha = 0.3 + (i * 0.15);
+          return `rgba(63,185,80,${alpha})`;
+        }),
+        borderColor: COLORS.green,
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: 'Confidence Score' }, grid: { display: false } },
+        y: { beginAtZero: true, title: { display: true, text: 'Count' } }
+      }
+    }
+  });
+
+  // 7) Conviction Distribution
+  const convictions = all.filter(s => s.conviction != null).map(s => s.conviction);
+  const convLabels = ['0-250', '250-500', '500-750', '750-1000', '1000+'];
+  const convBuckets = [0,0,0,0,0];
+  for (const c of convictions) {
+    const idx = c < 250 ? 0 : c < 500 ? 1 : c < 750 ? 2 : c < 1000 ? 3 : 4;
+    convBuckets[idx]++;
+  }
+  new Chart(document.getElementById('convictionChart'), {
+    type: 'bar',
+    data: {
+      labels: convLabels,
+      datasets: [{
+        label: 'Signals',
+        data: convBuckets,
+        backgroundColor: convBuckets.map((_, i) => {
+          const alpha = 0.3 + (i * 0.15);
+          return `rgba(188,140,255,${alpha})`;
+        }),
+        borderColor: COLORS.purple,
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: 'Conviction Score' }, grid: { display: false } },
+        y: { beginAtZero: true, title: { display: true, text: 'Count' } }
+      }
+    }
+  });
+}
+
+async function init() {
+  const status = document.getElementById('loadStatus');
+  const data = await loadData();
+
+  if (!data || !data.signals) {
+    status.textContent = 'No signal data available yet. Charts will populate after the next scan pushes analytics.';
+    status.style.borderColor = COLORS.orange;
+    return;
+  }
+
+  const signalCount = (data.signals.active || []).length + (data.signals.history || []).length;
+  status.textContent = `Loaded ${signalCount} signals from scan ${data.scanCount || '?'}`;
+  status.style.borderColor = COLORS.green;
+
+  renderCharts(data);
+}
+
+init();
+</script>
+</body>
+</html>

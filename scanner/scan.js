@@ -37,7 +37,6 @@ import {
   fetchRecentTrades,
   analyzeTradeHistory,
   computeWalletScore,
-  computeWalletScoreV2,
 } from './dataApi.js';
 
 import {
@@ -47,6 +46,8 @@ import {
 } from './signals.js';
 
 import { aggregatePositions } from './positionLedger.js';
+import { attachMMClassification } from './mmClassifier.js';
+import { attachAlphaEvaluation, ALPHA_THRESHOLDS } from './alphaTest.js';
 
 import fs from 'fs';
 import path from 'path';
@@ -60,62 +61,56 @@ const DATA_DIR = path.resolve(__dirname, '../data');
 // ============================================================================
 
 const CONFIG = {
-  // Wallet discovery (slow loop)
-  MAX_DISCOVERY_WALLETS: 5000,     // Candidates to discover from Goldsky
-  TARGET_POOL_SIZE: 1000,          // Top N to keep after scoring
-  MIN_SCORE_POOL: 50,              // Minimum score to enter the pool — filters out noise (legacy 0-100)
-  MIN_SCORE_POOL_V2: 25,           // V2 equivalent (V2 scores cap ~55; 25 ≈ same selectivity as 50/100)
-  MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
-  MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
-  MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
+  // ── Pool sizing & admission ────────────────────────────────────────────
+  TARGET_POOL_SIZE: 1000,          // Top N wallets kept after ranking
+  MAX_DISCOVERY_WALLETS: 5000,     // Max candidates fetched per discovery cycle
+  RESCORE_BATCH_SIZE: 100,         // Wallets rescored per discovery cycle
+  DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N scans
+
+  // Score floor for pool admission. Score scale is practical 0–55; a top
+  // decile wallet scores ≥ 25. Pool floor of 5 keeps only wallets that
+  // pass the basic "has decided-ROI data + not an MM + not a mean-picker".
+  MIN_SCORE_POOL: 5,
+
+  // ── Discovery gates (new wallets, cheap first-look rejects) ─────────────
+  // Wallets failing any of these never enter the pool. Mirrors the rescore
+  // eviction logic so we don't admit-then-immediately-evict.
+  MIN_PNL_DISCOVERY: 500,              // Skip Goldsky wallets below this PnL floor
+  MIN_POSITIONS_DISCOVERY: 10,         // Goldsky position count minimum
+  MIN_RESOLVED_MARKETS: 10,            // Resolved markets minimum (no flukes)
+  DISCOVERY_MIN_DECIDED_CAPITAL: 5000, // $5k+ risked on resolved plays
+  DISCOVERY_MIN_DECIDED_ROI: 0.08,     // 8%+ ROI on decided capital
+  DISCOVERY_MAX_WIN_RATE: 0.98,        // Obvious mean-picker shape (99%+ WR)
+  DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED: 25, // Only apply WR cap when sample meaningful
   // Max capital-weighted avg entry price. 0.85 ⇒ wallet's typical trade must
   // have ≥17.6% implied max ROI. Keeps the pool aligned with the signal
-  // engine's MIN_OPEN_ROI (15%) — scrap-graders can no longer ride WR into
-  // the pool just to produce signals we'd then filter out anyway.
-  // 0 or 1 = disabled.
+  // engine's MIN_OPEN_ROI — scrap-graders can't ride WR into the pool just
+  // to produce signals we'd filter out anyway. 0 or 1 = disabled.
   MAX_WALLET_AVG_ENTRY_PRICE: 0.85,
-  MAX_INACTIVE_DAYS: 60,           // Must have traded within last 60 days
-  DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
-  RESCORE_BATCH_SIZE: 100,         // Wallets to rescore per discovery cycle
 
-  // Phase 1 of the scoring redesign: during the rescore loop, fetch the full
-  // per-position breakdown from Goldsky (tokenId/amount/avgPrice) and compute
-  // decidedROI / decidedCapital / mean-picker flag. Attaches to
-  // wallet.stats.decided* without yet changing the ranker — shadow data for
-  // Phase 2's computeWalletScoreV2. Flip off to fall back to aggregate-only.
+  // ── Per-wallet measurement ──────────────────────────────────────────────
+  // Requires Goldsky per-position fetch to compute decidedROI/decidedCapital.
+  // Flip off only for debugging — scorer returns null without this data.
   ENABLE_DECIDED_METRICS: true,
 
-  // Phase 4 eviction: act on the V2 shadow metrics.
-  //   'off'    — do nothing (original behaviour pre-Phase-4)
+  // ── Dormancy / activity ─────────────────────────────────────────────────
+  // Single unified dormancy cutoff. A wallet that hasn't traded in this
+  // many days is evicted from the pool. Applied at both discovery-gate
+  // and rescore-eviction paths.
+  DORMANCY_DAYS: 30,
+
+  // ── Eviction rules ──────────────────────────────────────────────────────
+  //   'off'    — do nothing
   //   'shadow' — log what would be evicted, don't remove
   //   'live'   — actually remove matching wallets
-  // Mean-picker / low-score rules use a strike counter so a single fluky
-  // rescore can't evict a real wallet. Dormancy and negROI with meaningful
-  // capital are single-shot because they're already high-confidence signals.
-  V2_EVICTION_MODE: 'shadow',
-  V2_MEAN_PICKER_STRIKES_TO_EVICT: 3,
-  V2_LOW_SCORE_THRESHOLD: 15,
-  V2_LOW_SCORE_STRIKES_TO_EVICT: 3,
-  V2_NEG_ROI_CAPITAL_FLOOR: 10000,   // decidedCapital ≥ $10k + ROI<0 = evict
-  V2_NEG_ROI_MIN_RESOLVED: 25,       // AND resolved ≥ 25 markets
-  V2_DORMANCY_DAYS: 30,              // no trade in last 30 days = evict
-
-  // Phase 5 ranker promotion: once ≥ V2_MIN_POOL_COVERAGE_PCT of the pool
-  // has scoreV2 populated, flip the ranker to sort on scoreV2 instead of
-  // legacy score. Until coverage reaches the floor, legacy stays primary.
-  USE_SCORE_V2: true,
-  V2_MIN_POOL_COVERAGE_PCT: 50,
-
-  // Phase 6 discovery gates: reject candidates at the door on the same
-  // shape the rescore loop would evict. Cheaper than admit-then-evict and
-  // keeps the pool clean from first contact. Set DISCOVERY_V2_GATE='off'
-  // to revert to legacy-only admission.
-  DISCOVERY_V2_GATE: 'on',
-  DISCOVERY_MAX_INACTIVE_DAYS: 30,           // tighter than MAX_INACTIVE_DAYS
-  DISCOVERY_MIN_DECIDED_CAPITAL: 5000,       // must have risked $5k+ on resolved plays
-  DISCOVERY_MIN_DECIDED_ROI: 0.08,           // must average 8%+ ROI on resolved capital
-  DISCOVERY_MAX_WIN_RATE: 0.98,              // reject obvious mean-picker shape at door
-  DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED: 25,   // only apply WR cap when sample is meaningful
+  // Mean-picker / low-score use strike counters so one fluky rescore can't
+  // evict a real wallet. Dormancy and neg-ROI-with-capital are single-shot.
+  EVICTION_MODE: 'shadow',
+  MEAN_PICKER_STRIKES_TO_EVICT: 3,
+  LOW_SCORE_THRESHOLD: 5,              // on 0–55 scale — score below this is an eviction strike
+  LOW_SCORE_STRIKES_TO_EVICT: 3,
+  NEG_ROI_CAPITAL_FLOOR: 10000,        // decidedCapital ≥ $10k + ROI<0 = evict
+  NEG_ROI_MIN_RESOLVED: 25,            // AND resolved ≥ 25 markets
 
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
@@ -690,8 +685,8 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         // cursor positions if this wallet hasn't been V2-scored yet. This
         // is cheap (no API call — pure in-memory aggregation) and prevents
         // the 50% coverage gate from stalling for days while wallets sit
-        // in cooldown with no scoreV2.
-        if (typeof pool[address].scoreV2 !== 'number' && walletPositions) {
+        // in cooldown with no score.
+        if (typeof pool[address].score !== 'number' && walletPositions) {
           const cursorPos = walletPositions.get(address);
           if (cursorPos && cursorPos.length > 0) {
             const agg = aggregatePositions(cursorPos, marketLookup);
@@ -708,10 +703,14 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
               pool[address].stats.decidedWorthlessLosses = agg.worthlessLosses;
               pool[address].stats.isMeanPickerShape = agg.isMeanPickerShape;
               pool[address].stats.decidedMeasuredAt = new Date().toISOString();
-              const v2 = computeWalletScoreV2(pool[address].stats);
-              if (v2 && v2.score != null) {
-                pool[address].scoreV2 = v2.score;
-                pool[address].scoreV2Components = v2.components;
+              // Stage 1: attach MM classification before scoring so score
+              // can penalise whale-01-class wallets via stats.mmPenalty.
+              attachMMClassification(pool[address].stats);
+              attachAlphaEvaluation(pool[address].stats);
+              const scored = computeWalletScore(pool[address].stats);
+              if (scored && scored.score != null) {
+                pool[address].score = scored.score;
+                pool[address].scoreComponents = scored.components;
               }
             }
           }
@@ -742,16 +741,20 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
-      // effectivePnl = max(analyzer sample, Goldsky on-chain realized).
+      // effectivePnl = max(analyzer sample economic PnL, Goldsky on-chain realized).
       // - Sample wins when wallet has unredeemed winners (Goldsky reports $0
       //   until on-chain redemption; analyzer infers via marketLookup).
       // - Goldsky wins when wallet has >3000 activity events (analyzer is
       //   truncated to the most-recent window).
       // Taking max gives us the benefit of both measurement systems.
+      //
+      // Stage 0: we now use `economicPnl` (= trade PnL + rewards + rebates +
+      // MERGE closures) instead of the bare `totalPnl`. The old view silently
+      // dropped all non-trade income, which undercounted MM-style wallets
+      // like whale-01 by millions. Fallback to totalPnl preserves legacy data.
       stats.goldskyPnl = summary.totalPnl || 0;
-      stats.effectivePnl = Math.max(stats.totalPnl || 0, stats.goldskyPnl);
-
-      const score = computeWalletScore(stats);
+      const sampleEconomic = stats.economicPnl != null ? stats.economicPnl : (stats.totalPnl || 0);
+      stats.effectivePnl = Math.max(sampleEconomic, stats.goldskyPnl);
 
       // Require minimum resolved markets — no flukes
       if ((stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
@@ -759,15 +762,12 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
-      // Must have traded recently — Phase 6 tightens this for fresh entries
-      // (existing pool members still get the gentler MAX_INACTIVE_DAYS grace
-      // in the rescore loop).
+      // Must have traded recently. Discovery uses the stricter floor than
+      // the rescore loop so we don't admit pre-cooled wallets.
       const daysSinceLastTrade = stats.lastTradeTs > 0
         ? (Date.now() / 1000 - stats.lastTradeTs) / 86400
         : Infinity;
-      const freshInactiveFloor = CONFIG.DISCOVERY_V2_GATE === 'on'
-        ? CONFIG.DISCOVERY_MAX_INACTIVE_DAYS
-        : CONFIG.MAX_INACTIVE_DAYS;
+      const freshInactiveFloor = CONFIG.DORMANCY_DAYS;
       if (daysSinceLastTrade > freshInactiveFloor) {
         processed++;
         continue;
@@ -784,12 +784,12 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
-      // ── Phase 6: V2 discovery gates ───────────────────────────────────
+      // ── Discovery gates on position-centric metrics ─────────────────────
       // Use per-position data captured during the cursor scan to compute
       // decided metrics. This avoids per-wallet Goldsky queries which
       // timeout because the subgraph has no index on the user field.
       let decidedMetrics = null;
-      if (CONFIG.DISCOVERY_V2_GATE === 'on' && walletPositions) {
+      if (walletPositions) {
         const cursorPositions = walletPositions.get(address);
         if (cursorPositions && cursorPositions.length > 0) {
           const agg = aggregatePositions(cursorPositions, marketLookup);
@@ -856,13 +856,32 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         stats.decidedMeasuredAt = new Date().toISOString();
       }
       // Compute V2 score too so the wallet is ranker-ready on day zero
-      const v2Disc = computeWalletScoreV2(stats);
+      // Stage 1/2: run MM classifier + alpha test before scoring.
+      attachMMClassification(stats);
+      attachAlphaEvaluation(stats);
+
+      // Stage 1/2 hard discovery gates:
+      //   1. Likely market-maker (mmScore ≥ 4) — not copy-tradeable.
+      //   2. Explicit alpha failure (edge_pp < 1.5pp with enough sample +
+      //      capital to trust the signal) — mean-picker shape by another name.
+      // Wallets with 'insufficient_sample' or 'insufficient_capital' verdicts
+      // are admitted; they can prove themselves later. We don't want to block
+      // promising newer wallets — only clear negatives.
+      if (stats.isLikelyMM === true) {
+        processed++;
+        continue;
+      }
+      if (stats.alphaVerdict === 'fails') {
+        processed++;
+        continue;
+      }
+
+      const scored = computeWalletScore(stats);
 
       pool[address] = {
         address,
-        score,
-        scoreV2: v2Disc && v2Disc.score != null ? v2Disc.score : undefined,
-        scoreV2Components: v2Disc && v2Disc.components ? v2Disc.components : undefined,
+        score: scored.score != null ? scored.score : undefined,
+        scoreComponents: scored.components || undefined,
         stats,
         goldskyPnl: summary.totalPnl,
         goldskyPositions: summary.positionCount,
@@ -913,7 +932,7 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     const daysSinceLastTrade = wallet.stats?.lastTradeTs > 0
       ? (Date.now() / 1000 - wallet.stats.lastTradeTs) / 86400
       : Infinity;
-    if (daysSinceLastTrade > CONFIG.MAX_INACTIVE_DAYS) {
+    if (daysSinceLastTrade > CONFIG.DORMANCY_DAYS) {
       wallet.status = 'removed';
       wallet.removeReason = 'inactive';
       decayed++;
@@ -1015,8 +1034,12 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
       // Attach goldskyPnl + effectivePnl so scoring uses the better of the two.
+      // Stage 0: economicPnl (analyzer-based trade + rewards + rebates +
+      // MERGE closures) is the corrected sample view. Bare totalPnl left in
+      // place for dashboard backwards-compatibility.
       stats.goldskyPnl = wallet.goldskyPnl || 0;
-      stats.effectivePnl = Math.max(stats.totalPnl || 0, stats.goldskyPnl);
+      const sampleEconomicRescore = stats.economicPnl != null ? stats.economicPnl : (stats.totalPnl || 0);
+      stats.effectivePnl = Math.max(sampleEconomicRescore, stats.goldskyPnl);
       // Fold in the position-centric decided-truth rollup captured during the
       // goldsky refresh above. These are shadow fields today — computeWalletScore
       // doesn't consume them yet — but they're what the redesigned ranker keys on.
@@ -1034,63 +1057,67 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         stats.isMeanPickerShape = wallet.decidedMetrics.isMeanPickerShape;
         stats.decidedMeasuredAt = wallet.decidedMetrics.measuredAt;
       }
-      wallet.score = computeWalletScore(stats);
-      const v2 = computeWalletScoreV2(stats);
-      if (v2 && v2.score != null) {
-        wallet.scoreV2 = v2.score;
-        wallet.scoreV2Components = v2.components;
+      // Stage 1/2: MM classification + alpha evaluation must run before
+      // scoring — their output (mmPenalty, alphaVerdict) feeds into the
+      // score formula.
+      attachMMClassification(stats);
+      attachAlphaEvaluation(stats);
+      const scored = computeWalletScore(stats);
+      if (scored && scored.score != null) {
+        wallet.score = scored.score;
+        wallet.scoreComponents = scored.components;
       }
       wallet.stats = stats;
       delete wallet.decidedMetrics;
 
-      // ── Phase 4: V2 eviction (shadow or live) ─────────────────────────
-      // Only runs when we have real V2 metrics; skips wallets still on
-      // aggregate-only data. Strike counters live on the wallet so a
-      // single fluky rescore can't evict; pattern must persist.
-      if (CONFIG.V2_EVICTION_MODE !== 'off' && v2 && v2.score != null) {
-        wallet.v2Strikes = wallet.v2Strikes || { meanPicker: 0, lowScore: 0 };
+      // ── Eviction (shadow or live) ─────────────────────────────────────
+      // Only runs when we have real decided-metric-driven scores; skips
+      // wallets still on aggregate-only data. Strike counters live on the
+      // wallet so a single fluky rescore can't evict; pattern must persist.
+      if (CONFIG.EVICTION_MODE !== 'off' && scored && scored.score != null) {
+        wallet.strikes = wallet.strikes || { meanPicker: 0, lowScore: 0 };
         const evictions = [];
 
         // Rule 1: mean-picker shape, needs N consecutive strikes
         if (stats.isMeanPickerShape === true) {
-          wallet.v2Strikes.meanPicker++;
-          if (wallet.v2Strikes.meanPicker >= CONFIG.V2_MEAN_PICKER_STRIKES_TO_EVICT) {
-            evictions.push({ reason: 'v2_mean_picker', detail: `${wallet.v2Strikes.meanPicker} strikes, ROI=${(stats.decidedROI * 100).toFixed(1)}% WR=${((stats.decidedWinRate || 0) * 100).toFixed(0)}% cap=$${Math.round(stats.decidedCapital).toLocaleString()}` });
+          wallet.strikes.meanPicker++;
+          if (wallet.strikes.meanPicker >= CONFIG.MEAN_PICKER_STRIKES_TO_EVICT) {
+            evictions.push({ reason: 'mean_picker', detail: `${wallet.strikes.meanPicker} strikes, ROI=${(stats.decidedROI * 100).toFixed(1)}% WR=${((stats.decidedWinRate || 0) * 100).toFixed(0)}% cap=$${Math.round(stats.decidedCapital).toLocaleString()}` });
           }
         } else {
-          wallet.v2Strikes.meanPicker = 0;
+          wallet.strikes.meanPicker = 0;
         }
 
-        // Rule 2: low V2 score persisting N cycles
-        if (v2.score < CONFIG.V2_LOW_SCORE_THRESHOLD) {
-          wallet.v2Strikes.lowScore++;
-          if (wallet.v2Strikes.lowScore >= CONFIG.V2_LOW_SCORE_STRIKES_TO_EVICT) {
-            evictions.push({ reason: 'v2_low_score', detail: `${wallet.v2Strikes.lowScore} strikes @ scoreV2=${v2.score}` });
+        // Rule 2: low score persisting N cycles
+        if (scored.score < CONFIG.LOW_SCORE_THRESHOLD) {
+          wallet.strikes.lowScore++;
+          if (wallet.strikes.lowScore >= CONFIG.LOW_SCORE_STRIKES_TO_EVICT) {
+            evictions.push({ reason: 'low_score', detail: `${wallet.strikes.lowScore} strikes @ score=${scored.score}` });
           }
         } else {
-          wallet.v2Strikes.lowScore = 0;
+          wallet.strikes.lowScore = 0;
         }
 
         // Rule 3: money-loser with sample — single-shot, high confidence
         const resolved = (stats.decidedWins || 0) + (stats.decidedLosses || 0);
         if (stats.decidedROI != null && stats.decidedROI < 0
-            && (stats.decidedCapital || 0) >= CONFIG.V2_NEG_ROI_CAPITAL_FLOOR
-            && resolved >= CONFIG.V2_NEG_ROI_MIN_RESOLVED) {
-          evictions.push({ reason: 'v2_neg_roi', detail: `ROI=${(stats.decidedROI * 100).toFixed(1)}% on $${Math.round(stats.decidedCapital).toLocaleString()} across ${resolved} markets` });
+            && (stats.decidedCapital || 0) >= CONFIG.NEG_ROI_CAPITAL_FLOOR
+            && resolved >= CONFIG.NEG_ROI_MIN_RESOLVED) {
+          evictions.push({ reason: 'neg_roi', detail: `ROI=${(stats.decidedROI * 100).toFixed(1)}% on $${Math.round(stats.decidedCapital).toLocaleString()} across ${resolved} markets` });
         }
 
-        // Rule 4: dormancy at the tighter V2 floor (legacy MAX_INACTIVE_DAYS=60
-        // still catches deeper tail upstream — this is an early tighten).
+        // Rule 4: dormancy at the tighter pool-maintenance floor (separate
+        // from the broader MAX_INACTIVE_DAYS that governs the whole loop).
         const daysSinceLastTrade = stats.lastTradeTs > 0
           ? (Date.now() / 1000 - stats.lastTradeTs) / 86400
           : Infinity;
-        if (daysSinceLastTrade > CONFIG.V2_DORMANCY_DAYS) {
-          evictions.push({ reason: 'v2_dormant', detail: `${daysSinceLastTrade.toFixed(0)}d since last trade` });
+        if (daysSinceLastTrade > CONFIG.DORMANCY_DAYS) {
+          evictions.push({ reason: 'dormant', detail: `${daysSinceLastTrade.toFixed(0)}d since last trade` });
         }
 
         if (evictions.length > 0) {
           const first = evictions[0];
-          if (CONFIG.V2_EVICTION_MODE === 'live') {
+          if (CONFIG.EVICTION_MODE === 'live') {
             wallet.status = 'removed';
             wallet.removeReason = first.reason;
             wallet.removeDetail = first.detail;
@@ -1099,11 +1126,11 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
             continue;
           } else {
             // Shadow mode — tag the wallet so we can audit without removing
-            wallet.v2WouldEvict = { reason: first.reason, detail: first.detail, flaggedAt: new Date().toISOString() };
-            console.log(`    ◇ ${addr.slice(0, 10)} v2-shadow: ${first.reason} (${first.detail})`);
+            wallet.wouldEvict = { reason: first.reason, detail: first.detail, flaggedAt: new Date().toISOString() };
+            console.log(`    ◇ ${addr.slice(0, 10)} shadow-evict: ${first.reason} (${first.detail})`);
           }
-        } else if (wallet.v2WouldEvict) {
-          delete wallet.v2WouldEvict;
+        } else if (wallet.wouldEvict) {
+          delete wallet.wouldEvict;
         }
       }
 
@@ -1116,83 +1143,6 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
   }
   if (decayed > 0 || rescored > 0) {
     console.log(`  Pool maintenance: ${rescored} re-scored, ${decayed} removed${pnlDecayed > 0 ? ` (${pnlDecayed} below PnL floor)` : ''}`);
-  }
-
-  // Step 5b: V2 backfill — populate decided metrics + scoreV2 for pool
-  // wallets that don't have a V2 score yet. Two data sources:
-  //   1. Cursor positions (walletPositions) — for wallets in this cycle's window
-  //   2. fetchPositionsByIdRange — for wallets outside the cursor window.
-  //      Uses id_gt on the primary key (fast, indexed) instead of the broken
-  //      user-field filter that times out.
-  // This ensures the entire pool gets V2 in a single discovery cycle rather
-  // than waiting weeks for the cursor to wrap around the address space.
-  let v2Backfilled = 0;
-  let v2BackfillFetched = 0;
-  if (CONFIG.ENABLE_DECIDED_METRICS) {
-    const needsV2 = Object.entries(pool).filter(
-      ([, w]) => w.status !== 'removed' && typeof w.scoreV2 !== 'number'
-    );
-    if (needsV2.length > 0) {
-      console.log(`  V2 backfill: ${needsV2.length} pool wallets need scoring...`);
-    }
-
-    for (const [addr, wallet] of needsV2) {
-      // Try cursor positions first (free, already in memory)
-      let agg = null;
-      const cursorPos = walletPositions?.get(addr);
-      if (cursorPos && cursorPos.length > 0) {
-        agg = aggregatePositions(cursorPos, marketLookup);
-      }
-
-      // Fall back to targeted id-range fetch for wallets outside cursor window
-      if (!agg || agg.decidedROI == null) {
-        try {
-          const result = await fetchPositionsByIdRange(addr, marketLookup);
-          if (result && result.decided) {
-            agg = result.decided;
-            // Also refresh goldskyPnl from the full position set
-            wallet.goldskyPnl = +result.totalPnl.toFixed(2);
-            wallet.goldskyPositions = result.positionCount;
-            v2BackfillFetched++;
-          }
-        } catch (err) {
-          // Non-fatal — wallet stays without V2 this cycle
-        }
-      }
-
-      if (!agg || agg.decidedROI == null) continue;
-
-      // Fold decided metrics onto stats
-      if (wallet.stats) {
-        wallet.stats.decidedPnl = agg.decidedPnl;
-        wallet.stats.decidedCapital = agg.decidedCapital;
-        wallet.stats.decidedROI = agg.decidedROI;
-        wallet.stats.decidedWins = agg.wins;
-        wallet.stats.decidedLosses = agg.losses;
-        wallet.stats.decidedWinRate = agg.winRate;
-        wallet.stats.decidedOpenPositions = agg.open;
-        wallet.stats.decidedOpenCapitalAtRisk = agg.openCapitalAtRisk;
-        wallet.stats.decidedUnredeemedWinsPositions = agg.unredeemedWins;
-        wallet.stats.decidedWorthlessLosses = agg.worthlessLosses;
-        wallet.stats.isMeanPickerShape = agg.isMeanPickerShape;
-        wallet.stats.decidedMeasuredAt = new Date().toISOString();
-      }
-
-      const v2 = computeWalletScoreV2(wallet.stats || {});
-      if (v2 && v2.score != null) {
-        wallet.scoreV2 = v2.score;
-        wallet.scoreV2Components = v2.components;
-        v2Backfilled++;
-      }
-
-      // Progress log every 50 wallets
-      if ((v2Backfilled + v2BackfillFetched) % 50 === 0 && v2Backfilled > 0) {
-        console.log(`    V2 backfill progress: ${v2Backfilled} scored (${v2BackfillFetched} via id-range fetch)...`);
-      }
-    }
-    if (v2Backfilled > 0) {
-      console.log(`  V2 backfill: ${v2Backfilled} pool wallets scored (${v2BackfillFetched} via id-range fetch)`);
-    }
   }
 
   // Step 6: Rank and trim to top N (with minimum score floor)
@@ -1219,32 +1169,22 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     console.log(`  ⏳ Score-eviction grace period active: ${preFixCount}/${activeCount} wallets still pre-fix (${(preFixRatio * 100).toFixed(0)}%). Skipping MIN_SCORE_POOL filter this cycle.`);
   }
 
-  // Phase 5: pick the authoritative score. V2 only goes live once a majority
-  // of the pool has been rescored under the new pipeline — otherwise recent
-  // stragglers (still scoreV2==null) would all collapse to legacy and skew
-  // the ranking mid-flip. Under the coverage threshold we stay on legacy.
+  // Rank by the single authoritative score. Wallets without a score yet
+  // (freshly admitted, not yet rescored) get protected from eviction so
+  // they have a chance to earn their place on next cycle.
   const activePool = poolEntries.filter(([, w]) => w.status !== 'removed');
-  const v2CoverageCount = activePool.filter(([, w]) => typeof w.scoreV2 === 'number').length;
-  const v2Coverage = activePool.length > 0 ? v2CoverageCount / activePool.length : 0;
-  const useV2 = CONFIG.USE_SCORE_V2 && v2Coverage >= (CONFIG.V2_MIN_POOL_COVERAGE_PCT / 100);
-  const scoreOf = (w) => useV2 && typeof w.scoreV2 === 'number' ? w.scoreV2 : (w.score || 0);
+  const scoredCount = activePool.filter(([, w]) => typeof w.score === 'number').length;
+  const scoreOf = (w) => typeof w.score === 'number' ? w.score : 0;
 
-  if (CONFIG.USE_SCORE_V2) {
-    console.log(`  V2 ranker coverage: ${v2CoverageCount}/${activePool.length} (${(v2Coverage * 100).toFixed(0)}%) — ${useV2 ? '✓ using scoreV2 as primary' : `↻ below ${CONFIG.V2_MIN_POOL_COVERAGE_PCT}% floor, staying on legacy`}`);
-  }
-
-  // Use V2-calibrated floor when V2 is the active ranking score.
-  // V2 practical max ~55 vs legacy 100 — applying the legacy floor (50) to V2
-  // scores would filter out virtually everything (only perfect wallets survive).
-  const effectiveMinScore = useV2 ? CONFIG.MIN_SCORE_POOL_V2 : CONFIG.MIN_SCORE_POOL;
+  console.log(`  Scoring coverage: ${scoredCount}/${activePool.length} (${activePool.length > 0 ? Math.round(100 * scoredCount / activePool.length) : 0}%)`);
 
   let ranked = Object.entries(pool)
-    .filter(([, w]) => w.status !== 'removed' && (graceActive || scoreOf(w) >= effectiveMinScore))
+    .filter(([, w]) => w.status !== 'removed' && (graceActive || scoreOf(w) >= CONFIG.MIN_SCORE_POOL))
     .sort((a, b) => scoreOf(b[1]) - scoreOf(a[1]));
 
   // Safety net: if score filtering wiped >50% of active wallets, something is
-  // miscalibrated (e.g. scale mismatch). Fall back to keeping all non-removed
-  // wallets rather than silently collapsing the pool.
+  // miscalibrated. Fall back to keeping all non-removed wallets rather than
+  // silently collapsing the pool.
   if (!graceActive && ranked.length < activePool.length * 0.5) {
     console.log(`  ⚠ Score filter would keep only ${ranked.length}/${activePool.length} wallets — likely miscalibrated. Bypassing MIN_SCORE filter this cycle.`);
     ranked = Object.entries(pool)
@@ -1254,33 +1194,30 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
 
   const trimmedPool = {};
   let rank = 0;
-  let v2Protected = 0;
+  let unscoredProtected = 0;
   for (const [addr, wallet] of ranked) {
     rank++;
     if (rank <= CONFIG.TARGET_POOL_SIZE) {
       wallet.rank = rank;
       trimmedPool[addr] = wallet;
-    } else if (CONFIG.USE_SCORE_V2 && typeof wallet.scoreV2 !== 'number') {
-      // V2 protection: don't evict wallets that haven't been assessed
-      // under the new scoring pipeline yet. They keep their pool spot
-      // until they get a scoreV2, at which point they compete fairly.
-      // Gate on CONFIG.USE_SCORE_V2 (not useV2) so protection is active
-      // during the entire rollout — not just after 50% coverage.
+    } else if (typeof wallet.score !== 'number') {
+      // Protection: don't evict wallets that haven't been scored yet. They
+      // keep their pool spot until they get a score, at which point they
+      // compete fairly.
       wallet.rank = rank;
       trimmedPool[addr] = wallet;
-      v2Protected++;
+      unscoredProtected++;
     }
   }
-  if (v2Protected > 0) {
-    console.log(`  🛡 V2 protection: ${v2Protected} wallets kept in pool pending V2 assessment`);
+  if (unscoredProtected > 0) {
+    console.log(`  🛡 Unscored protection: ${unscoredProtected} wallets kept in pool pending first score`);
   }
 
   console.log(`\n  ✅ Wallet pool: ${Object.keys(trimmedPool).length} wallets (from ${qualified} qualified)`);
   const topWallets = ranked.slice(0, 5);
   for (const [addr, w] of topWallets) {
-    const shown = useV2 && typeof w.scoreV2 === 'number' ? `v2:${w.scoreV2}` : `score:${w.score}`;
     const roi = w.stats?.decidedROI != null ? ` ROI:${(w.stats.decidedROI * 100).toFixed(0)}%` : '';
-    console.log(`    #${w.rank} ${addr.slice(0, 12)}... ${shown} WR:${((w.stats?.recentWinRate || w.stats?.winRate || 0) * 100).toFixed(0)}% PnL:$${(w.stats?.totalPnl || 0).toFixed(0)}${roi}`);
+    console.log(`    #${w.rank} ${addr.slice(0, 12)}... score:${w.score ?? '—'} WR:${((w.stats?.recentWinRate || w.stats?.winRate || 0) * 100).toFixed(0)}% PnL:$${(w.stats?.totalPnl || 0).toFixed(0)}${roi}`);
   }
 
   // Step 7: Snapshot each wallet's lifetime PnL into the history ledger so we
@@ -1482,25 +1419,18 @@ async function fastLoop(state, walletPool, marketLookup) {
   }
 
   // 7b: Leaderboard — wallet list for Dashboard tab.
-  // Sort order mirrors the pool ranker: V2 takes priority when present
-  // (Phase 5), legacy is the fallback for wallets that haven't been
-  // rescored under the new pipeline yet.
-  const leaderboardScoreOf = (w) =>
-    typeof w.scoreV2 === 'number' ? w.scoreV2 : (w.score || 0);
   const walletList = Object.values(walletPool)
-    .filter(w => leaderboardScoreOf(w) > 0 && w.status !== 'removed')
-    .sort((a, b) => leaderboardScoreOf(b) - leaderboardScoreOf(a));
+    .filter(w => typeof w.score === 'number' && w.score > 0 && w.status !== 'removed')
+    .sort((a, b) => (b.score || 0) - (a.score || 0));
 
   analytics.leaderboard = walletList.map((w, idx) => ({
     rank: idx + 1,
     address: w.address,
-    score: w.score,
-    // Phase 2 V2 fields — primary ranker post-redesign
-    scoreV2: typeof w.scoreV2 === 'number' ? w.scoreV2 : null,
-    scoreV2Components: w.scoreV2Components || null,
-    // Phase 4 shadow eviction flag — populated when a wallet matches an
-    // eviction rule but V2_EVICTION_MODE is 'shadow' rather than 'live'
-    v2WouldEvict: w.v2WouldEvict || null,
+    score: typeof w.score === 'number' ? w.score : null,
+    scoreComponents: w.scoreComponents || null,
+    // Shadow-eviction flag — populated when a wallet matches an eviction
+    // rule but EVICTION_MODE is 'shadow' rather than 'live'.
+    wouldEvict: w.wouldEvict || null,
     lastActiveTimestamp: w.lastScored || w.discoveredScan ? new Date().toISOString() : null,
     stats: {
       // totalPnl   = Goldsky on-chain realized (only counts explicitly redeemed/sold positions).
@@ -1567,18 +1497,16 @@ async function fastLoop(state, walletPool, marketLookup) {
   const totalWins = walletList.reduce((s, w) => s + (w.stats?.wins || 0), 0);
   const totalResolved = walletList.reduce((s, w) => s + (w.stats?.resolvedMarkets || 0), 0);
 
-  // Summary scores use the same effective-score the ranker uses, with
-  // a V2-specific average exposed separately for dashboards that want to
-  // track the new scale independently.
-  const v2Wallets = walletList.filter(w => typeof w.scoreV2 === 'number');
+  const scoredWallets = walletList.filter(w => typeof w.score === 'number');
   analytics.summary = {
     totalWallets,
     totalPnl,
-    avgScore: totalWallets > 0 ? walletList.reduce((s, w) => s + leaderboardScoreOf(w), 0) / totalWallets : 0,
-    avgScoreV2: v2Wallets.length > 0 ? v2Wallets.reduce((s, w) => s + w.scoreV2, 0) / v2Wallets.length : 0,
-    v2Coverage: totalWallets > 0 ? v2Wallets.length / totalWallets : 0,
+    avgScore: scoredWallets.length > 0
+      ? scoredWallets.reduce((s, w) => s + w.score, 0) / scoredWallets.length
+      : 0,
+    scoringCoverage: totalWallets > 0 ? scoredWallets.length / totalWallets : 0,
     meanPickerCount: walletList.filter(w => w.stats?.isMeanPickerShape === true).length,
-    shadowEvictionCount: walletList.filter(w => w.v2WouldEvict).length,
+    shadowEvictionCount: walletList.filter(w => w.wouldEvict).length,
     winRate: totalResolved > 0 ? totalWins / totalResolved : 0,
     totalWins,
     totalResolved,
@@ -1735,6 +1663,37 @@ async function run() {
   } else if (existingWallets && typeof existingWallets === 'object') {
     // Migration: old format might be different
     walletPool = {};
+  }
+
+  // One-time migration from legacy dual-score schema (score/scoreV2 split).
+  // Pool entries written pre-consolidation may have both fields; the V2
+  // field was the authoritative one. Copy it onto `score` and drop V2
+  // vocabulary entirely so downstream code sees one clean field.
+  let migrated = 0;
+  for (const addr of Object.keys(walletPool)) {
+    const w = walletPool[addr];
+    if (!w || typeof w !== 'object') continue;
+    // scoreV2 was authoritative post-Phase-5; prefer it over legacy score
+    if (typeof w.scoreV2 === 'number') {
+      w.score = w.scoreV2;
+      migrated++;
+    }
+    if (w.scoreV2Components) {
+      w.scoreComponents = w.scoreComponents || w.scoreV2Components;
+    }
+    if (w.v2Strikes) {
+      w.strikes = w.strikes || w.v2Strikes;
+    }
+    if (w.v2WouldEvict) {
+      w.wouldEvict = w.wouldEvict || w.v2WouldEvict;
+    }
+    delete w.scoreV2;
+    delete w.scoreV2Components;
+    delete w.v2Strikes;
+    delete w.v2WouldEvict;
+  }
+  if (migrated > 0) {
+    console.log(`  📦 Migrated ${migrated} wallets from legacy scoreV2 → score`);
   }
 
   const marketsFile = path.join(DATA_DIR, 'markets.json.gz');
