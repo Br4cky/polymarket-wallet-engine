@@ -13,7 +13,7 @@
 // Usage:
 //   node scripts/harvest-participants.mjs
 //   node scripts/harvest-participants.mjs --top 300 --markets-per-source 50
-//   node scripts/harvest-participants.mjs --tier-min 70   # only wallets scoreV2 ≥ 70
+//   node scripts/harvest-participants.mjs --tier-min 70   # only wallets score ≥ 70
 //   node scripts/harvest-participants.mjs --dry-run       # no file write
 //
 // Run outside the sandbox (needs data-api.polymarket.com).
@@ -51,6 +51,11 @@ function loadGzip(file) {
 const walletsData = loadGzip(path.join(ROOT, 'data/wallets.json.gz'));
 const marketsData = loadGzip(path.join(ROOT, 'data/markets.json.gz'));
 const pool = walletsData.pool || walletsData;
+// Consolidation migration (mirror scan.js) — promote scoreV2 to score
+// for any JSON written pre-consolidation.
+for (const w of Object.values(pool)) {
+  if (w && typeof w.scoreV2 === 'number') w.score = w.scoreV2;
+}
 const marketLookup = new Map();
 for (const [tokenId, m] of Object.entries(marketsData)) {
   marketLookup.set(tokenId, { ...m, tokenId });
@@ -59,19 +64,19 @@ for (const [tokenId, m] of Object.entries(marketsData)) {
 // ── Select top-tier source wallets ──────────────────────────────────────────
 const sourceWallets = Object.values(pool)
   .filter(w => w && w.address && w.status !== 'removed')
-  .filter(w => typeof w.scoreV2 === 'number' && w.scoreV2 >= TIER_MIN_SCORE)
-  .sort((a, b) => b.scoreV2 - a.scoreV2);
+  .filter(w => typeof w.score === 'number' && w.score >= TIER_MIN_SCORE)
+  .sort((a, b) => b.score - a.score);
 
 if (sourceWallets.length === 0) {
-  console.error(`No wallets with scoreV2 ≥ ${TIER_MIN_SCORE}. Try lowering --tier-min.`);
+  console.error(`No wallets with score ≥ ${TIER_MIN_SCORE}. Try lowering --tier-min.`);
   process.exit(1);
 }
 
 console.log(`\n═══════════════════════════════════════════════════════════════════`);
 console.log(`  Market-participant harvest`);
 console.log(`═══════════════════════════════════════════════════════════════════`);
-console.log(`  Source wallets (scoreV2 ≥ ${TIER_MIN_SCORE}): ${sourceWallets.length}`);
-console.log(`  Top source: ${sourceWallets[0].address.slice(0, 12)}… (scoreV2=${sourceWallets[0].scoreV2})`);
+console.log(`  Source wallets (score ≥ ${TIER_MIN_SCORE}): ${sourceWallets.length}`);
+console.log(`  Top source: ${sourceWallets[0].address.slice(0, 12)}… (score=${sourceWallets[0].score})`);
 console.log(`  Target: top ${TOP_N} candidates`);
 console.log(`  Markets per source wallet: ${MARKETS_PER_SOURCE}`);
 console.log();
@@ -93,7 +98,7 @@ for (const w of sourceWallets) {
     allMarkets.push({
       conditionId: m.conditionId,
       sourceWallet: w.address,
-      sourceScore: w.scoreV2,
+      sourceScore: w.score,
       cost: (m.avgBuyPrice || 0) * (m.buySize || 0),
     });
   }

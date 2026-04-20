@@ -5,7 +5,7 @@
 //   2. Soft MM (ambiguous)       — should score 3/6, mmPenalty = 0.5
 //   3. Whale-01-class MM          — should score 6/6, mmPenalty = 0.0
 //
-// Also exercises end-to-end integration with computeWalletScoreV2 to confirm
+// Also exercises end-to-end integration with computeWalletScore to confirm
 // that a whale-01-shape wallet gets effectively zeroed by the new penalty.
 //
 // Usage: node scripts/test-stage1-mm.mjs
@@ -18,7 +18,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 const { classifyMarketMaker, mmPenaltyForScore, attachMMClassification } =
   await import(path.join(ROOT, 'scanner/mmClassifier.js'));
-const { computeWalletScoreV2 } = await import(path.join(ROOT, 'scanner/dataApi.js'));
+const { computeWalletScore } = await import(path.join(ROOT, 'scanner/dataApi.js'));
 
 const now = Math.floor(Date.now() / 1000);
 
@@ -122,23 +122,23 @@ ok(rookieResult.score === 0, `rookie should refuse to score: got ${rookieResult.
 ok(rookieResult.reason.includes('insufficient_sample'),
    `rookie reason should flag sample-size, got: ${rookieResult.reason}`);
 
-// ── End-to-end: MM penalty impact on scoreV2 ──────────────────────────────
+// ── End-to-end: MM penalty impact on score ──────────────────────────────
 console.log('═════════════════════════════════════════════════════════════════════');
-console.log('  End-to-end scoreV2 impact (with vs without MM classification)');
+console.log('  End-to-end score impact (with vs without MM classification)');
 console.log('═════════════════════════════════════════════════════════════════════\n');
 
 // Without MM classification attached — old behavior
 const whale01NoClass = { ...whale01 };
-const v2Before = computeWalletScoreV2(whale01NoClass);
+const v2Before = computeWalletScore(whale01NoClass);
 
 // With Stage 1 classification — new behavior
 const whale01WithClass = { ...whale01 };
 attachMMClassification(whale01WithClass);
-const v2After = computeWalletScoreV2(whale01WithClass);
+const v2After = computeWalletScore(whale01WithClass);
 
 console.log(`  whale-01 class stats:`);
-console.log(`    before Stage 1 (no mmPenalty)  → scoreV2 = ${v2Before.score}`);
-console.log(`    after  Stage 1 (mmPenalty=${whale01WithClass.mmPenalty})  → scoreV2 = ${v2After.score}`);
+console.log(`    before Stage 1 (no mmPenalty)  → score = ${v2Before.score}`);
+console.log(`    after  Stage 1 (mmPenalty=${whale01WithClass.mmPenalty})  → score = ${v2After.score}`);
 console.log();
 
 ok(v2Before.score > 20, `whale-01 before penalty should score high, got ${v2Before.score}`);
@@ -149,11 +149,11 @@ ok(v2Before.score > v2After.score * 4,
 // Check directional wallet is NOT affected
 const directionalWithClass = { ...directional };
 attachMMClassification(directionalWithClass);
-const v2Dir = computeWalletScoreV2(directionalWithClass);
-const v2DirNoClass = computeWalletScoreV2({ ...directional });
+const v2Dir = computeWalletScore(directionalWithClass);
+const v2DirNoClass = computeWalletScore({ ...directional });
 console.log(`  directional wallet:`);
-console.log(`    before Stage 1                 → scoreV2 = ${v2DirNoClass.score}`);
-console.log(`    after  Stage 1 (mmPenalty=${directionalWithClass.mmPenalty})  → scoreV2 = ${v2Dir.score}`);
+console.log(`    before Stage 1                 → score = ${v2DirNoClass.score}`);
+console.log(`    after  Stage 1 (mmPenalty=${directionalWithClass.mmPenalty})  → score = ${v2Dir.score}`);
 console.log();
 ok(Math.abs(v2Dir.score - v2DirNoClass.score) < 0.5,
    `directional score should be unchanged by Stage 1, delta was ${Math.abs(v2Dir.score - v2DirNoClass.score)}`);

@@ -881,116 +881,29 @@ function analyzeTradeHistory(events, opts = {}) {
 // ============================================================================
 
 /**
- * Compute a wallet's quality score from their trade history stats.
- * Replaces the old snapshot-based computeScore().
+ * Compute a wallet's quality score — SINGLE authoritative scoring function.
  *
- * Score is 0–100, built from:
- *   - Recent win rate (30 pts) — last 90 days, weighted by sample size
- *   - All-time win rate (10 pts) — long-term track record
- *   - Profitability (15 pts) — total PnL on log scale
- *   - Consistency (15 pts) — recent vs all-time performance similarity
- *   - Activity (15 pts) — trading frequency, recency
- *   - Edge quality (15 pts) — avg win / avg loss ratio
+ * Keys on decided-truth data (decidedROI + decidedCapital, supplied by
+ * positionLedger.aggregatePositions) with a multi-stage penalty pipeline:
+ *   - decidedROI    → roi points (exponential saturation to 50 pts at high ROI)
+ *   - decidedCapital→ capConf multiplier (sqrt-scaled; $50k → 1.0)
+ *   - resolvedMarkets → sampleConf multiplier (linear to 25 resolved)
+ *   - lastTradeTs   → recency multiplier (1.0 ≤ 7d, linear decay to 0 at 30d)
+ *   - mean-picker   → 0.2× penalty if WR ≥ 95% + decidedROI < 5% + $50k+ cap
+ *   - MM classifier → 0.0–0.5× penalty (set by attachMMClassification)
+ *   - activity bonus→ additive 0–5 pts on log-scaled trades/day
  *
- * @param {object} stats - Output from analyzeTradeHistory()
- * @returns {number} Score 0–100
+ * Return shape: { score, reason, components }.
+ *   reason: 'ok' | 'no_stats' | 'no_decided_metrics'
+ *   score: null if reason !== 'ok' (caller must handle — usually treat as unranked)
+ *
+ * Callers MUST run attachMMClassification(stats) and attachAlphaEvaluation(stats)
+ * BEFORE calling this so stats.mmPenalty + stats.alphaVerdict are populated.
+ *
+ * Evolution: this replaces a legacy win-rate-weighted formula that had
+ * Spearman(score, decidedROI) = -0.152 (inverted on ground truth). Current
+ * formula hits ~0.618 on the live pool.
  */
-function computeWalletScore(stats) {
-  if (!stats || stats.resolvedMarkets === 0) return 0;
-
-  // Recent win rate (30 pts) — most important, but needs sample backing
-  // Scale: 50% WR = 0pts, 100% WR = 30pts, with sample size damping
-  // Falls back to all-time WR if no recent resolved markets (long-duration traders)
-  const effectiveRecentWR = stats.recentResolved >= 3 ? stats.recentWinRate : stats.winRate;
-  const recentSampleFactor = stats.recentResolved >= 3
-    ? Math.min(1, Math.sqrt(stats.recentResolved) / 5) // plateaus at ~25 resolved
-    : Math.min(0.6, Math.sqrt(stats.resolvedMarkets) / 10); // damped fallback from all-time
-  const recentWrScore = Math.max(0, (effectiveRecentWR - 0.5) * 2) * recentSampleFactor * 30;
-
-  // All-time win rate (10 pts) — long-term verification
-  const allTimeSampleFactor = Math.min(1, Math.sqrt(stats.resolvedMarkets) / 8); // plateaus at ~64 resolved
-  const allTimeWrScore = Math.max(0, (stats.winRate - 0.5) * 2) * allTimeSampleFactor * 10;
-
-  // Profitability (15 pts) — log scale to avoid saturation.
-  // Use effectivePnl = max(sample analyzer, Goldsky on-chain) when present —
-  // credits both unredeemed winners (analyzer > Goldsky) and wallets with
-  // >3000-event history beyond our sample window (Goldsky > analyzer).
-  // Falls back to totalPnl for legacy entries without effectivePnl.
-  // $100 PnL ≈ 5pts, $1k ≈ 10pts, $10k ≈ 13pts, $100k ≈ 15pts
-  const scorePnl = (stats.effectivePnl != null ? stats.effectivePnl : stats.totalPnl) || 0;
-  const pnlScore = scorePnl > 0
-    ? Math.min(1, Math.log10(1 + scorePnl) / 5) * 15
-    : 0;
-
-  // Consistency (15 pts) — penalise wallets whose recent performance diverges from all-time
-  // If recent WR is close to all-time WR, high consistency. Big drop = low consistency.
-  const wrDiff = Math.abs(stats.recentWinRate - stats.winRate);
-  const consistencyScore = stats.recentResolved >= 5
-    ? Math.max(0, 1 - wrDiff * 3) * 15  // 33% WR difference = 0 pts
-    : 3; // Not enough recent data — small benefit of doubt, not half marks
-
-  // Activity (15 pts) — recent trading frequency and recency
-  const daysSinceLastTrade = stats.lastTradeTs > 0
-    ? (Date.now() / 1000 - stats.lastTradeTs) / 86400
-    : 999;
-  const recencyFactor = daysSinceLastTrade <= 3 ? 1.0
-    : daysSinceLastTrade <= 7 ? 0.9
-    : daysSinceLastTrade <= 14 ? 0.75
-    : daysSinceLastTrade <= 30 ? 0.5
-    : daysSinceLastTrade <= 60 ? 0.25
-    : 0;
-  const frequencyFactor = Math.min(1, Math.log10(1 + stats.recentTradesPerDay * 10) / 2);
-  const activityScore = (recencyFactor * 10 + frequencyFactor * 5);
-
-  // Edge quality (15 pts) — ROI-based avg-win-ROI / avg-loss-ROI ratio.
-  // Losses on prediction markets always go to ~$0, so avgLossRoi ≈ 1.0 and
-  // roiEdgeRatio ≈ avgWinRoi. Calibration:
-  //   0.15 = wallet grinds scrap bets (aligned with signal MIN_ROI floor) → 0 pts
-  //   0.50 = wallet averages 50% ROI on winners → mid-range
-  //   2.00 = wallet averages 200% ROI on winners → near-top
-  //   5.00+ = elite underdog hunter → saturates at 15
-  // null → no losses recorded yet with sufficient sample; grant 3 pts benefit
-  // of doubt (mirrors consistencyScore fallback). Old dollar-based edgeRatio
-  // is retained on the stats object for dashboard backcompat but is no longer
-  // used for scoring — it was saturated/noisy due to the dollar-asymmetry bug.
-  let edgeScore;
-  if (stats.roiEdgeRatio == null) {
-    edgeScore = 3;
-  } else if (stats.roiEdgeRatio <= 0.15) {
-    edgeScore = 0;
-  } else {
-    edgeScore = Math.min(1, Math.log2(1 + (stats.roiEdgeRatio - 0.15)) / 3) * 15;
-  }
-
-  const total = recentWrScore + allTimeWrScore + pnlScore + consistencyScore + activityScore + edgeScore;
-  return Math.min(100, Math.round(total * 10) / 10);
-}
-
-// ============================================================================
-// V2 scoring — position-centric, ROI-weighted, mean-picker-aware
-// ============================================================================
-//
-// Why a rewrite: the legacy formula above weights 40/100 on win rate and 15
-// on raw PnL. Both reward mean-pickers — wallets that buy $0.95 tokens and
-// collect $0.05 wins at 99% WR with ~2% ROI on $500k of capital. Cross-tab
-// analysis on 75 wallets showed Spearman(legacyScore, decidedROI) = -0.152
-// (literally inverted) and $6.76M of the pool was trapped in mean-picker
-// wallets ranked in the 80s.
-//
-// V2 keys on:
-//   - decidedROI as the primary driver (50 pts)
-//   - decidedCapital as a confidence weight (sqrt to $50k)
-//   - resolvedMarkets as a sample-size confidence weight (to 25)
-//   - recency as a multiplier (1.0 inside 7d, linear decay to 0 at 30d)
-//   - mean-picker shape as a 0.2x penalty (kept in pool for signal
-//     integration, but can't outrank real ROI wallets)
-//   - small activity bonus (0-5 pts) so otherwise-tied wallets with more
-//     fresh trades surface first
-//
-// Shadow mode: this function runs alongside computeWalletScore. Rankers
-// don't consume it yet — Phase 3 validates Spearman on fresh data before
-// Phase 5 makes scoreV2 authoritative.
-
 function roiPoints(decidedROI) {
   // 0 at or below 0% ROI; ~15pts at 10%; ~30pts at 25%; ~42pts at 50%;
   // saturates toward 50pts as ROI → ∞. Formula: 50 * (1 - e^(-roi*3)).
@@ -1019,14 +932,14 @@ function recencyMultiplier(lastTradeTs) {
   return 1 - (days - 7) / 23;
 }
 
-function computeWalletScoreV2(stats) {
-  if (!stats) return { score: 0, reason: 'no_stats' };
+function computeWalletScore(stats) {
+  if (!stats) return { score: null, reason: 'no_stats', components: null };
 
-  // If the shadow measurement pass hasn't populated decided* yet (pool
-  // wallet not yet rescored since Phase 1 rolled out), we can't score V2.
-  // Caller falls back to legacy. Signal this with score=null.
+  // Scoring requires decided-truth metrics. Wallets without them (not yet
+  // rescored, or freshly discovered) get score=null so callers can decide
+  // whether to skip ranking or provisionally admit.
   if (stats.decidedROI == null || stats.decidedCapital == null) {
-    return { score: null, reason: 'no_decided_metrics' };
+    return { score: null, reason: 'no_decided_metrics', components: null };
   }
 
   const resolved = stats.decidedWins != null && stats.decidedLosses != null
@@ -1038,13 +951,6 @@ function computeWalletScoreV2(stats) {
   const sampleConf = sampleConfidence(resolved);
   const recency = recencyMultiplier(stats.lastTradeTs);
   const meanPickerPenalty = stats.isMeanPickerShape === true ? 0.2 : 1.0;
-
-  // Stage 1: MM penalty. Caller should have run attachMMClassification on
-  // the stats before calling this function so stats.mmPenalty is populated.
-  // Default to 1.0 (no penalty) if mmPenalty is absent so we're safe on
-  // legacy code paths that haven't been upgraded yet. Mean-picker penalty
-  // and mm-penalty stack — they catch overlapping but distinct failure
-  // modes (mean-picker = scrap-grader WR gamer, mm = MAKER_REBATE earner).
   const mmPenalty = (typeof stats.mmPenalty === 'number') ? stats.mmPenalty : 1.0;
 
   // Activity bonus (0-5 pts, additive) — log-scaled trades/day, so a
@@ -1089,5 +995,4 @@ export {
   fetchMarketTrades,
   analyzeTradeHistory,
   computeWalletScore,
-  computeWalletScoreV2,
 };

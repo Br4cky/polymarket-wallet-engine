@@ -37,7 +37,7 @@
  * Integration:
  *   - Called on each wallet's stats during scoring.
  *   - Result attached to stats.mmScore / stats.mmSignals / stats.isLikelyMM.
- *   - computeWalletScoreV2 multiplies final score by mmPenalty where
+ *   - computeWalletScore multiplies final score by mmPenalty where
  *     mmPenalty = 0.1 when mmScore >= 4, else 1.0.
  *
  * Stage 1 of the handpicked-signals → wallet-engine merge.
@@ -140,7 +140,7 @@ export function classifyMarketMaker(stats, opts = {}) {
 
 /**
  * Return the scoring-penalty multiplier for a given MM score. Consumed by
- * computeWalletScoreV2 via stats.mmPenalty.
+ * computeWalletScore via stats.mmPenalty.
  *
  * Calibration:
  *   0–2 → 1.0  (no penalty — directional wallet)
