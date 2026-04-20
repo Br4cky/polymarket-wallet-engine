@@ -1,13 +1,13 @@
 {
-  "scanCount": 215,
-  "lastRun": "2026-04-20T03:45:47.394Z",
-  "lastDiscovery": 215,
-  "lastFastLoop": "2026-04-20T04:09:45.049Z",
-  "walletPoolVersion": 61,
+  "scanCount": 216,
+  "lastRun": "2026-04-20T06:23:45.715Z",
+  "lastDiscovery": 216,
+  "lastFastLoop": "2026-04-20T06:52:16.799Z",
+  "walletPoolVersion": 62,
   "cursor": null,
   "totalPositionsScanned": 0,
   "stuckCursorCount": 0,
-  "lastId": "0x01d49b1b277f68b432a815c56decbfc59a67d272-109186426990130891854541146815906788927480161145718858170005891384863492847265",
+  "lastId": "0x01d4996348b5f828315ee356749e5645b4c647d4-28939136783036908207694233490183090454342163404376897068214519138884198001743",
   "totalScanned": 13653000,
   "scanIndex": 82,
   "goldskySchema": {
@@ -31,6 +31,6 @@
     "unusedFields": [
       "avgPrice"
     ],
-    "introspectedAt": "2026-04-20T03:45:50.704Z"
+    "introspectedAt": "2026-04-20T06:23:49.305Z"
   }
 }
