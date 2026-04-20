@@ -61,52 +61,56 @@ const DATA_DIR = path.resolve(__dirname, '../data');
 // ============================================================================
 
 const CONFIG = {
-  // Wallet discovery (slow loop)
-  MAX_DISCOVERY_WALLETS: 5000,     // Candidates to discover from Goldsky
-  TARGET_POOL_SIZE: 1000,          // Top N to keep after scoring
-  MIN_SCORE_POOL: 50,              // Minimum score to enter the pool — filters out noise (legacy 0-100)
-  MIN_SCORE_POOL_V2: 25,           // V2 equivalent (V2 scores cap ~55; 25 ≈ same selectivity as 50/100)
-  MIN_PNL_DISCOVERY: 500,          // Minimum PnL to even fetch trade history
-  MIN_POSITIONS_DISCOVERY: 10,     // Minimum positions on Goldsky to bother checking
-  MIN_RESOLVED_MARKETS: 10,        // Minimum resolved markets to enter pool — no flukes
+  // ── Pool sizing & admission ────────────────────────────────────────────
+  TARGET_POOL_SIZE: 1000,          // Top N wallets kept after ranking
+  MAX_DISCOVERY_WALLETS: 5000,     // Max candidates fetched per discovery cycle
+  RESCORE_BATCH_SIZE: 100,         // Wallets rescored per discovery cycle
+  DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N scans
+
+  // Score floor for pool admission. Score scale is practical 0–55; a top
+  // decile wallet scores ≥ 25. Pool floor of 5 keeps only wallets that
+  // pass the basic "has decided-ROI data + not an MM + not a mean-picker".
+  MIN_SCORE_POOL: 5,
+
+  // ── Discovery gates (new wallets, cheap first-look rejects) ─────────────
+  // Wallets failing any of these never enter the pool. Mirrors the rescore
+  // eviction logic so we don't admit-then-immediately-evict.
+  MIN_PNL_DISCOVERY: 500,              // Skip Goldsky wallets below this PnL floor
+  MIN_POSITIONS_DISCOVERY: 10,         // Goldsky position count minimum
+  MIN_RESOLVED_MARKETS: 10,            // Resolved markets minimum (no flukes)
+  DISCOVERY_MIN_DECIDED_CAPITAL: 5000, // $5k+ risked on resolved plays
+  DISCOVERY_MIN_DECIDED_ROI: 0.08,     // 8%+ ROI on decided capital
+  DISCOVERY_MAX_WIN_RATE: 0.98,        // Obvious mean-picker shape (99%+ WR)
+  DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED: 25, // Only apply WR cap when sample meaningful
   // Max capital-weighted avg entry price. 0.85 ⇒ wallet's typical trade must
   // have ≥17.6% implied max ROI. Keeps the pool aligned with the signal
-  // engine's MIN_OPEN_ROI (15%) — scrap-graders can no longer ride WR into
-  // the pool just to produce signals we'd then filter out anyway.
-  // 0 or 1 = disabled.
+  // engine's MIN_OPEN_ROI — scrap-graders can't ride WR into the pool just
+  // to produce signals we'd filter out anyway. 0 or 1 = disabled.
   MAX_WALLET_AVG_ENTRY_PRICE: 0.85,
-  MAX_INACTIVE_DAYS: 60,           // Must have traded within last 60 days
-  DISCOVERY_INTERVAL_SCANS: 3,     // Run full discovery every N fast-loop scans
-  RESCORE_BATCH_SIZE: 100,         // Wallets to rescore per discovery cycle
 
-  // During rescore, fetch per-position breakdown from Goldsky and compute
-  // decidedROI / decidedCapital / mean-picker flag via positionLedger.
-  // Feeds the single unified score formula in dataApi.computeWalletScore.
-  // Flip off only for debugging; the scorer returns null without this data.
+  // ── Per-wallet measurement ──────────────────────────────────────────────
+  // Requires Goldsky per-position fetch to compute decidedROI/decidedCapital.
+  // Flip off only for debugging — scorer returns null without this data.
   ENABLE_DECIDED_METRICS: true,
 
-  // Eviction rules. Mean-picker / low-score rules use a strike counter so a
-  // single fluky rescore can't evict a real wallet. Dormancy and negROI
-  // with meaningful capital are single-shot — already high-confidence.
+  // ── Dormancy / activity ─────────────────────────────────────────────────
+  // Single unified dormancy cutoff. A wallet that hasn't traded in this
+  // many days is evicted from the pool. Applied at both discovery-gate
+  // and rescore-eviction paths.
+  DORMANCY_DAYS: 30,
+
+  // ── Eviction rules ──────────────────────────────────────────────────────
   //   'off'    — do nothing
   //   'shadow' — log what would be evicted, don't remove
   //   'live'   — actually remove matching wallets
+  // Mean-picker / low-score use strike counters so one fluky rescore can't
+  // evict a real wallet. Dormancy and neg-ROI-with-capital are single-shot.
   EVICTION_MODE: 'shadow',
   MEAN_PICKER_STRIKES_TO_EVICT: 3,
-  LOW_SCORE_THRESHOLD: 15,
+  LOW_SCORE_THRESHOLD: 5,              // on 0–55 scale — score below this is an eviction strike
   LOW_SCORE_STRIKES_TO_EVICT: 3,
   NEG_ROI_CAPITAL_FLOOR: 10000,        // decidedCapital ≥ $10k + ROI<0 = evict
   NEG_ROI_MIN_RESOLVED: 25,            // AND resolved ≥ 25 markets
-  DORMANCY_DAYS: 30,                   // no trade in last 30 days = evict
-
-  // Discovery gates — reject candidates at the door on the same shape the
-  // rescore loop would evict. Cheaper than admit-then-evict and keeps the
-  // pool clean from first contact.
-  DISCOVERY_MAX_INACTIVE_DAYS: 30,           // tighter than MAX_INACTIVE_DAYS
-  DISCOVERY_MIN_DECIDED_CAPITAL: 5000,       // must have risked $5k+ on resolved plays
-  DISCOVERY_MIN_DECIDED_ROI: 0.08,           // must average 8%+ ROI on resolved capital
-  DISCOVERY_MAX_WIN_RATE: 0.98,              // reject obvious mean-picker shape at door
-  DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED: 25,   // only apply WR cap when sample is meaningful
 
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
@@ -763,7 +767,7 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       const daysSinceLastTrade = stats.lastTradeTs > 0
         ? (Date.now() / 1000 - stats.lastTradeTs) / 86400
         : Infinity;
-      const freshInactiveFloor = CONFIG.DISCOVERY_MAX_INACTIVE_DAYS;
+      const freshInactiveFloor = CONFIG.DORMANCY_DAYS;
       if (daysSinceLastTrade > freshInactiveFloor) {
         processed++;
         continue;
@@ -928,7 +932,7 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
     const daysSinceLastTrade = wallet.stats?.lastTradeTs > 0
       ? (Date.now() / 1000 - wallet.stats.lastTradeTs) / 86400
       : Infinity;
-    if (daysSinceLastTrade > CONFIG.MAX_INACTIVE_DAYS) {
+    if (daysSinceLastTrade > CONFIG.DORMANCY_DAYS) {
       wallet.status = 'removed';
       wallet.removeReason = 'inactive';
       decayed++;
