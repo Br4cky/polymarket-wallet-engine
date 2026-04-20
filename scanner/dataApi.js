@@ -277,15 +277,105 @@ function analyzeTradeHistory(events, opts = {}) {
   const marketLookup = opts.marketLookup instanceof Map ? opts.marketLookup : null;
 
   // Normalise every event into either a BUY, a SELL, or a synthetic SELL from
-  // a REDEEM. Anything else (REWARD, SPLIT, MERGE, CONVERSION, …) is ignored.
+  // a REDEEM. MERGE events are also converted to synthetic SELLs (see below).
+  // REWARD / MAKER_REBATE / SPLIT / CONVERSION are accumulated into separate
+  // counters so downstream classifiers (MM detector, true-economic-PnL) can
+  // see the full picture — these were previously silently dropped, which
+  // caused whale-01-class wallets ($3.5M in maker rebates over 7 months) to
+  // be completely invisible to scoring.
+  //
   // A normalised event always carries: timestamp, conditionId, size, price,
   // side, plus market metadata when present.
   const allEvents = [];
+
+  // ── Stage 0 additions: non-trade event accumulators ────────────────────────
+  // These power (a) accurate economic PnL and (b) the MM classifier's six
+  // signals (merge rate, rebate income, reward income, etc.).
+  let mergeCount = 0;
+  let mergeUsdcTotal = 0;
+  let splitCount = 0;
+  let splitUsdcTotal = 0;
+  let conversionCount = 0;
+  let rewardUsdcTotal = 0;
+  let rebateUsdcTotal = 0;
+  const mergeMarkets = new Set(); // unique conditionIds that saw ≥1 MERGE
+  const splitMarkets = new Set();
+
   for (const ev of events) {
     if (!ev || typeof ev !== 'object') continue;
     const type = (ev.type || '').toUpperCase();
     const cid = ev.conditionId;
+
+    // REWARD / MAKER_REBATE events don't always carry a conditionId — they're
+    // protocol-level USDC distributions. Accumulate them BEFORE the cid gate.
+    if (type === 'REWARD') {
+      rewardUsdcTotal += parseFloat(ev.usdcSize || ev.size || 0) || 0;
+      continue;
+    }
+    if (type === 'MAKER_REBATE' || type === 'REBATE') {
+      // Some Polymarket API variants fold rebates into REWARD; others expose
+      // MAKER_REBATE explicitly. Handle both so we never silently miss this.
+      // This is the single biggest signal for whale-01-style market makers.
+      rebateUsdcTotal += parseFloat(ev.usdcSize || ev.size || 0) || 0;
+      continue;
+    }
+
     if (!cid) continue;
+
+    if (type === 'MERGE') {
+      // MERGE: wallet combined N YES + N NO shares for N USDC. Convert to a
+      // synthetic SELL at the implied per-share price so the position closes
+      // out cleanly in the per-market PnL loop. Without this, MERGE-terminated
+      // positions looked open forever (inflated openPositions, undercounted
+      // resolvedMarkets, hid real PnL on positions that actually resolved
+      // via pair merge rather than outcome redemption).
+      //
+      // Also track per-market counts for the MM classifier — a high merge
+      // rate (>10% of markets) is one of whale-01's six MM signals.
+      const size = parseFloat(ev.size || ev.shares || 0) || 0;
+      const usdcSize = parseFloat(ev.usdcSize || ev.payout || 0) || 0;
+      mergeCount++;
+      mergeUsdcTotal += usdcSize;
+      mergeMarkets.add(cid);
+      if (size > 0) {
+        const impliedPrice = usdcSize > 0 ? usdcSize / size : 0.5;
+        allEvents.push({
+          timestamp: ev.timestamp,
+          conditionId: cid,
+          asset: ev.asset || ev.tokenId || '',
+          side: 'SELL',
+          size,
+          price: impliedPrice,
+          title: ev.title || '',
+          slug: ev.slug || '',
+          eventSlug: ev.eventSlug || '',
+          outcome: ev.outcome || '',
+          outcomeIndex: ev.outcomeIndex,
+          _fromMerge: true,
+        });
+      }
+      continue;
+    }
+
+    if (type === 'SPLIT') {
+      // SPLIT: wallet deposited N USDC, received N YES + N NO shares. Doesn't
+      // directly create PnL (cost basis splits across two positions that enter
+      // the TRADE stream separately) but correlates with MM arb plumbing —
+      // worth counting for the classifier.
+      const size = parseFloat(ev.size || 0) || 0;
+      const usdcSize = parseFloat(ev.usdcSize || 0) || 0;
+      splitCount++;
+      splitUsdcTotal += usdcSize > 0 ? usdcSize : size; // fallback if only size
+      splitMarkets.add(cid);
+      continue;
+    }
+
+    if (type === 'CONVERSION') {
+      // CONVERSION: wallet swapped shares of one outcome for another on a
+      // multi-outcome market. Cost-basis transformation, not realised PnL.
+      conversionCount++;
+      continue;
+    }
 
     if (type === 'REDEEM') {
       // Redemption: wallet cashed `size` shares for `usdcSize` USDC payout.
@@ -332,7 +422,9 @@ function analyzeTradeHistory(events, opts = {}) {
         outcomeIndex: ev.outcomeIndex,
       });
     }
-    // Other activity types (REWARD, SPLIT, MERGE, CONVERSION) are dropped.
+    // All non-TRADE event types are now handled above (MERGE / REDEEM into
+    // the synthetic-SELL stream, REWARD / MAKER_REBATE / SPLIT / CONVERSION
+    // into their respective counters). No silent drops.
   }
 
   if (allEvents.length === 0) return null;
@@ -603,6 +695,33 @@ function analyzeTradeHistory(events, opts = {}) {
     statsSpanDays,                      // actual days covered by the analysed sample
     unredeemedWins,                     // WR fix: winners closed via marketLookup
     worthlessLosses,                    // WR fix: losers closed via marketLookup
+
+    // ── Event-type breakdown (Stage 0 — MM classifier + true economic PnL) ──
+    // These expose non-trade income streams that were previously silently
+    // dropped. The MM classifier consumes `mergeRate`, `rebateUsdcTotal`, and
+    // `rewardUsdcTotal` as three of its six signals. `economicPnl` replaces
+    // naive `totalPnl` as the input to `effectivePnl` downstream.
+    mergeCount,
+    mergeMarkets: mergeMarkets.size,
+    mergeUsdcTotal: +mergeUsdcTotal.toFixed(2),
+    mergeRate: marketTrades.size > 0 ? +(mergeCount / marketTrades.size).toFixed(3) : 0,
+    splitCount,
+    splitMarkets: splitMarkets.size,
+    splitUsdcTotal: +splitUsdcTotal.toFixed(2),
+    conversionCount,
+    rewardUsdcTotal: +rewardUsdcTotal.toFixed(2),
+    rebateUsdcTotal: +rebateUsdcTotal.toFixed(2),
+    // nonDirectionalIncome: USDC income received without holding directional
+    // risk (LP rewards + maker rebates). Whale-01 earned ~$3.5M here over 7
+    // months with near-zero directional PnL — the single biggest tell for
+    // non-copyable MM wallets.
+    nonDirectionalIncome: +(rewardUsdcTotal + rebateUsdcTotal).toFixed(2),
+    // economicPnl: total wallet income visible from /activity.
+    //   trade PnL (totalPnl — already includes MERGE closures via synthetic SELL)
+    //   + non-directional income (rewards + rebates)
+    // Use this, not totalPnl, for effectivePnl. Leaves totalPnl untouched so
+    // any dashboard/legacy consumer that read the old meaning still works.
+    economicPnl: +(totalPnl + rewardUsdcTotal + rebateUsdcTotal).toFixed(2),
 
     // Consistency metrics — measures how regularly a wallet trades
     activeDays,                         // distinct days with at least one trade

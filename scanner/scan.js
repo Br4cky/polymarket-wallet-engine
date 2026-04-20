@@ -742,14 +742,20 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
 
-      // effectivePnl = max(analyzer sample, Goldsky on-chain realized).
+      // effectivePnl = max(analyzer sample economic PnL, Goldsky on-chain realized).
       // - Sample wins when wallet has unredeemed winners (Goldsky reports $0
       //   until on-chain redemption; analyzer infers via marketLookup).
       // - Goldsky wins when wallet has >3000 activity events (analyzer is
       //   truncated to the most-recent window).
       // Taking max gives us the benefit of both measurement systems.
+      //
+      // Stage 0: we now use `economicPnl` (= trade PnL + rewards + rebates +
+      // MERGE closures) instead of the bare `totalPnl`. The old view silently
+      // dropped all non-trade income, which undercounted MM-style wallets
+      // like whale-01 by millions. Fallback to totalPnl preserves legacy data.
       stats.goldskyPnl = summary.totalPnl || 0;
-      stats.effectivePnl = Math.max(stats.totalPnl || 0, stats.goldskyPnl);
+      const sampleEconomic = stats.economicPnl != null ? stats.economicPnl : (stats.totalPnl || 0);
+      stats.effectivePnl = Math.max(sampleEconomic, stats.goldskyPnl);
 
       const score = computeWalletScore(stats);
 
@@ -1015,8 +1021,12 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         continue;
       }
       // Attach goldskyPnl + effectivePnl so scoring uses the better of the two.
+      // Stage 0: economicPnl (analyzer-based trade + rewards + rebates +
+      // MERGE closures) is the corrected sample view. Bare totalPnl left in
+      // place for dashboard backwards-compatibility.
       stats.goldskyPnl = wallet.goldskyPnl || 0;
-      stats.effectivePnl = Math.max(stats.totalPnl || 0, stats.goldskyPnl);
+      const sampleEconomicRescore = stats.economicPnl != null ? stats.economicPnl : (stats.totalPnl || 0);
+      stats.effectivePnl = Math.max(sampleEconomicRescore, stats.goldskyPnl);
       // Fold in the position-centric decided-truth rollup captured during the
       // goldsky refresh above. These are shadow fields today — computeWalletScore
       // doesn't consume them yet — but they're what the redesigned ranker keys on.
