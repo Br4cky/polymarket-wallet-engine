@@ -138,6 +138,27 @@ async function fetchAllTrades(wallet, opts = {}) {
 }
 
 /**
+ * Fetch trades on a specific market (by conditionId).
+ * Powers the Stage 3 market-participant harvest — when our top alpha
+ * wallets win a market, the other bidders are all interesting candidates.
+ *
+ * @param {string} conditionId - The market's conditionId
+ * @param {object} opts - Options
+ * @param {number} opts.limit - Max trades to return (default 500)
+ * @param {number} opts.offset - Pagination offset
+ * @returns {Promise<Array>} Array of trade objects (newest first)
+ */
+async function fetchMarketTrades(conditionId, opts = {}) {
+  const params = {
+    market: conditionId,
+    limit: opts.limit || 500,
+  };
+  if (opts.offset) params.offset = opts.offset;
+  const data = await apiRequest('/trades', params);
+  return Array.isArray(data) ? data : [];
+}
+
+/**
  * Fetch recent trades for multiple wallets (since a given timestamp).
  * Designed for the fast loop — check what tracked wallets have done recently.
  *
@@ -469,6 +490,15 @@ function analyzeTradeHistory(events, opts = {}) {
   const marketResults = [];
   const categories = new Map(); // category → { wins, losses, pnl }
 
+  // MM-classifier signals: dual-side markets (wallet bought both YES + NO
+  // on same conditionId) and the average sum of their per-outcome avg buy
+  // prices. Market-makers typically post limit bids on both sides below $1,
+  // so priceSum < 1.01 for dual-side markets is a strong MM tell.
+  let dualSideMarkets = 0;
+  const dualSidePriceSums = [];
+  let totalBuys = 0;
+  let totalSells = 0;
+
   // Recent window stats
   let recentResolved = 0;
   let recentWins = 0;
@@ -485,6 +515,34 @@ function analyzeTradeHistory(events, opts = {}) {
     const totalSellSize = mt.sells.reduce((sum, t) => sum + t.size, 0);
     const avgBuyPrice = totalBuySize > 0 ? totalBought / totalBuySize : 0;
     const avgSellPrice = totalSellSize > 0 ? totalSoldRaw / totalSellSize : 0;
+
+    // Aggregate buy/sell counts + detect dual-side markets (wallet bought
+    // both YES and NO on same conditionId). Core MM-classifier inputs.
+    totalBuys += mt.buys.length;
+    totalSells += mt.sells.length;
+    const buyOutcomes = new Map(); // outcome → { cost, size }
+    for (const b of mt.buys) {
+      const o = String(b.outcome || '').trim().toLowerCase();
+      if (!o) continue;
+      if (!buyOutcomes.has(o)) buyOutcomes.set(o, { cost: 0, size: 0 });
+      const entry = buyOutcomes.get(o);
+      entry.cost += b.size * b.price;
+      entry.size += b.size;
+    }
+    const isSingleSide = buyOutcomes.size === 1;
+    if (buyOutcomes.size >= 2) {
+      dualSideMarkets++;
+      // Sum the two outcomes' capital-weighted avg buy prices. On a 2-outcome
+      // market, (price_yes + price_no) < 1.0 is a free-arbitrage MM play.
+      const avgPrices = [];
+      for (const { cost, size } of buyOutcomes.values()) {
+        if (size > 0) avgPrices.push(cost / size);
+      }
+      avgPrices.sort((a, b) => b - a); // top two by price
+      if (avgPrices.length >= 2) {
+        dualSidePriceSums.push(avgPrices[0] + avgPrices[1]);
+      }
+    }
 
     const firstBuy = mt.buys.length > 0 ? Math.min(...mt.buys.map(t => t.timestamp)) : 0;
     const lastTrade = Math.max(
@@ -564,6 +622,8 @@ function analyzeTradeHistory(events, opts = {}) {
         lastTrade,
         holdTime: lastTrade - firstBuy,
         closeKind: syntheticCloseKind || 'traded',
+        isSingleSide,                     // Stage 2: for edge_pp calculation
+        buyOutcomeCount: buyOutcomes.size,
       });
 
       // Category tracking
@@ -663,6 +723,47 @@ function analyzeTradeHistory(events, opts = {}) {
     ? avgWinRoi / avgLossRoi
     : null;
 
+  // ── Stage 2: Single-side alpha test (edge_pp) ─────────────────────────────
+  // Measures whether the wallet beat the market's implied probability at
+  // entry. Filters to markets where the wallet bought only ONE outcome
+  // (single-side). Compares realized hit rate against capital-weighted
+  // average entry price. Mean-pickers who buy $0.95 and win 95% score
+  // edge_pp ≈ 0 (no edge, market was right). Insight-driven bettors who
+  // buy $0.40 and win 55% score edge_pp ≈ +15pp (real alpha).
+  //
+  // This complements decidedROI: decidedROI answers "did they make money",
+  // edge_pp answers "did they outperform the market's pricing". A wallet
+  // needs both to qualify as a Tier A directional alpha.
+  const singleSideResolved = marketResults.filter(
+    r => r.isSingleSide && (r.outcome === 'win' || r.outcome === 'loss')
+  );
+  let edgePP = null;
+  let singleSideHitRate = null;
+  let singleSideAvgEntry = null;
+  let singleSideWins = 0;
+  let singleSideLosses = 0;
+  let singleSidePnl = 0;
+  let singleSideCapital = 0;
+  if (singleSideResolved.length > 0) {
+    singleSideWins = singleSideResolved.filter(r => r.outcome === 'win').length;
+    singleSideLosses = singleSideResolved.length - singleSideWins;
+    singleSidePnl = singleSideResolved.reduce((s, r) => s + r.pnl, 0);
+    const capitalByMarket = singleSideResolved.map(r => r.avgBuyPrice * r.buySize);
+    singleSideCapital = capitalByMarket.reduce((s, c) => s + c, 0);
+    // Capital-weighted average entry price — what implied probability did
+    // this wallet's $ actually assume, across all single-side bets?
+    if (singleSideCapital > 0) {
+      const weightedEntrySum = singleSideResolved.reduce((s, r, i) =>
+        s + r.avgBuyPrice * capitalByMarket[i], 0);
+      singleSideAvgEntry = weightedEntrySum / singleSideCapital;
+    }
+    singleSideHitRate = singleSideWins / singleSideResolved.length;
+    // edge_pp in percentage points (e.g. +3.5pp, -2.1pp)
+    if (singleSideAvgEntry != null) {
+      edgePP = +(100 * (singleSideHitRate - singleSideAvgEntry)).toFixed(2);
+    }
+  }
+
   return {
     // Core performance
     winRate: +winRate.toFixed(4),
@@ -722,6 +823,34 @@ function analyzeTradeHistory(events, opts = {}) {
     // Use this, not totalPnl, for effectivePnl. Leaves totalPnl untouched so
     // any dashboard/legacy consumer that read the old meaning still works.
     economicPnl: +(totalPnl + rewardUsdcTotal + rebateUsdcTotal).toFixed(2),
+
+    // Buy/sell balance — MM wallets have near-equal B:S counts (closes via
+    // MERGE or opposing trades), directional wallets buy much more than sell.
+    totalBuys,
+    totalSells,
+    sellRatio: totalBuys > 0 ? +(totalSells / totalBuys).toFixed(3) : null,
+
+    // Dual-side markets — wallet bought both YES and NO on same conditionId.
+    // High rate (>40%) + low price sum (<1.01) is the MM arb signature.
+    dualSideMarkets,
+    dualSideRate: marketTrades.size > 0 ? +(dualSideMarkets / marketTrades.size).toFixed(3) : 0,
+    avgDualSidePriceSum: dualSidePriceSums.length > 0
+      ? +(dualSidePriceSums.reduce((a, b) => a + b, 0) / dualSidePriceSums.length).toFixed(4)
+      : null,
+
+    // ── Stage 2: Single-side directional alpha test ─────────────────────────
+    // edge_pp: percentage-point outperformance vs market's implied probability.
+    // Positive = real alpha (wallet predicted better than prices suggested).
+    // Zero/negative = mean-picker or worse. Required ≥ 3pp for Tier A.
+    singleSideResolved: singleSideResolved.length,
+    singleSideWins,
+    singleSideLosses,
+    singleSideHitRate: singleSideHitRate != null ? +singleSideHitRate.toFixed(4) : null,
+    singleSideAvgEntry: singleSideAvgEntry != null ? +singleSideAvgEntry.toFixed(4) : null,
+    singleSideCapital: +singleSideCapital.toFixed(2),
+    singleSidePnl: +singleSidePnl.toFixed(2),
+    singleSideROI: singleSideCapital > 0 ? +(singleSidePnl / singleSideCapital).toFixed(4) : null,
+    edgePP, // percentage points. null if no single-side resolved sample.
 
     // Consistency metrics — measures how regularly a wallet trades
     activeDays,                         // distinct days with at least one trade
@@ -910,12 +1039,20 @@ function computeWalletScoreV2(stats) {
   const recency = recencyMultiplier(stats.lastTradeTs);
   const meanPickerPenalty = stats.isMeanPickerShape === true ? 0.2 : 1.0;
 
+  // Stage 1: MM penalty. Caller should have run attachMMClassification on
+  // the stats before calling this function so stats.mmPenalty is populated.
+  // Default to 1.0 (no penalty) if mmPenalty is absent so we're safe on
+  // legacy code paths that haven't been upgraded yet. Mean-picker penalty
+  // and mm-penalty stack — they catch overlapping but distinct failure
+  // modes (mean-picker = scrap-grader WR gamer, mm = MAKER_REBATE earner).
+  const mmPenalty = (typeof stats.mmPenalty === 'number') ? stats.mmPenalty : 1.0;
+
   // Activity bonus (0-5 pts, additive) — log-scaled trades/day, so a
   // wallet with 0.1 trades/day → ~1pt, 1/day → ~3pts, 10+/day → 5pts.
   const tpd = stats.recentTradesPerDay || 0;
   const activityBonus = Math.min(5, Math.log10(1 + tpd * 10) * 2);
 
-  const core = roi * capConf * sampleConf * recency * meanPickerPenalty;
+  const core = roi * capConf * sampleConf * recency * meanPickerPenalty * mmPenalty;
   // Activity is a tiebreaker, not a floor — only award it when the wallet
   // has a non-zero core. Otherwise losing/dormant wallets collect free points
   // just for churning.
@@ -930,6 +1067,8 @@ function computeWalletScoreV2(stats) {
       sampleConf: +sampleConf.toFixed(3),
       recency: +recency.toFixed(3),
       meanPickerPenalty,
+      mmPenalty,
+      mmScore: stats.mmScore ?? null,
       activityBonus: +activityBonus.toFixed(2),
       resolved,
     },
@@ -947,6 +1086,7 @@ export {
   fetchRecentTrades,
   fetchActivity,
   fetchAllActivity,
+  fetchMarketTrades,
   analyzeTradeHistory,
   computeWalletScore,
   computeWalletScoreV2,

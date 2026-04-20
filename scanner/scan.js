@@ -47,6 +47,8 @@ import {
 } from './signals.js';
 
 import { aggregatePositions } from './positionLedger.js';
+import { attachMMClassification } from './mmClassifier.js';
+import { attachAlphaEvaluation, ALPHA_THRESHOLDS } from './alphaTest.js';
 
 import fs from 'fs';
 import path from 'path';
@@ -708,6 +710,10 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
               pool[address].stats.decidedWorthlessLosses = agg.worthlessLosses;
               pool[address].stats.isMeanPickerShape = agg.isMeanPickerShape;
               pool[address].stats.decidedMeasuredAt = new Date().toISOString();
+              // Stage 1: attach MM classification before scoring so scoreV2
+              // can penalise whale-01-class wallets via stats.mmPenalty.
+              attachMMClassification(pool[address].stats);
+              attachAlphaEvaluation(pool[address].stats);
               const v2 = computeWalletScoreV2(pool[address].stats);
               if (v2 && v2.score != null) {
                 pool[address].scoreV2 = v2.score;
@@ -862,6 +868,26 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         stats.decidedMeasuredAt = new Date().toISOString();
       }
       // Compute V2 score too so the wallet is ranker-ready on day zero
+      // Stage 1/2: run MM classifier + alpha test before scoring.
+      attachMMClassification(stats);
+      attachAlphaEvaluation(stats);
+
+      // Stage 1/2 hard discovery gates:
+      //   1. Likely market-maker (mmScore ≥ 4) — not copy-tradeable.
+      //   2. Explicit alpha failure (edge_pp < 1.5pp with enough sample +
+      //      capital to trust the signal) — mean-picker shape by another name.
+      // Wallets with 'insufficient_sample' or 'insufficient_capital' verdicts
+      // are admitted; they can prove themselves later. We don't want to block
+      // promising newer wallets — only clear negatives.
+      if (stats.isLikelyMM === true) {
+        processed++;
+        continue;
+      }
+      if (stats.alphaVerdict === 'fails') {
+        processed++;
+        continue;
+      }
+
       const v2Disc = computeWalletScoreV2(stats);
 
       pool[address] = {
@@ -1045,6 +1071,9 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         stats.decidedMeasuredAt = wallet.decidedMetrics.measuredAt;
       }
       wallet.score = computeWalletScore(stats);
+      // Stage 1/2: MM classification + alpha evaluation gate V2. Run before scoring.
+      attachMMClassification(stats);
+      attachAlphaEvaluation(stats);
       const v2 = computeWalletScoreV2(stats);
       if (v2 && v2.score != null) {
         wallet.scoreV2 = v2.score;
@@ -1188,6 +1217,11 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         wallet.stats.decidedMeasuredAt = new Date().toISOString();
       }
 
+      // Stage 1/2: MM + alpha classification before V2 scoring (backfill path).
+      if (wallet.stats) {
+        attachMMClassification(wallet.stats);
+        attachAlphaEvaluation(wallet.stats);
+      }
       const v2 = computeWalletScoreV2(wallet.stats || {});
       if (v2 && v2.score != null) {
         wallet.scoreV2 = v2.score;
