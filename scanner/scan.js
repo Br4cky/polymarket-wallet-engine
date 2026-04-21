@@ -112,6 +112,14 @@ const CONFIG = {
   NEG_ROI_CAPITAL_FLOOR: 10000,        // decidedCapital ≥ $10k + ROI<0 = evict
   NEG_ROI_MIN_RESOLVED: 25,            // AND resolved ≥ 25 markets
 
+  // Low-ROI eviction — positive but chronically weak. Complements the
+  // neg-ROI rule above. A wallet sitting at 2-4% ROI on meaningful capital
+  // is a mean-picker in all but name — low directional edge, just above
+  // breakeven. Can't source 75%-hit-rate signals.
+  LOW_ROI_THRESHOLD: 0.05,             // 5% ROI floor for pool retention
+  LOW_ROI_MIN_CAPITAL: 3000,           // only if they've deployed meaningful $
+  LOW_ROI_MIN_RESOLVED: 20,            // only if sample is trustworthy
+
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
   LOOKBACK_HOURS: 4,                       // Check trades from last 4 hours each loop
@@ -1104,6 +1112,17 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
             && (stats.decidedCapital || 0) >= CONFIG.NEG_ROI_CAPITAL_FLOOR
             && resolved >= CONFIG.NEG_ROI_MIN_RESOLVED) {
           evictions.push({ reason: 'neg_roi', detail: `ROI=${(stats.decidedROI * 100).toFixed(1)}% on $${Math.round(stats.decidedCapital).toLocaleString()} across ${resolved} markets` });
+        }
+
+        // Rule 3b: low-ROI — positive but chronically weak. Wallet sitting
+        // around 2-4% ROI with trustworthy sample is a mean-picker in all
+        // but name. Can't source 75%-hit-rate signals.
+        if (stats.decidedROI != null
+            && stats.decidedROI >= 0
+            && stats.decidedROI < CONFIG.LOW_ROI_THRESHOLD
+            && (stats.decidedCapital || 0) >= CONFIG.LOW_ROI_MIN_CAPITAL
+            && resolved >= CONFIG.LOW_ROI_MIN_RESOLVED) {
+          evictions.push({ reason: 'low_roi', detail: `ROI=${(stats.decidedROI * 100).toFixed(1)}% < ${(CONFIG.LOW_ROI_THRESHOLD * 100).toFixed(0)}% floor on $${Math.round(stats.decidedCapital).toLocaleString()} across ${resolved} markets` });
         }
 
         // Rule 4: dormancy at the tighter pool-maintenance floor (separate
