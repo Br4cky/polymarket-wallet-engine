@@ -1670,6 +1670,7 @@ async function run() {
   // field was the authoritative one. Copy it onto `score` and drop V2
   // vocabulary entirely so downstream code sees one clean field.
   let migrated = 0;
+  let legacyScoresNuked = 0;
   for (const addr of Object.keys(walletPool)) {
     const w = walletPool[addr];
     if (!w || typeof w !== 'object') continue;
@@ -1691,9 +1692,29 @@ async function run() {
     delete w.scoreV2Components;
     delete w.v2Strikes;
     delete w.v2WouldEvict;
+
+    // Legacy V1 score cleanup. Unified-formula scores cap at ~55 in
+    // practice (50 roi + 5 activity, multiplicatively gated by ≤ 1.0).
+    // Any wallet scoring > 60 AND lacking decidedROI in stats is holding
+    // a stale V1-formula score that never got overwritten (because
+    // computeWalletScore returns null when decidedROI is null, and the
+    // rescore path only overwrites score when null != score). Nuke it so
+    // the wallet either re-scores correctly on its next rescore cycle
+    // (once it gains decidedROI data) or goes unranked until it proves
+    // itself. Prevents ghost wallets dominating the top of the pool on
+    // outdated scoring.
+    if (typeof w.score === 'number' && w.score > 60
+        && (!w.stats || w.stats.decidedROI == null)) {
+      delete w.score;
+      delete w.scoreComponents;
+      legacyScoresNuked++;
+    }
   }
   if (migrated > 0) {
     console.log(`  📦 Migrated ${migrated} wallets from legacy scoreV2 → score`);
+  }
+  if (legacyScoresNuked > 0) {
+    console.log(`  🧹 Nuked ${legacyScoresNuked} stale legacy V1 scores (will re-rank on next rescore)`);
   }
 
   const marketsFile = path.join(DATA_DIR, 'markets.json.gz');
