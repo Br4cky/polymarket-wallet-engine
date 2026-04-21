@@ -253,6 +253,7 @@
           <table id="signal-history-table" class="data-table sortable">
             <thead>
               <tr>
+                <th data-field="closedAt" class="sortable" title="When this signal was closed. Hover for exact UTC timestamp. Default sort: most recent first.">Closed</th>
                 <th data-field="marketTitle">Market</th>
                 <th data-field="outcome">Result</th>
                 <th data-field="direction">Direction</th>
@@ -261,10 +262,11 @@
                 <th data-field="peakWallets" class="sortable">Peak Wallets</th>
                 <th data-field="signalReturn" class="sortable">Return</th>
                 <th data-field="closeReason">Close Reason</th>
+                <th data-field="closedScan" class="sortable" title="Scan number the signal was closed in">Scan #</th>
               </tr>
             </thead>
             <tbody id="signal-history-tbody">
-              <tr><td colspan="8" class="empty-state">No signal history yet</td></tr>
+              <tr><td colspan="10" class="empty-state">No signal history yet</td></tr>
             </tbody>
           </table>
         </div>
