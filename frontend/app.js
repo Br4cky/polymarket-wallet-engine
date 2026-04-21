@@ -572,22 +572,41 @@ function renderSignals() {
     { field: 'scansActive', render: v => String(v) },
   ], sigData);
 
-  // History table — show most recent 100 (history is appended chronologically,
-  // so newest closures sit at the end of the array).
-  const histData = history.slice(-100).reverse().map(s => ({
-    marketTitle: s.marketTitle || 'Unknown',
-    slug: s.slug || '',
-    eventSlug: s.eventSlug || '',
-    outcome: s.outcome || 'unknown',
-    direction: s.direction || 'mixed',
-    openMarketPrice: s.openMarketPrice || 0,
-    peakConfidence: s.peakConfidence || 0,
-    peakWallets: s.peakWallets || 0,
-    signalReturn: s.signalReturn || 0,
-    closeReason: s.closeReason || '-',
-  }));
+  // History table — shows all closed signals, sorted by closedAt (most
+  // recent resolution first). Sorting explicitly on closedAt is more
+  // reliable than trusting array order — signals can close out-of-order
+  // (e.g. a repair pass closes a batch of old stragglers).
+  const histData = history
+    .slice()
+    .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
+    .map(s => ({
+      marketTitle: s.marketTitle || 'Unknown',
+      slug: s.slug || '',
+      eventSlug: s.eventSlug || '',
+      outcome: s.outcome || 'unknown',
+      direction: s.direction || 'mixed',
+      openMarketPrice: s.openMarketPrice || 0,
+      peakConfidence: s.peakConfidence || 0,
+      peakWallets: s.peakWallets || 0,
+      signalReturn: s.signalReturn || 0,
+      closeReason: s.closeReason || '-',
+      closedAt: s.closedAt || 0,
+      closedScan: s.closedScan || 0,
+    }));
 
   createSortableTable('signal-history-table', [
+    { field: 'closedAt', label: 'Closed', render: v => {
+      if (!v) return '<span style="opacity:0.4">-</span>';
+      const secs = Math.floor(Date.now() / 1000) - v;
+      let rel;
+      if (secs < 60)            rel = `${secs}s ago`;
+      else if (secs < 3600)     rel = `${Math.floor(secs / 60)}m ago`;
+      else if (secs < 86400)    rel = `${Math.floor(secs / 3600)}h ago`;
+      else if (secs < 7 * 86400) rel = `${Math.floor(secs / 86400)}d ago`;
+      else                       rel = new Date(v * 1000).toISOString().slice(0, 10);
+      const abs = new Date(v * 1000).toISOString().replace('T', ' ').slice(0, 16) + 'Z';
+      return `<span title="${abs}">${rel}</span>`;
+    }},
     { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
     { field: 'outcome', render: (v, row) => {
       if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
@@ -606,6 +625,7 @@ function renderSignals() {
       return `<span class="${v >= 0 ? 'badge-positive' : 'badge-negative'}">${v >= 0 ? '+' : ''}${pct}%</span>`;
     }},
     { field: 'closeReason', render: v => `<span style="color: var(--text-dim);">${(v || '-').replace(/_/g, ' ')}</span>` },
+    { field: 'closedScan', label: 'Scan #', render: v => v ? `#${v}` : '-' },
   ], histData);
 }
 
