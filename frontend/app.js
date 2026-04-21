@@ -576,9 +576,18 @@ function renderSignals() {
   // recent resolution first). Sorting explicitly on closedAt is more
   // reliable than trusting array order — signals can close out-of-order
   // (e.g. a repair pass closes a batch of old stragglers).
+  //
+  // closedAt is stored as unix SECONDS for new signals but some legacy
+  // entries have MILLISECONDS. Normalize to ms at ingest so render /
+  // sort / format all agree. Threshold: any unix timestamp in the 2020s
+  // is ~10^9 seconds or ~10^12 ms; 10^11 cleanly separates them.
+  const toMs = (t) => {
+    if (!t || typeof t !== 'number' || !isFinite(t)) return 0;
+    return t > 1e11 ? t : t * 1000;
+  };
+
   const histData = history
     .slice()
-    .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
     .map(s => ({
       marketTitle: s.marketTitle || 'Unknown',
       slug: s.slug || '',
@@ -590,21 +599,24 @@ function renderSignals() {
       peakWallets: s.peakWallets || 0,
       signalReturn: s.signalReturn || 0,
       closeReason: s.closeReason || '-',
-      closedAt: s.closedAt || 0,
+      closedAt: toMs(s.closedAt),   // always ms after this
       closedScan: s.closedScan || 0,
-    }));
+    }))
+    .sort((a, b) => b.closedAt - a.closedAt);
 
   createSortableTable('signal-history-table', [
     { field: 'closedAt', label: 'Closed', render: v => {
       if (!v) return '<span style="opacity:0.4">-</span>';
-      const secs = Math.floor(Date.now() / 1000) - v;
+      const d = new Date(v);
+      if (isNaN(d.getTime())) return '<span style="opacity:0.4">-</span>';
+      const secsAgo = Math.max(0, Math.floor((Date.now() - v) / 1000));
       let rel;
-      if (secs < 60)            rel = `${secs}s ago`;
-      else if (secs < 3600)     rel = `${Math.floor(secs / 60)}m ago`;
-      else if (secs < 86400)    rel = `${Math.floor(secs / 3600)}h ago`;
-      else if (secs < 7 * 86400) rel = `${Math.floor(secs / 86400)}d ago`;
-      else                       rel = new Date(v * 1000).toISOString().slice(0, 10);
-      const abs = new Date(v * 1000).toISOString().replace('T', ' ').slice(0, 16) + 'Z';
+      if (secsAgo < 60)            rel = `${secsAgo}s ago`;
+      else if (secsAgo < 3600)     rel = `${Math.floor(secsAgo / 60)}m ago`;
+      else if (secsAgo < 86400)    rel = `${Math.floor(secsAgo / 3600)}h ago`;
+      else if (secsAgo < 7 * 86400) rel = `${Math.floor(secsAgo / 86400)}d ago`;
+      else                          rel = d.toISOString().slice(0, 10);
+      const abs = d.toISOString().replace('T', ' ').slice(0, 16) + 'Z';
       return `<span title="${abs}">${rel}</span>`;
     }},
     { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
