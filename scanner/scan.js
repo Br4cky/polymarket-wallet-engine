@@ -105,7 +105,7 @@ const CONFIG = {
   //   'live'   — actually remove matching wallets
   // Mean-picker / low-score use strike counters so one fluky rescore can't
   // evict a real wallet. Dormancy and neg-ROI-with-capital are single-shot.
-  EVICTION_MODE: 'shadow',
+  EVICTION_MODE: 'live',
   MEAN_PICKER_STRIKES_TO_EVICT: 3,
   LOW_SCORE_THRESHOLD: 5,              // on 0–55 scale — score below this is an eviction strike
   LOW_SCORE_STRIKES_TO_EVICT: 3,
