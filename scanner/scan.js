@@ -77,9 +77,9 @@ const CONFIG = {
   // eviction logic so we don't admit-then-immediately-evict.
   MIN_PNL_DISCOVERY: 500,              // Skip Goldsky wallets below this PnL floor
   MIN_POSITIONS_DISCOVERY: 10,         // Goldsky position count minimum
-  MIN_RESOLVED_MARKETS: 10,            // Resolved markets minimum (no flukes)
+  MIN_RESOLVED_MARKETS: 20,            // Resolved markets minimum (statistical confidence)
   DISCOVERY_MIN_DECIDED_CAPITAL: 5000, // $5k+ risked on resolved plays
-  DISCOVERY_MIN_DECIDED_ROI: 0.08,     // 8%+ ROI on decided capital
+  DISCOVERY_MIN_DECIDED_ROI: 0.10,     // 10%+ ROI on decided capital
   DISCOVERY_MAX_WIN_RATE: 0.98,        // Obvious mean-picker shape (99%+ WR)
   DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED: 25, // Only apply WR cap when sample meaningful
   // Max capital-weighted avg entry price. 0.85 ⇒ wallet's typical trade must
@@ -116,7 +116,7 @@ const CONFIG = {
   // neg-ROI rule above. A wallet sitting at 2-4% ROI on meaningful capital
   // is a mean-picker in all but name — low directional edge, just above
   // breakeven. Can't source 75%-hit-rate signals.
-  LOW_ROI_THRESHOLD: 0.05,             // 5% ROI floor for pool retention
+  LOW_ROI_THRESHOLD: 0.10,             // 10% ROI floor — matches discovery gate, no drift gap
   LOW_ROI_MIN_CAPITAL: 3000,           // only if they've deployed meaningful $
   LOW_ROI_MIN_RESOLVED: 20,            // only if sample is trustworthy
 
