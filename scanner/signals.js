@@ -70,19 +70,31 @@ const SIGNAL_THRESHOLDS = {
   SOLO_MIN_BUY_SIZE: 500,           // $500+ buy in a single market
   SOLO_MAX_PER_WALLET: 3,
 
-  // Excluded market keywords — categories with confirmed negative EV.
-  // Esports: 280 resolved, 43.9% WR, -13.0% avg return. Across all signal
-  // types (cluster -21.6%, solo -17.6%) — universally bad. Alpha wallets
-  // don't have meaningful edge on short-duration esports match outcomes.
+  // Excluded market keywords — categories with confirmed negative EV from
+  // deep analysis of 1,446 resolved signals. Data-driven exclusions only.
   //
-  // NOTE: crypto up-or-down markets (BTC 5-min etc.) were initially also
-  // excluded — but data showed 129 resolved, 73.6% WR, +4.9% avg return.
-  // They're actually profitable, so we KEEP them. Alpha wallets do have
-  // real short-term directional edge on BTC / ETH / SOL.
+  //   Esports:     280 resolved, 43.9% WR, -13.0% avg return   ✗
+  //   NHL:          22 resolved, 45.5% WR, -15.9% avg return   ✗
+  //   Golf/PGA:     26 resolved, 57.7% WR,  -8.5% avg return   ✗
+  //   US Politics:  10 resolved, 50.0% WR, -26.8% avg return   ✗
+  //
+  // Kept (profitable, do NOT add here):
+  //   Crypto up/down: 130 resolved, 71.5% WR, +1.7% avg   ✓
+  //   UFC/MMA:         14 resolved, 71.4% WR, +38.7% avg  ✓ best WR
+  //   Tennis, MLB, Weather, EPL, NBA — all ✓
   EXCLUDED_KEYWORDS: [
+    // Esports (280 signals, -13%)
     'dota', 'lol', 'league of legends', 'counter-strike', 'valorant', 'csgo',
     'cs:go', 'cs2', 'call of duty', 'rocket league', 'overwatch', 'starcraft',
     'hearthstone', 'apex legends', 'fortnite', 'pubg',
+    // NHL (22 signals, -16%) — our alphas don't have ice-hockey edge
+    'nhl', 'stanley cup', ' hockey ',
+    // Golf / PGA (26 signals, -8.5%)
+    ' pga ', 'golf', 'masters tournament',
+    // US political election markets (10 signals, -27%)
+    'trump vs', 'biden vs', 'harris vs', 'republican primary', 'democrat primary',
+    'election day', 'electoral college', 'senate race', 'house race',
+    'presidential election', 'congressional',
   ],
 
   // Lifecycle
