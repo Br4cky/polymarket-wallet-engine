@@ -963,12 +963,38 @@ function computeWalletScore(stats) {
   const attrMultiplier = (typeof stats.attributionMultiplier === 'number')
     ? stats.attributionMultiplier : 1.0;
 
+  // Churn penalty — a wallet that does many trades per unique market is
+  // a rebalancer / scale-in-out player, not a sniper. Their entry bears
+  // little resemblance to their final exposure, so emitting a signal on
+  // their entry misses most of the alpha. Diagnostic found wallet 0x6204a
+  // at 9.5 trades/market had -62% signal returns despite a strong +54%
+  // decidedROI. Sniper-style wallet 0x0ebbb was at 1.75 trades/market and
+  // produced +162%.
+  //
+  // Formula: churn = totalTrades / uniqueMarkets. Map to [0.5, 1.0]:
+  //   churn ≤ 2.0 → 1.00   (one or two trades per market — clean)
+  //   churn = 3.0 → 0.90
+  //   churn = 4.0 → 0.80
+  //   churn = 6.0 → 0.65
+  //   churn ≥ 9.0 → 0.50   (heavy rebalancer — hard cap)
+  // Wallets with <30 total trades or <10 unique markets skip this term
+  // (insufficient sample for the ratio to be meaningful).
+  let churnPenalty = 1.0;
+  const tt = stats.totalTrades || 0;
+  const um = stats.uniqueMarkets || 0;
+  if (tt >= 30 && um >= 10) {
+    const churn = tt / um;
+    if (churn > 2.0) {
+      churnPenalty = Math.max(0.5, 1.0 - (churn - 2.0) * 0.1);
+    }
+  }
+
   // Activity bonus (0-5 pts, additive) — log-scaled trades/day, so a
   // wallet with 0.1 trades/day → ~1pt, 1/day → ~3pts, 10+/day → 5pts.
   const tpd = stats.recentTradesPerDay || 0;
   const activityBonus = Math.min(5, Math.log10(1 + tpd * 10) * 2);
 
-  const core = roi * capConf * sampleConf * recency * meanPickerPenalty * mmPenalty * attrMultiplier;
+  const core = roi * capConf * sampleConf * recency * meanPickerPenalty * mmPenalty * attrMultiplier * churnPenalty;
   // Activity is a tiebreaker, not a floor — only award it when the wallet
   // has a non-zero core. Otherwise losing/dormant wallets collect free points
   // just for churning.
@@ -988,6 +1014,8 @@ function computeWalletScore(stats) {
       attrMultiplier,
       attrSignals: stats.signalAttribution ? stats.signalAttribution.signals : 0,
       attrAvgReturn: stats.signalAttribution ? stats.signalAttribution.avgReturn : null,
+      churnPenalty: +churnPenalty.toFixed(3),
+      churnRatio: (tt >= 30 && um >= 10) ? +(tt / um).toFixed(2) : null,
       activityBonus: +activityBonus.toFixed(2),
       resolved,
     },

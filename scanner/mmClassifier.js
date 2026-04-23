@@ -142,14 +142,25 @@ export function classifyMarketMaker(stats, opts = {}) {
  * Return the scoring-penalty multiplier for a given MM score. Consumed by
  * computeWalletScore via stats.mmPenalty.
  *
- * Calibration:
- *   0–2 → 1.0  (no penalty — directional wallet)
- *   3   → 0.5  (ambiguous — halve, don't kill; discoverable patterns)
- *   4–5 → 0.1  (strong MM — effectively evict)
- *   6   → 0.0  (confirmed MM — eliminate from ranking)
+ * Calibration (2026-04-23 re-tune after signal-attribution diagnostic):
+ *   0   → 1.0   (clean — no MM signals triggered)
+ *   1   → 0.9   (weak tell — small haircut; cumulative when combined)
+ *   2   → 0.75  (moderate — signals underperformed in attribution analysis)
+ *   3   → 0.5   (ambiguous — halve; discoverable patterns)
+ *   4–5 → 0.1   (strong MM — effectively evict)
+ *   6   → 0.0   (confirmed MM — eliminate from ranking)
+ *
+ * Original calibration had a 2→3 cliff (1.0 → 0.5) that left mmScore 1
+ * and 2 wallets fully weighted. Per-wallet attribution showed that even
+ * 1–2 MM tells correlate with losing signals: wallets like 0x6204a
+ * (mmScore=2) and 0x0c84d (mmScore=1) had score-inflated ranks despite
+ * producing -62% / -58% avg signal returns. Graduated decline lets the
+ * score reflect partial MM exposure without binary-evicting the borderline.
  */
 export function mmPenaltyForScore(mmScore) {
-  if (mmScore == null || mmScore < 3) return 1.0;
+  if (mmScore == null || mmScore <= 0) return 1.0;
+  if (mmScore === 1) return 0.9;
+  if (mmScore === 2) return 0.75;
   if (mmScore === 3) return 0.5;
   if (mmScore < 6)   return 0.1;
   return 0.0;
