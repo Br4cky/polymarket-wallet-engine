@@ -953,12 +953,22 @@ function computeWalletScore(stats) {
   const meanPickerPenalty = stats.isMeanPickerShape === true ? 0.2 : 1.0;
   const mmPenalty = (typeof stats.mmPenalty === 'number') ? stats.mmPenalty : 1.0;
 
+  // Attribution multiplier — feedback loop from historical SIGNAL outcomes.
+  // decidedROI measures trading skill overall; attribution measures whether
+  // this wallet's signals actually win when followers copy them. They can
+  // diverge sharply (wallet great at exits we don't copy, degraded recently,
+  // off-category edge, copy lag, etc.). Wallets with ≥10 resolved signals
+  // get scaled by their proven signal EV. Caller must run attachAttribution
+  // from signalAttribution.js before calling this function.
+  const attrMultiplier = (typeof stats.attributionMultiplier === 'number')
+    ? stats.attributionMultiplier : 1.0;
+
   // Activity bonus (0-5 pts, additive) — log-scaled trades/day, so a
   // wallet with 0.1 trades/day → ~1pt, 1/day → ~3pts, 10+/day → 5pts.
   const tpd = stats.recentTradesPerDay || 0;
   const activityBonus = Math.min(5, Math.log10(1 + tpd * 10) * 2);
 
-  const core = roi * capConf * sampleConf * recency * meanPickerPenalty * mmPenalty;
+  const core = roi * capConf * sampleConf * recency * meanPickerPenalty * mmPenalty * attrMultiplier;
   // Activity is a tiebreaker, not a floor — only award it when the wallet
   // has a non-zero core. Otherwise losing/dormant wallets collect free points
   // just for churning.
@@ -975,6 +985,9 @@ function computeWalletScore(stats) {
       meanPickerPenalty,
       mmPenalty,
       mmScore: stats.mmScore ?? null,
+      attrMultiplier,
+      attrSignals: stats.signalAttribution ? stats.signalAttribution.signals : 0,
+      attrAvgReturn: stats.signalAttribution ? stats.signalAttribution.avgReturn : null,
       activityBonus: +activityBonus.toFixed(2),
       resolved,
     },

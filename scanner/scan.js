@@ -48,6 +48,7 @@ import {
 import { aggregatePositions } from './positionLedger.js';
 import { attachMMClassification } from './mmClassifier.js';
 import { attachAlphaEvaluation, ALPHA_THRESHOLDS } from './alphaTest.js';
+import { buildAttributionMap, attachAttribution } from './signalAttribution.js';
 
 import fs from 'fs';
 import path from 'path';
@@ -444,7 +445,7 @@ async function ensureMarketsResolved(events, marketLookup) {
  * Discover wallet addresses from Goldsky and qualify them via Data API.
  * This runs periodically (every DISCOVERY_INTERVAL_SCANS fast loops).
  */
-async function discoverWallets(state, existingPool, marketLookup = null) {
+async function discoverWallets(state, existingPool, marketLookup = null, attributionMap = null) {
   console.log('\n🔍 WALLET DISCOVERY — Finding and qualifying new wallets...');
 
   // Step 1: Discover entities and fields dynamically (handles schema differences)
@@ -715,6 +716,7 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
               // can penalise whale-01-class wallets via stats.mmPenalty.
               attachMMClassification(pool[address].stats);
               attachAlphaEvaluation(pool[address].stats);
+              attachAttribution(pool[address].stats, attributionMap, address);
               const scored = computeWalletScore(pool[address].stats);
               if (scored && scored.score != null) {
                 pool[address].score = scored.score;
@@ -867,6 +869,7 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
       // Stage 1/2: run MM classifier + alpha test before scoring.
       attachMMClassification(stats);
       attachAlphaEvaluation(stats);
+      attachAttribution(stats, attributionMap, address);
 
       // Stage 1/2 hard discovery gates:
       //   1. Likely market-maker (mmScore ≥ 4) — not copy-tradeable.
@@ -1065,11 +1068,11 @@ async function discoverWallets(state, existingPool, marketLookup = null) {
         stats.isMeanPickerShape = wallet.decidedMetrics.isMeanPickerShape;
         stats.decidedMeasuredAt = wallet.decidedMetrics.measuredAt;
       }
-      // Stage 1/2: MM classification + alpha evaluation must run before
-      // scoring — their output (mmPenalty, alphaVerdict) feeds into the
-      // score formula.
+      // Stage 1/2/3: MM classification + alpha evaluation + attribution
+      // must run before scoring — their outputs feed into the score formula.
       attachMMClassification(stats);
       attachAlphaEvaluation(stats);
+      attachAttribution(stats, attributionMap, addr);
       const scored = computeWalletScore(stats);
       if (scored && scored.score != null) {
         wallet.score = scored.score;
@@ -1740,9 +1743,17 @@ async function run() {
   const existingMarkets = loadGzJSON(marketsFile) || {};
   const marketLookup = new Map(Object.entries(existingMarkets));
 
+  // Build attribution map once per scan — used by computeWalletScore to
+  // apply the signal-outcome feedback loop. Wallets with ≥ 10 historical
+  // signals get their score scaled by their proven signal EV.
+  const signalsFileForAttr = path.join(DATA_DIR, 'signals.json.gz');
+  const signalsDataForAttr = loadGzJSON(signalsFileForAttr) || {};
+  const attributionMap = buildAttributionMap(signalsDataForAttr.history || []);
+
   console.log(`\n📋 State: Scan #${state.scanCount}`);
   console.log(`  Wallet pool: ${Object.keys(walletPool).length}`);
   console.log(`  Known markets: ${marketLookup.size}`);
+  console.log(`  Attribution map: ${attributionMap.size} wallets with signal history`);
   console.log(`  Last discovery: scan #${state.lastDiscovery}`);
 
   // Decide whether to run discovery (slow loop)
@@ -1764,7 +1775,7 @@ async function run() {
     } else if (poolBelowTarget) {
       console.log(`  Pool below target (${poolSize}/${CONFIG.TARGET_POOL_SIZE}) — forcing discovery but keeping cursor position to scan new wallets`);
     }
-    walletPool = await discoverWallets(state, walletPool, marketLookup);
+    walletPool = await discoverWallets(state, walletPool, marketLookup, attributionMap);
     state.lastDiscovery = state.scanCount;
 
     // Save wallet pool
