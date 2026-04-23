@@ -29,30 +29,61 @@ const SIGNAL_THRESHOLDS = {
   // Convergence window — how recent trades must be to count as "active convergence"
   CONVERGENCE_WINDOW_HOURS: 48,     // Trades within last 48 hours count
 
-  // Consensus signals — larger group of tracked wallets converging on a market
+  // Consensus signals — larger group of tracked wallets converging on a market.
+  // Historic: 153 resolved, 51.6% WR, +16.5% avg return. Profitable as-is.
   CONSENSUS_MIN_WALLETS: 8,         // 8+ wallets
   CONSENSUS_MIN_AVG_SCORE: 12,      // avg ≥ 12 on 0–55 scale ≈ solid pool median
   CONSENSUS_MIN_TOTAL_SIZE: 1000,   // $1000+ total buy size across wallets
 
-  // Cluster signals — small group of strong wallets
-  CLUSTER_MIN_WALLETS: 3,
-  CLUSTER_MAX_WALLETS: 7,
-  CLUSTER_MIN_AVG_SCORE: 18,        // higher bar than consensus (fewer wallets = need quality)
-  CLUSTER_MIN_TOTAL_SIZE: 500,
+  // Cluster signals — small group of strong wallets.
+  // Historic 49.0% WR / -5.8% return was structurally broken. Deep analysis
+  // showed 4-5 wallets is the single WORST band (237 signals, -12.6%).
+  // 6-7 wallets is marginal (-1.5%). So cluster now = 6-7 wallets only —
+  // the 4-5 noise band is eliminated entirely. Plus tight quality gates.
+  CLUSTER_MIN_WALLETS: 6,               // was 3 — 4-5 is structurally -EV
+  CLUSTER_MAX_WALLETS: 7,               // anything ≥ 8 escalates to consensus
+  CLUSTER_MIN_AVG_SCORE: 25,            // top decile on 0–55 scale
+  CLUSTER_MIN_TOTAL_SIZE: 750,          // real conviction required
+  CLUSTER_MIN_PER_WALLET_SCORE: 18,     // every wallet must be top quartile
 
-  // Per-wallet score floor for any wallet contributing to consensus/cluster.
-  // Without this, a single low-scoring wallet (e.g. score=5) can sneak into
-  // a cluster whose AVERAGE still passes — diluting edge. Every contributing
-  // wallet must individually meet this bar. Applies BEFORE the avg-score
-  // check so low-quality wallets are simply excluded from the candidate.
-  PER_WALLET_MIN_SCORE: 10,
+  // Per-wallet score floor for consensus + fallback for cluster
+  // (cluster has its own CLUSTER_MIN_PER_WALLET_SCORE override above).
+  // Raised 10→15 — below this, the wallet doesn't have enough edge
+  // signal to meaningfully contribute to any convergence signal.
+  PER_WALLET_MIN_SCORE: 15,
 
-  // Solo signals — single top-tier wallet, significant new buy
-  SOLO_MIN_SCORE: 25,               // top decile on new scale
-  SOLO_MIN_WIN_RATE: 0.55,          // WR is secondary to decided edge now; 55% = real edge
+  // Solo signals — single top-tier wallet, significant new buy.
+  // Historic 60.5% WR / -3.3% return overall, but category-dependent:
+  //   solo × sports     : 65.2% WR, +101.7% avg return  ← gold
+  //   solo × politics   :   90% WR, +10.6% avg return
+  //   solo × crypto-udn :   88.7% WR, +0.5% avg return
+  //   solo × other      :   58.0% WR, -7.3% avg return  ← problem
+  //   solo × esports    :   43.2% WR, -17.6% avg return ← killed via EXCLUDED
+  //
+  // Also entry-price-dependent: 20-40¢ underdog solos lost -38%, 60-80¢
+  // favorites profited +2.3%, 80-87¢ near-certains profited +8.7%. So
+  // underdog entries are actually -EV for solos in our pool — DO NOT cap
+  // the upper entry price. Just require a high-score wallet + decent size.
+  SOLO_MIN_SCORE: 30,               // was 25 — elite wallets only
+  SOLO_MIN_WIN_RATE: 0.55,          // WR secondary to decided edge; 55% = real edge
   SOLO_MIN_RESOLVED: 50,
   SOLO_MIN_BUY_SIZE: 500,           // $500+ buy in a single market
   SOLO_MAX_PER_WALLET: 3,
+
+  // Excluded market keywords — categories with confirmed negative EV.
+  // Esports: 280 resolved, 43.9% WR, -13.0% avg return. Across all signal
+  // types (cluster -21.6%, solo -17.6%) — universally bad. Alpha wallets
+  // don't have meaningful edge on short-duration esports match outcomes.
+  //
+  // NOTE: crypto up-or-down markets (BTC 5-min etc.) were initially also
+  // excluded — but data showed 129 resolved, 73.6% WR, +4.9% avg return.
+  // They're actually profitable, so we KEEP them. Alpha wallets do have
+  // real short-term directional edge on BTC / ETH / SOL.
+  EXCLUDED_KEYWORDS: [
+    'dota', 'lol', 'league of legends', 'counter-strike', 'valorant', 'csgo',
+    'cs:go', 'cs2', 'call of duty', 'rocket league', 'overwatch', 'starcraft',
+    'hearthstone', 'apex legends', 'fortnite', 'pubg',
+  ],
 
   // Lifecycle
   STALE_HOURS: 96,                  // Close signal if no new buys for 96 hours
@@ -88,6 +119,15 @@ const SIGNAL_THRESHOLDS = {
 function impliedMaxROI(price) {
   if (!(price > 0) || price >= 1) return 0;
   return (1 / price) - 1;
+}
+
+// Returns true if a market title matches an excluded keyword (esports,
+// short-duration crypto up/down, etc.). Used at signal emission to kill
+// categories that are too efficient for wallet alpha to matter.
+function isExcludedMarket(title) {
+  if (!title || typeof title !== 'string') return false;
+  const t = title.toLowerCase();
+  return SIGNAL_THRESHOLDS.EXCLUDED_KEYWORDS.some(k => t.includes(k));
 }
 
 // ============================================================================
@@ -281,6 +321,9 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     const avgScore = candidate.avgScore;
     const totalSize = candidate.totalBuySize;
 
+    // Exclude -EV categories (esports, crypto up/down, etc.) at source.
+    if (isExcludedMarket(candidate.title)) continue;
+
     // Classify signal type
     let signalType, meetsThresholds;
 
@@ -291,8 +334,15 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     } else if (walletCount >= SIGNAL_THRESHOLDS.CLUSTER_MIN_WALLETS &&
                walletCount <= SIGNAL_THRESHOLDS.CLUSTER_MAX_WALLETS) {
       signalType = 'cluster';
-      meetsThresholds = avgScore >= SIGNAL_THRESHOLDS.CLUSTER_MIN_AVG_SCORE &&
-        totalSize >= SIGNAL_THRESHOLDS.CLUSTER_MIN_TOTAL_SIZE;
+      // Cluster-specific extra floor: EVERY wallet in the cluster must meet
+      // CLUSTER_MIN_PER_WALLET_SCORE. Catches the case where a cluster's
+      // average passes but one marginal wallet is dragging the edge down.
+      const allMeetFloor = (candidate.wallets || []).every(w =>
+        (w.score || 0) >= SIGNAL_THRESHOLDS.CLUSTER_MIN_PER_WALLET_SCORE
+      );
+      meetsThresholds = allMeetFloor
+        && avgScore >= SIGNAL_THRESHOLDS.CLUSTER_MIN_AVG_SCORE
+        && totalSize >= SIGNAL_THRESHOLDS.CLUSTER_MIN_TOTAL_SIZE;
     } else {
       continue; // Below minimum wallet count
     }
@@ -484,6 +534,9 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     }
 
     for (const [cid, data] of walletMarkets) {
+      // Exclude -EV categories at source (esports, crypto up/down).
+      if (isExcludedMarket(data.meta.title)) continue;
+
       const buySize = data.trades.reduce((s, t) => s + (t.size * t.price), 0);
       if (buySize < SIGNAL_THRESHOLDS.SOLO_MIN_BUY_SIZE) continue;
 
