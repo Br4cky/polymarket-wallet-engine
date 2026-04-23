@@ -846,6 +846,26 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
             processed++;
             continue;
           }
+        } else if (stats.singleSideROI != null && stats.singleSideCapital != null) {
+          // Fallback path: wallet not in walletPositions cursor — apply the
+          // equivalent gates against singleSide* metrics. Keeps admission
+          // quality-bar the same whether we got decided or single-side data.
+          // See dataApi.js computeWalletScore for how this feeds scoring.
+          if (stats.singleSideCapital < CONFIG.DISCOVERY_MIN_DECIDED_CAPITAL) {
+            processed++;
+            continue;
+          }
+          if (stats.singleSideROI < CONFIG.DISCOVERY_MIN_DECIDED_ROI) {
+            processed++;
+            continue;
+          }
+          const resolvedSS = stats.singleSideResolved || stats.resolvedMarkets || 0;
+          if (resolvedSS >= CONFIG.DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED
+              && stats.singleSideHitRate != null
+              && stats.singleSideHitRate > CONFIG.DISCOVERY_MAX_WIN_RATE) {
+            processed++;
+            continue;
+          }
         }
       }
 

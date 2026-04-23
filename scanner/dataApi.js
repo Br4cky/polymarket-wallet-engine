@@ -938,16 +938,44 @@ function computeWalletScore(stats) {
   // Scoring requires decided-truth metrics. Wallets without them (not yet
   // rescored, or freshly discovered) get score=null so callers can decide
   // whether to skip ranking or provisionally admit.
-  if (stats.decidedROI == null || stats.decidedCapital == null) {
-    return { score: null, reason: 'no_decided_metrics', components: null };
+  // Pick the ROI / capital pair to score against. `decided*` comes from the
+  // position-ledger pass (positionLedger.js) and is preferred because it
+  // accounts for open positions and unredeemed winners. But many wallets
+  // don't have position data captured — typically specialists who don't
+  // show up in the cursor scan — and their `decided*` is null even when
+  // they have great trade-level performance.
+  //
+  // Fallback: `singleSideROI` + `singleSideCapital` from analyzeTradeHistory.
+  // Trade-level only, slightly inflates ROI because it ignores open
+  // positions, but it's always available from trade events alone. Marks
+  // metricSource='singleside' so the UI / diagnostics can tell the two
+  // apart. Attribution multiplier will calibrate actual signal quality
+  // regardless of which ROI source we used.
+  //
+  // Before this fallback, specialists like 0x06a0402a (18 sigs, 72% WR,
+  // +38% ret, tier_a alpha, 0 MM score, +92% singleSideROI) were rejected
+  // at admission because decidedROI was null — the signal engine never
+  // saw them. See scripts/inspect-specialists.mjs for the diagnostic.
+  let roiInput = stats.decidedROI;
+  let capInput = stats.decidedCapital;
+  let metricSource = 'decided';
+  if (roiInput == null || capInput == null) {
+    if (stats.singleSideROI != null && stats.singleSideCapital != null
+        && stats.singleSideCapital > 0) {
+      roiInput = stats.singleSideROI;
+      capInput = stats.singleSideCapital;
+      metricSource = 'singleside';
+    } else {
+      return { score: null, reason: 'no_decided_metrics', components: null };
+    }
   }
 
   const resolved = stats.decidedWins != null && stats.decidedLosses != null
     ? stats.decidedWins + stats.decidedLosses
-    : (stats.resolvedMarkets || 0);
+    : (stats.singleSideResolved || stats.resolvedMarkets || 0);
 
-  const roi = roiPoints(stats.decidedROI);
-  const capConf = capConfidence(stats.decidedCapital);
+  const roi = roiPoints(roiInput);
+  const capConf = capConfidence(capInput);
   const sampleConf = sampleConfidence(resolved);
   const recency = recencyMultiplier(stats.lastTradeTs);
   const meanPickerPenalty = stats.isMeanPickerShape === true ? 0.2 : 1.0;
@@ -1018,6 +1046,9 @@ function computeWalletScore(stats) {
       churnRatio: (tt >= 30 && um >= 10) ? +(tt / um).toFixed(2) : null,
       activityBonus: +activityBonus.toFixed(2),
       resolved,
+      metricSource,  // 'decided' (position-ledger) or 'singleside' (trade-only fallback)
+      roiInput: +roiInput.toFixed(4),
+      capInput: Math.round(capInput),
     },
   };
 }
