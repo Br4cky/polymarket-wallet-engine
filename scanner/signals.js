@@ -97,6 +97,39 @@ const SIGNAL_THRESHOLDS = {
     'presidential election', 'congressional',
   ],
 
+  // Category whitelist — only markets falling into these classifier buckets
+  // are allowed to emit signals. Data-driven from sizing-simulator.mjs:
+  // applying this whitelist over 1,446 historical signals lifted weighted
+  // return from -2.2% to +17.7% (+20pp). Volume drops meaningfully, but the
+  // remaining signals are 71% WR vs 54% baseline.
+  //
+  // Per-category backtest (avg return, N signals):
+  //   tennis        +151%   13   ✓
+  //   crypto-other   +41%    3   ✓
+  //   nba            +35%   33   ✓
+  //   mma            +21%   16   ✓
+  //   weather        +20%   44   ✓   (84% WR — most consistent)
+  //   crypto-updown   +0%  147   ✓   (huge sample, slightly positive)
+  //   mlb/nfl/macro    —    —        (no data — admit as neutral)
+  //   other           -3%  821         excluded (mostly un-classified noise)
+  //   politics        -7%   17         excluded (residual election markets)
+  //   soccer          -7%   46         excluded (ambiguous — EPL+smaller mixed)
+  //   esports        -14%  303         already keyword-excluded
+  //
+  // Unclassified ("other") is excluded on the premise that anything we
+  // can't categorise well is more likely to be noise than edge. The
+  // classifyMarket() regex is actively being widened — any profitable
+  // subtype discovered gets promoted to a named category.
+  ALLOWED_CATEGORIES: new Set([
+    'tennis', 'nba', 'mma', 'weather',
+    'crypto-updown', 'crypto-other',
+    // Neutral/small-sample but not negative — admit by default:
+    'mlb', 'nfl', 'macro', 'ai-tech',
+    // Token launches and conditional-event markets isolated by the
+    // widened classifier. These had been dumped into "other" before.
+    'token-launch', 'news-event',
+  ]),
+
   // Lifecycle
   STALE_HOURS: 96,                  // Close signal if no new buys for 96 hours
   MAX_SIGNAL_LIFETIME_HOURS: 600,   // ~25 days max lifetime (safety valve)
@@ -140,6 +173,70 @@ function isExcludedMarket(title) {
   if (!title || typeof title !== 'string') return false;
   const t = title.toLowerCase();
   return SIGNAL_THRESHOLDS.EXCLUDED_KEYWORDS.some(k => t.includes(k));
+}
+
+/**
+ * Classify a market title into a category bucket. The classifier is the
+ * mechanism by which ALLOWED_CATEGORIES / whitelist gating operates.
+ *
+ * Widened from the analytics version to capture subtypes that were dumped
+ * into "other" (821/1446 signals ≈ 57%): token launches, news events, macro
+ * data releases, IPO/earnings, space missions, conditional-calendar markets.
+ *
+ * Return values must match ALLOWED_CATEGORIES keys exactly (or return
+ * 'other' / 'politics' / 'soccer' etc. to be rejected by the whitelist).
+ */
+function classifyMarket(title) {
+  const q = (title || '').toLowerCase();
+  if (!q) return 'other';
+
+  // Esports (defensive — also covered by EXCLUDED_KEYWORDS)
+  if (/dota|lol|league of legends|counter-strike|valorant|cs:go|cs2|csgo|call of duty|rocket league|overwatch|starcraft|hearthstone|apex|fortnite|pubg/.test(q)) return 'esports';
+
+  // Crypto — directional (up/down, reach-price) vs other (launches, events)
+  if (/\blaunch a token|\btoken launch|\btge\b|token on /.test(q)) return 'token-launch';
+  if (/bitcoin|btc|ethereum|eth|solana|sol\b|doge|xrp|crypto|coin/.test(q)) {
+    if (/reach|above|below|hit|close|\$|\sup\b|\sdown\b|end above|end below/.test(q)) return 'crypto-updown';
+    return 'crypto-other';
+  }
+
+  // Sports — order matters (NHL before generic hockey, NBA before generic playoffs)
+  if (/nhl|stanley cup| hockey /.test(q)) return 'nhl';
+  if (/nba|lakers|celtics|warriors|\bknicks\b|\bheat\b|nba playoffs/.test(q)) return 'nba';
+  if (/nfl|super bowl|touchdown|quarterback/.test(q)) return 'nfl';
+  if (/mlb|baseball|world series/.test(q)) return 'mlb';
+  if (/epl|premier league|champions league|la liga|bundesliga|serie a|manchester|arsenal|liverpool|chelsea/.test(q)) return 'soccer';
+  if (/tennis|wimbledon|\bus open\b|french open|atp|wta/.test(q)) return 'tennis';
+  if (/ufc|\bmma\b|fight night/.test(q)) return 'mma';
+  if (/ pga |golf|masters tournament/.test(q)) return 'golf';
+  if (/f1\b|formula 1|grand prix/.test(q)) return 'f1';
+
+  // Politics — restricted (election keywords already in EXCLUDED_KEYWORDS)
+  if (/trump|biden|harris|election|senate|house race|republican|democrat|congressional/.test(q)) return 'politics';
+
+  // Science / tech / news
+  if (/ai\b|openai|anthropic|gpt|gemini|\bllm\b|tech|apple|google|microsoft|nvidia/.test(q)) return 'ai-tech';
+  if (/weather|temperature|hurricane|tornado|snow|rainfall/.test(q)) return 'weather';
+  if (/fed rate|fomc|inflation|cpi|ppi|\bgdp\b|recession|jobs report|unemployment|nonfarm/.test(q)) return 'macro';
+  if (/ipo|earnings|revenue|guidance|\beps\b/.test(q)) return 'macro';
+  if (/spacex|starship|mission|\bnasa\b|rocket launch/.test(q)) return 'news-event';
+  if (/announce|statement|\bsay\b|\bsays\b|tweet|post|comment/.test(q)) return 'news-event';
+
+  // Conditional calendar markets ("Will X happen by <date>") — sweep into
+  // news-event unless otherwise classified. Fat-tail behaviour; some edge.
+  if (/\bwill .+ by |\bwill .+ before |\bwill .+ on /.test(q)) return 'news-event';
+
+  return 'other';
+}
+
+/**
+ * Returns true if a market is allowed under the category whitelist. Never
+ * returns true for keyword-excluded markets regardless of category.
+ */
+function isWhitelistedCategory(title) {
+  if (isExcludedMarket(title)) return false;
+  const cat = classifyMarket(title);
+  return SIGNAL_THRESHOLDS.ALLOWED_CATEGORIES.has(cat);
 }
 
 // ============================================================================
@@ -333,8 +430,9 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     const avgScore = candidate.avgScore;
     const totalSize = candidate.totalBuySize;
 
-    // Exclude -EV categories (esports, crypto up/down, etc.) at source.
-    if (isExcludedMarket(candidate.title)) continue;
+    // Category gate — whitelist-driven; also runs keyword exclusions.
+    // See ALLOWED_CATEGORIES for the data-backed list.
+    if (!isWhitelistedCategory(candidate.title)) continue;
 
     // Classify signal type
     let signalType, meetsThresholds;
@@ -546,8 +644,8 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     }
 
     for (const [cid, data] of walletMarkets) {
-      // Exclude -EV categories at source (esports, crypto up/down).
-      if (isExcludedMarket(data.meta.title)) continue;
+      // Category gate — whitelist + keyword exclusions (see convergence).
+      if (!isWhitelistedCategory(data.meta.title)) continue;
 
       const buySize = data.trades.reduce((s, t) => s + (t.size * t.price), 0);
       if (buySize < SIGNAL_THRESHOLDS.SOLO_MIN_BUY_SIZE) continue;
@@ -824,14 +922,22 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 const MAX_PRACTICAL_SCORE = 45;
 
 function computeConvergenceConfidence(candidate, signalType) {
-  // Wallet count factor (30 pts)
+  // Wallet count factor — bumped 30→40 pts. Sizing-sim backtest showed
+  // walletCount alone is strongly predictive (walletCount≥8 = +15.4%,
+  // walletCount≥6 = +8.3%). This is the single most reliable confidence
+  // ingredient so it earns the biggest share.
   const minWallets = signalType === 'consensus'
     ? SIGNAL_THRESHOLDS.CONSENSUS_MIN_WALLETS
     : SIGNAL_THRESHOLDS.CLUSTER_MIN_WALLETS;
-  const walletFactor = Math.min(1, candidate.walletCount / (minWallets * 2)) * 30;
+  const walletFactor = Math.min(1, candidate.walletCount / (minWallets * 2)) * 40;
 
-  // Score factor (25 pts) — average wallet quality on the 0–55 scale
-  const scoreFactor = Math.min(1, (candidate.avgScore || 0) / MAX_PRACTICAL_SCORE) * 25;
+  // Score factor — CUT 25→10 pts. The 25-pt share pushed average-score
+  // wallets into elite-tier territory (confidence ≥75), which the
+  // sizing-simulator proved is actively anti-predictive: tier=elite
+  // weighted return was -14.7% across 364 signals; confidence>80 binary
+  // gate was -11.3%. Attribution-weighted scoring will eventually make
+  // avgScore reliable again; until then, cap its influence.
+  const scoreFactor = Math.min(1, (candidate.avgScore || 0) / MAX_PRACTICAL_SCORE) * 10;
 
   // Size factor (20 pts) — total $ committed (log scale)
   const sizeFactor = Math.min(1, Math.log10(1 + candidate.totalBuySize) / 4) * 20;
@@ -841,48 +947,67 @@ function computeConvergenceConfidence(candidate, signalType) {
   const spanHours = candidate.convergenceSpanHours || 48;
   const timingFactor = Math.max(0, 1 - spanHours / 72) * 15;
 
-  // Price factor (10 pts) — better EV at lower prices
+  // Price factor (10 pts) — better EV at lower prices, but entries
+  // 30-60¢ showed -5.9% avg return (worst entry band). Keep price-weight
+  // small; let category gate do the heavy lifting on EV selection.
   const price = candidate.avgEntryPrice || 0.5;
   const priceFactor = price > 0 && price < 1
     ? (1 - price) * 10  // 10¢ = 9pts, 50¢ = 5pts, 90¢ = 1pt
     : 5;
 
+  // New max = 40 + 10 + 20 + 15 + 10 = 95 (elite threshold=95 → effectively rare)
   return Math.min(100, walletFactor + scoreFactor + sizeFactor + timingFactor + priceFactor);
 }
 
 function computeSoloConfidence(walletInfo, buySize, avgPrice) {
-  // Wallet quality (40 pts) — score on the 0–55 scale
-  const qualityFactor = Math.min(1, (walletInfo.score || 0) / MAX_PRACTICAL_SCORE) * 40;
+  // Wallet quality — CUT 40→20 pts. Same reason as convergence: raw score
+  // is anti-predictive in the 25-35 band where most solos originate. Halve
+  // its influence until attribution re-calibrates the pool score.
+  const qualityFactor = Math.min(1, (walletInfo.score || 0) / MAX_PRACTICAL_SCORE) * 20;
 
-  // Position size (30 pts, log scale)
+  // Position size (30 pts, log scale) — unchanged
   const sizeFactor = Math.min(1, Math.log10(1 + buySize) / 4) * 30;
 
-  // Price factor (15 pts)
+  // Price factor (15 pts) — unchanged
   const price = avgPrice || 0.5;
   const priceFactor = price > 0 && price < 1 ? (1 - price) * 15 : 7.5;
 
-  // Decided-ROI bonus (15 pts) — preferred over raw WR for directional edge.
-  // Falls back to winRate if decidedROI not yet populated for the wallet.
+  // Decided-ROI bonus — CUT 15→10 pts for the same reason (decidedROI
+  // measures trading skill, not signal-emission skill). The remaining
+  // 10pts preserves some information without dominating.
   const roi = walletInfo.stats?.decidedROI;
   let edgeFactor;
   if (typeof roi === 'number') {
-    // 0 at 0%, saturates at 15pts around 30% decided ROI
-    edgeFactor = Math.min(1, Math.max(0, roi) / 0.30) * 15;
+    edgeFactor = Math.min(1, Math.max(0, roi) / 0.30) * 10;
   } else {
     const wr = walletInfo.stats?.recentWinRate || walletInfo.stats?.winRate || 0;
-    edgeFactor = Math.max(0, (wr - 0.5) * 2) * 15;
+    edgeFactor = Math.max(0, (wr - 0.5) * 2) * 10;
   }
 
-  return Math.min(100, qualityFactor + sizeFactor + priceFactor + edgeFactor);
+  // Attribution bonus (15 pts) — wallets with proven positive signal
+  // history get explicit confidence credit. Replaces some of what we cut
+  // from qualityFactor + edgeFactor above. Neutral (0 pts) when the wallet
+  // has no attribution record yet.
+  const am = walletInfo.stats?.attributionMultiplier ?? 1.0;
+  // attributionMultiplier ∈ [0.2, 1.5]; 1.0 = neutral, map to [-15, +15].
+  const attributionFactor = Math.max(-15, Math.min(15, (am - 1.0) * 30));
+
+  return Math.min(100, Math.max(0, qualityFactor + sizeFactor + priceFactor + edgeFactor + attributionFactor));
 }
 
 // Confidence → signal tier. Confidence stays on a 0–100 scale regardless
 // of wallet-score rescales (the formulas above are the translation layer).
-// Tier cutoffs are marketing-side product decisions — see REVIEW.md for
-// the reasoning and historical calibration.
+//
+// Tier thresholds raised 2026-04-23 after sizing-sim showed tier=elite
+// was -14.7% weighted return (the worst cohort by a wide margin).
+// Raising elite 75→88 effectively empties the tier with the rebalanced
+// confidence formula (max ≈ 95 but rarely hit without all 5 factors
+// maxed). New distribution is expected to be ≈70% starter / 25% pro /
+// ≤5% elite — and elite now requires an actual 4/5-factor agreement,
+// not just a high avgScore inflating the raw confidence.
 function getSignalTier(confidence) {
-  if (confidence >= 75) return 'elite';
-  if (confidence >= 50) return 'pro';
+  if (confidence >= 88) return 'elite';
+  if (confidence >= 55) return 'pro';
   return 'starter';
 }
 
