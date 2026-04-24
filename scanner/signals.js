@@ -85,7 +85,14 @@ const SIGNAL_THRESHOLDS = {
   // favorites profited +2.3%, 80-87¢ near-certains profited +8.7%. So
   // underdog entries are actually -EV for solos in our pool — DO NOT cap
   // the upper entry price. Just require a high-score wallet + decent size.
-  SOLO_MIN_SCORE: 30,               // was 25 — elite wallets only
+  // Solo threshold — lowered 30 → 25 after diagnose-emission-gates.mjs
+  // showed only 18 of 311 snipers had score ≥ 30 (snipers inherently
+  // score lower due to low activityBonus + new churnPenalty). With
+  // threshold at 25, ~128 sniper/averager/churner wallets become
+  // solo-eligible. Style gate + win-rate + alpha verdict still apply,
+  // so we haven't loosened actual quality — just removed a threshold
+  // calibrated for styles we no longer source from.
+  SOLO_MIN_SCORE: 25,
   SOLO_MIN_WIN_RATE: 0.55,          // WR secondary to decided edge; 55% = real edge
   SOLO_MIN_RESOLVED: 50,
   SOLO_MIN_BUY_SIZE: 500,           // $500+ buy in a single market
@@ -301,10 +308,21 @@ function classifyWalletStyle(stats) {
   return 'mixed';
 }
 
-// Styles permitted to source SOLO signals. Sniper-only is the Option 2
-// recommendation (+26% avg return historically). To loosen for higher
-// volume (Option 1), add 'averager' and/or 'churner' to this Set.
-const SOLO_ALLOWED_STYLES = new Set(['sniper']);
+// Styles permitted to source SOLO signals. Per-style historical average
+// signal returns:
+//   sniper   +26%   (31% of pool)
+//   averager  +9%   (7% of pool)
+//   churner   +1%   (7% of pool)
+//   mixed    -12%   EXCLUDED
+//   holder   -28%   EXCLUDED
+//   mm-like -100%   EXCLUDED
+//
+// Currently using Option 1 (loose): sniper + averager + churner. Pure
+// sniper (Option 2) gated through so few wallets that volume collapsed
+// to ~0/day — snipers inherently score lower because they trade less.
+// Option 1 backtest volume: 8.4/day at +30.8% avg return (nearly
+// identical quality to sniper-only Option 2's 6.8/day at +31.8%).
+const SOLO_ALLOWED_STYLES = new Set(['sniper', 'averager', 'churner']);
 
 // Styles that are blanket rejected from ANY signal contribution
 // (cluster, consensus, solo). Based on historical -27% and -100% avg
