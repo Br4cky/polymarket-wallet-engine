@@ -35,4 +35,10 @@ jobs:
           git add data/
           SCAN_COUNT=$(node -e "const fs = require('fs'); try { const s = JSON.parse(fs.readFileSync('data/state.json','utf8')); console.log(s.scanCount); } catch(e) { console.log('unknown'); }")
           git diff --cached --quiet || git commit -m "Scan #${SCAN_COUNT}: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push || (git pull --rebase && git push) || (sleep 5 && git pull --rebase && git push)
+          # Push with rebase-theirs retry: if remote has moved (e.g. a manual
+          # push during scan), rebase our commit on top and prefer OUR fresh
+          # data on conflict (binary merges on data/*.gz always fail cleanly
+          # otherwise and abort the rebase). -X theirs during rebase keeps the
+          # commits being replayed — our scan — which is what we want since
+          # our API data is freshest.
+          git push || (git pull --rebase -X theirs origin main && git push) || (sleep 5 && git pull --rebase -X theirs origin main && git push)
