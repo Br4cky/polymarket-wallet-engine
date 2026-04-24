@@ -46,6 +46,27 @@ const SIGNAL_THRESHOLDS = {
   CLUSTER_MIN_TOTAL_SIZE: 750,          // real conviction required
   CLUSTER_MIN_PER_WALLET_SCORE: 18,     // every wallet must be top quartile
 
+  // Micro-cluster "favorite-resolve" path (Option 2 composite emission).
+  // Admits 2-5 wallet convergences — normally below CLUSTER_MIN_WALLETS —
+  // only when the entry price is in the heavy-favorite band (70-85¢).
+  // Sizing-sim backtest: this band showed 77% WR / +22.3% avg return
+  // across 104 signals, the highest-WR cohort of any filter tested.
+  // The thesis: 70-85¢ means the market is already assigning a high
+  // resolution probability, so convergence of even a small group on a
+  // favorite is a strong "they're going to settle this TRUE" signal.
+  //
+  // Tunable for adaptation (see /docs/findings-2026-04-23.md):
+  //   - Disable via setting MICRO_CLUSTER_MIN_WALLETS = 999
+  //   - Widen band via MICRO_CLUSTER_ENTRY_MIN/MAX (e.g. 0.50-0.85 for
+  //     more volume at slightly lower quality — Option 1 mode)
+  //   - Tighten to strictly 75-85¢ (Option 3 mode) to emit fewer, higher-WR
+  MICRO_CLUSTER_MIN_WALLETS: 2,
+  MICRO_CLUSTER_MAX_WALLETS: 5,
+  MICRO_CLUSTER_ENTRY_MIN: 0.70,
+  MICRO_CLUSTER_ENTRY_MAX: 0.85,
+  MICRO_CLUSTER_MIN_TOTAL_SIZE: 500,    // lower bar than cluster ($750)
+  MICRO_CLUSTER_MIN_AVG_SCORE: 20,      // slightly looser than cluster (25)
+
   // Per-wallet score floor for consensus + fallback for cluster
   // (cluster has its own CLUSTER_MIN_PER_WALLET_SCORE override above).
   // Raised 10→15 — below this, the wallet doesn't have enough edge
@@ -239,6 +260,73 @@ function isWhitelistedCategory(title) {
   return SIGNAL_THRESHOLDS.ALLOWED_CATEGORIES.has(cat);
 }
 
+/**
+ * Classify a wallet's trading style from its stats. Used by the Option 2
+ * composite emission policy to exclude holder/mm-like contributors and
+ * enable sniper-solo signals.
+ *
+ * Per-style signal-outcome data (scripts/wallet-style-profiles.mjs over
+ * 1,465 historical signals):
+ *   sniper   (≤2 trades/mkt, <48h hold)   → +28% avg return  ← best
+ *   averager (3-8 trades/mkt, sells)      → +12%
+ *   churner  (>8 trades/mkt)              →  +1%
+ *   mixed   (catch-all)                   → −12%
+ *   holder   (sellRatio <0.15, wins on resolution) → −27%  ← excluded
+ *   mm-like  (dualSide>0.30 or mmScore≥3) → −100% (5 sigs)  ← excluded
+ *
+ * Why holders lose us money despite winning for themselves: they buy
+ * early-stage markets and wait for resolution to confirm their thesis.
+ * We see their first buy and think "conviction" but it's actually their
+ * speculative-probe stage. They survive because they can hold; copy-
+ * followers can't without absorbing the full drawdown.
+ *
+ * Alternative configurations (ADAPT HERE if volume/quality balance shifts):
+ *   Option 1 (loose, higher volume): allow averager + churner + sniper
+ *     as solo sources, not just sniper. See SOLO_ALLOWED_STYLES below.
+ *   Option 3 (strict, lowest volume): require sniper AND entry 70-85¢
+ *     for both solo and cluster. Set REQUIRE_FAVORITE_PRICE = true.
+ */
+function classifyWalletStyle(stats) {
+  if (!stats) return 'unknown';
+  if ((stats.dualSideRate || 0) > 0.30 || (stats.mmScore || 0) >= 3) return 'mm-like';
+  const tt = stats.totalTrades || 0;
+  const um = stats.uniqueMarkets || 0;
+  const tpm = um > 0 ? tt / um : 0;
+  const sellRatio = stats.sellRatio ?? 1;
+  const hold = stats.avgHoldTimeHours || 0;
+  if (tpm > 8) return 'churner';
+  if (tpm >= 3 && sellRatio > 0.30) return 'averager';
+  if (tpm <= 2 && hold < 48) return 'sniper';
+  if (sellRatio < 0.15) return 'holder';
+  return 'mixed';
+}
+
+// Styles permitted to source SOLO signals. Sniper-only is the Option 2
+// recommendation (+26% avg return historically). To loosen for higher
+// volume (Option 1), add 'averager' and/or 'churner' to this Set.
+const SOLO_ALLOWED_STYLES = new Set(['sniper']);
+
+// Styles that are blanket rejected from ANY signal contribution
+// (cluster, consensus, solo). Based on historical -27% and -100% avg
+// returns respectively — neither produces copyable alpha.
+const DISQUALIFIED_STYLES = new Set(['holder', 'mm-like']);
+
+/**
+ * Returns true if ANY wallet in the list is a DISQUALIFIED_STYLES member.
+ * Used to reject cluster/consensus signals whose composition is tainted
+ * by holder or mm-like contributors.
+ */
+function hasDisqualifiedContributor(wallets, walletPool) {
+  if (!Array.isArray(wallets)) return false;
+  for (const w of wallets) {
+    const addr = (w.address || w).toString().toLowerCase();
+    const info = walletPool instanceof Map ? walletPool.get(addr) : walletPool[addr];
+    if (!info) continue;
+    if (DISQUALIFIED_STYLES.has(classifyWalletStyle(info.stats))) return true;
+  }
+  return false;
+}
+
 // ============================================================================
 // Trade Convergence Detection
 // ============================================================================
@@ -316,7 +404,11 @@ function detectConvergence(recentTrades, walletPool, marketLookup) {
 
   for (const [cid, mb] of marketBuys) {
     const walletCount = mb.wallets.size;
-    if (walletCount < SIGNAL_THRESHOLDS.CLUSTER_MIN_WALLETS) continue;
+    // Lowered from CLUSTER_MIN_WALLETS (6) to MICRO_CLUSTER_MIN_WALLETS (2)
+    // so the favorite-resolve path (Option 2 composite) can catch
+    // 2-5 wallet convergences on heavy-favorite entries. processSignals
+    // applies the real admission gates — this is just candidate surfacing.
+    if (walletCount < SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_WALLETS) continue;
 
     // Compute aggregate metrics
     let totalSize = 0;
@@ -434,6 +526,16 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     // See ALLOWED_CATEGORIES for the data-backed list.
     if (!isWhitelistedCategory(candidate.title)) continue;
 
+    // Contributor-style gate (Option 2 composite emission policy):
+    // Reject any signal whose wallet list contains a DISQUALIFIED_STYLES
+    // member (holder or mm-like). Historical data: signals with a holder
+    // contributor averaged -28%, with an mm-like contributor -100%.
+    // Signals with sniper + no-holder averaged +26%.
+    //
+    // To relax this (Option 1, more volume), shrink DISQUALIFIED_STYLES
+    // to just ['mm-like'].
+    if (hasDisqualifiedContributor(candidate.wallets, walletPool)) continue;
+
     // Classify signal type
     let signalType, meetsThresholds;
 
@@ -453,8 +555,19 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       meetsThresholds = allMeetFloor
         && avgScore >= SIGNAL_THRESHOLDS.CLUSTER_MIN_AVG_SCORE
         && totalSize >= SIGNAL_THRESHOLDS.CLUSTER_MIN_TOTAL_SIZE;
+    } else if (walletCount >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_WALLETS
+               && walletCount <= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MAX_WALLETS
+               && (candidate.avgEntryPrice || 0) >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_ENTRY_MIN
+               && (candidate.avgEntryPrice || 1) < SIGNAL_THRESHOLDS.MICRO_CLUSTER_ENTRY_MAX) {
+      // Favorite-resolve micro-cluster (Option 2): 2-5 wallet convergence
+      // on a 70-85¢ heavy-favorite market. Historically 77% WR / +22%.
+      // Looser size/avgScore floors than full cluster — the price band
+      // is doing most of the EV work.
+      signalType = 'micro-cluster';
+      meetsThresholds = avgScore >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_AVG_SCORE
+        && totalSize >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_TOTAL_SIZE;
     } else {
-      continue; // Below minimum wallet count
+      continue; // Doesn't fit any admission path
     }
 
     // EV filter — wallet fill price floor (rare) and implied-ROI ceiling.
@@ -610,6 +723,14 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     if ((walletInfo.score || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_SCORE) continue;
     if ((stats.recentWinRate || stats.winRate || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_WIN_RATE) continue;
     if ((stats.resolvedMarkets || 0) < SIGNAL_THRESHOLDS.SOLO_MIN_RESOLVED) continue;
+
+    // Style gate — Option 2 composite emission: solo signals emit only
+    // when the wallet's style is in SOLO_ALLOWED_STYLES. Default is
+    // sniper-only (+26% avg historical return vs +25% all-averager,
+    // +1% churner, -12% mixed, -28% holder). Adapt this by editing
+    // SOLO_ALLOWED_STYLES near the top of the file.
+    const style = classifyWalletStyle(stats);
+    if (!SOLO_ALLOWED_STYLES.has(style)) continue;
     // Solo signals prefer proven single-side alpha. Require either a good
     // alpha verdict (tier_a / tier_b) OR genuinely insufficient sample
     // (still learning). Explicit 'fails' already rejected above.
