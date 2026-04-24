@@ -176,8 +176,19 @@ async function fetchRecentTrades(wallets, sinceTs, onProgress) {
       limit: 100, // Most wallets won't have >100 trades in an hour
       startTs: sinceTs,
     });
-    if (trades && trades.length > 0) {
-      results.set(wallet, trades);
+    // Client-side filter — Polymarket's Data API /trades endpoint silently
+    // ignores startTs, so we get back up to 100 recent trades regardless of
+    // the time window we asked for. For inactive wallets this can span
+    // weeks, which previously produced bogus solo signals on markets that
+    // had already resolved (see 2026-04-24 diagnosis: wallet 0x1f093262...
+    // had April-2 trades emitted as "new" signals on April-24). Filtering
+    // at the source prevents every downstream consumer from having to
+    // repeat the same age check.
+    const filtered = (trades || []).filter(t =>
+      typeof t.timestamp === 'number' && t.timestamp >= sinceTs
+    );
+    if (filtered.length > 0) {
+      results.set(wallet, filtered);
     }
     processed++;
     if (onProgress && processed % 50 === 0) {

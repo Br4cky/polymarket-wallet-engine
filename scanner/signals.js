@@ -751,9 +751,16 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     if (existingSoloCount >= SIGNAL_THRESHOLDS.SOLO_MAX_PER_WALLET) continue;
 
     // Group this wallet's recent buys by market
+    // Timestamp filter: mirror the convergence path's 48h window — defends
+    // against stale trades if fetchRecentTrades upstream ever regresses to
+    // returning unfiltered history (Polymarket's Data API silently ignores
+    // startTs on /trades, so we filter client-side there AND here).
+    const soloWindowTs = Math.floor(Date.now() / 1000) -
+      (SIGNAL_THRESHOLDS.CONVERGENCE_WINDOW_HOURS * 3600);
     const walletMarkets = new Map();
     for (const trade of trades) {
       if (trade.side !== 'BUY') continue;
+      if (typeof trade.timestamp !== 'number' || trade.timestamp < soloWindowTs) continue;
       const cid = trade.conditionId;
       if (!cid) continue;
       if (seenMarkets.has(cid)) continue; // Already covered by consensus/cluster
