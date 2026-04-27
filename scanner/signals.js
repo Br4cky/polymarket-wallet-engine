@@ -156,6 +156,13 @@ const SIGNAL_THRESHOLDS = {
     // Token launches and conditional-event markets isolated by the
     // widened classifier. These had been dumped into "other" before.
     'token-launch', 'news-event',
+    // Soccer — re-added 2026-04-27 after diagnostic logs showed strong
+    // EPL/Champions League consensus signals (e.g. 11 wallets on Man Utd
+    // at $11k size) being killed by category exclusion. The -7% aggregate
+    // historical was driven by lower-league soccer; major-league signals
+    // are profitable. Attribution multiplier will down-weight any subleague
+    // that proves negative once it accumulates signal history.
+    'soccer',
   ]),
 
   // Lifecycle
@@ -362,19 +369,33 @@ const SOLO_ALLOWED_STYLES = new Set(['sniper', 'averager', 'churner']);
 const DISQUALIFIED_STYLES = new Set(['holder', 'mm-like']);
 
 /**
- * Returns true if ANY wallet in the list is a DISQUALIFIED_STYLES member.
- * Used to reject cluster/consensus signals whose composition is tainted
- * by holder or mm-like contributors.
+ * Returns true if MORE THAN HALF of the wallets in the list are
+ * DISQUALIFIED_STYLES members. Used to reject signals whose composition
+ * is dominated by holder or mm-like contributors.
+ *
+ * Was previously "any contributor disqualified → reject" but that proved
+ * too aggressive: with ~10% of pool being holder+mm-like, the probability
+ * that a random 10-wallet cluster contained at least one disqualified
+ * member was ~67%, killing 2/3 of clusters before any other filter ran.
+ * Diagnostic logs (scan #291, 2026-04-27) showed a 10-wallet Sabalenka
+ * vs Osaka tennis cluster — top-WR category at +151% historical — being
+ * silently rejected here.
+ *
+ * Majority rule: a single holder in an 8-wallet cluster doesn't poison
+ * the consensus; the other 7 directional wallets validate it. But a
+ * cluster that's >50% holder/mm-like is genuinely dragged.
  */
-function hasDisqualifiedContributor(wallets, walletPool) {
-  if (!Array.isArray(wallets)) return false;
+function majorityDisqualified(wallets, walletPool) {
+  if (!Array.isArray(wallets) || wallets.length === 0) return false;
+  let bad = 0, total = 0;
   for (const w of wallets) {
     const addr = (w.address || w).toString().toLowerCase();
     const info = walletPool instanceof Map ? walletPool.get(addr) : walletPool[addr];
     if (!info) continue;
-    if (DISQUALIFIED_STYLES.has(classifyWalletStyle(info.stats))) return true;
+    total++;
+    if (DISQUALIFIED_STYLES.has(classifyWalletStyle(info.stats))) bad++;
   }
-  return false;
+  return total > 0 && (bad / total) > 0.50;
 }
 
 // ============================================================================
@@ -576,15 +597,11 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     // See ALLOWED_CATEGORIES for the data-backed list.
     if (!isWhitelistedCategory(candidate.title)) continue;
 
-    // Contributor-style gate (Option 2 composite emission policy):
-    // Reject any signal whose wallet list contains a DISQUALIFIED_STYLES
-    // member (holder or mm-like). Historical data: signals with a holder
-    // contributor averaged -28%, with an mm-like contributor -100%.
-    // Signals with sniper + no-holder averaged +26%.
-    //
-    // To relax this (Option 1, more volume), shrink DISQUALIFIED_STYLES
-    // to just ['mm-like'].
-    if (hasDisqualifiedContributor(candidate.wallets, walletPool)) continue;
+    // Contributor-style gate — reject only if MAJORITY of wallets are
+    // disqualified (holder or mm-like). See majorityDisqualified() docs;
+    // tightened from "any contributor disqualified" after the latter
+    // killed 2/3 of clusters and starved emission volume.
+    if (majorityDisqualified(candidate.wallets, walletPool)) continue;
 
     // Classify signal type
     let signalType, meetsThresholds;
