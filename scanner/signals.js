@@ -177,6 +177,19 @@ const SIGNAL_THRESHOLDS = {
   MIN_WALLET_ROI: 0.15,             // Wallet's fill must have ≥15% max upside. 0 = disabled.
   MIN_OPEN_ROI: 0.15,               // Live price at publish must have ≥15% max upside. 0 = disabled.
 
+  // Min time-to-resolution — kills signals on markets resolving too soon
+  // for a follower to act on. The post-deploy analysis (2026-04-27) showed
+  // a "1H Spread: Celtics" signal lose -100% because it resolved within
+  // hours of opening — same problem class as the BTC 15-minute up/down
+  // markets we filtered earlier via category exclusion. This gate is the
+  // structural fix that catches every short-window market generically:
+  // first-half spreads, in-game props, settlement markets, etc.
+  //
+  // Calibration: 4 hours is the minimum window in which a follower can
+  // realistically see a Telegram alert, evaluate it, and place a bet
+  // before the market resolves.
+  MIN_HOURS_TO_RESOLUTION: 4,
+
   // Stale-follower gate. A follower entering a signal at live price gets
   // a worse entry than the sourcing wallet if the market has moved. Cap
   // the acceptable premium — 0.15 means the follower's price cannot be
@@ -265,6 +278,25 @@ function isWhitelistedCategory(title) {
   if (isExcludedMarket(title)) return false;
   const cat = classifyMarket(title);
   return SIGNAL_THRESHOLDS.ALLOWED_CATEGORIES.has(cat);
+}
+
+/**
+ * Returns true if the market resolves too soon for followers to act on.
+ * Requires `marketInfo` to have an `endDate` (ISO string). If endDate is
+ * missing, returns false (don't block — we have no time information).
+ *
+ * "Too soon" is defined by SIGNAL_THRESHOLDS.MIN_HOURS_TO_RESOLUTION.
+ */
+function resolvesTooSoon(marketInfo) {
+  if (!marketInfo || !marketInfo.endDate) return false;
+  const minMs = SIGNAL_THRESHOLDS.MIN_HOURS_TO_RESOLUTION * 3600 * 1000;
+  const endMs = new Date(marketInfo.endDate).getTime();
+  if (!isFinite(endMs)) return false;
+  const msUntilResolve = endMs - Date.now();
+  // msUntilResolve <= 0 means already past end-date but not yet marked
+  // closed — let the marketClosed check handle that. We only block on
+  // markets that are about to resolve soon.
+  return msUntilResolve > 0 && msUntilResolve < minMs;
 }
 
 /**
@@ -635,6 +667,9 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       const mi = tokenId ? marketLookup.get(tokenId) : null;
       if (mi && mi.marketClosed === true) continue;
 
+      // --- Min time-to-resolution: kills BTC 15-min, 1H spreads, etc. ---
+      if (resolvesTooSoon(mi)) continue;
+
       // --- OPEN new signal ---
       const confidence = computeConvergenceConfidence(candidate, signalType);
       const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
@@ -823,6 +858,9 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         const tokenId = data.meta.asset || '';
         const mi = tokenId ? marketLookup.get(tokenId) : null;
         if (mi && mi.marketClosed === true) continue;
+
+        // Min time-to-resolution — kills sub-hour resolution markets.
+        if (resolvesTooSoon(mi)) continue;
 
         // Open solo signal
         const avgPrice = +soloAvgPrice.toFixed(4);
