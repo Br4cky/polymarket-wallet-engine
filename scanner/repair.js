@@ -1,15 +1,22 @@
 /*
- * scanner/repair.js — lightweight post-scan reconciliation.
+ * scanner/repair.js — post-scan reconciliation with multi-source resolver.
  *
- * Runs between full scans to catch signals whose markets resolved during
- * Gamma's eventual-consistency window. For every active signal:
- *   1. Re-fetch its event via Gamma /events (returns closed markets too)
- *   2. If marketClosed + winningOutcome → close the signal with win/loss
- *   3. Regenerate aggregate stats
- *   4. Sync analytics.json.gz so the dashboard reflects the new state
+ * Runs every 30 min via .github/workflows/repair-signals.yml. For every
+ * active signal whose underlying market should have resolved by now,
+ * chases the outcome through four data sources in priority order:
  *
- * Does NOT touch discovery, scoring, paper trading, or trendline — only
- * closes stuck resolved signals and republishes analytics.signals.
+ *   1. Bulk refresh via Gamma /events (legacy — populates cache)
+ *   2. Per-signal fresh Gamma /markets fetch (catches what (1) missed)
+ *   3. Gamma /markets by slug (alternate path)
+ *   4. Wallet REDEEM events via Data API /activity (positive confirmation
+ *      when the wallet has cashed out their winnings)
+ *   5. Cached currentPrice extreme (≤0.02 or ≥0.98 = settled)
+ *
+ * Result: stale signals get resolved with REAL outcomes instead of being
+ * voided when our cache lags Polymarket. See active-signal-audit.mjs and
+ * scripts/force-resolve-stale.mjs for the diagnostic that motivated this.
+ *
+ * Does NOT touch discovery, scoring, paper trading, or trendline.
  */
 
 import path from 'path';
@@ -23,6 +30,124 @@ import { closeSignal } from './signals.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, '..', 'data');
+
+const GAMMA_MARKETS = 'https://gamma-api.polymarket.com/markets';
+const POLYMARKET_DATA_API = 'https://data-api.polymarket.com';
+
+// ── Helpers (inlined for repair.js minimal-deps; mirrors force-resolve-stale.mjs) ──
+
+async function gammaByTokenId(tokenId) {
+  if (!tokenId) return null;
+  try {
+    const r = await fetch(`${GAMMA_MARKETS}?clob_token_ids=${tokenId}&limit=1`);
+    if (!r.ok) return null;
+    const arr = await r.json();
+    return Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+  } catch { return null; }
+}
+
+async function gammaBySlug(slug) {
+  if (!slug) return null;
+  try {
+    const marketSlug = slug.includes('/') ? slug.split('/').pop() : slug;
+    const r = await fetch(`${GAMMA_MARKETS}?slug=${encodeURIComponent(marketSlug)}&limit=1`);
+    if (!r.ok) return null;
+    const arr = await r.json();
+    return Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+  } catch { return null; }
+}
+
+function extractWinner(market) {
+  if (!market) return null;
+  const closed = market.closed === true || market.closed === 'true';
+  if (!closed) return null;
+  let prices = market.outcomePrices;
+  if (typeof prices === 'string') { try { prices = JSON.parse(prices); } catch {} }
+  let outcomes = market.outcomes;
+  if (typeof outcomes === 'string') { try { outcomes = JSON.parse(outcomes); } catch {} }
+  if (Array.isArray(prices) && Array.isArray(outcomes)) {
+    for (let i = 0; i < prices.length; i++) {
+      if (parseFloat(prices[i]) >= 0.95) return outcomes[i];
+    }
+  }
+  if (Array.isArray(market.tokens)) {
+    for (const t of market.tokens) {
+      if (parseFloat(t.price || 0) >= 0.95) return t.outcome || null;
+    }
+  }
+  return null;
+}
+
+async function walletRedeemOutcome(walletAddr, conditionId, ourDirection) {
+  if (!walletAddr || !conditionId) return null;
+  try {
+    const r = await fetch(`${POLYMARKET_DATA_API}/activity?user=${walletAddr.toLowerCase()}&limit=200`);
+    if (!r.ok) return null;
+    const events = await r.json();
+    if (!Array.isArray(events)) return null;
+    for (const e of events) {
+      if ((e.type || '').toUpperCase() !== 'REDEEM') continue;
+      const cid = e.conditionId || e.condition_id || '';
+      if (cid.toLowerCase() !== conditionId.toLowerCase()) continue;
+      const size = parseFloat(e.size || e.shares || 0);
+      const payout = parseFloat(e.usdcSize || e.payout || 0);
+      if (size <= 0) continue;
+      const impliedPrice = payout / size;
+      if (impliedPrice >= 0.95) return ourDirection;  // wallet redeemed at full price → our side won
+      if (impliedPrice < 0.05) return ourDirection === 'Yes' ? 'No' : 'Yes';  // worthless → opposite won
+    }
+    return null;
+  } catch { return null; }
+}
+
+/**
+ * Multi-source chase for a single signal. Returns { winningOutcome, resolvedBy }
+ * when a resolution is found, or null when all sources fail.
+ */
+async function chaseResolution(sig, marketLookup) {
+  const tokenId = sig.tokenId || sig.asset;
+  const cid = sig.conditionId;
+  const cachedMi = (tokenId && marketLookup.get(String(tokenId)))
+    || (cid && marketLookup.get(String(cid))) || null;
+
+  // 1. cached lookup post-bulk-refresh — the existing path
+  if (cachedMi && cachedMi.marketClosed === true && cachedMi.winningOutcome) {
+    return { winningOutcome: cachedMi.winningOutcome, resolvedBy: 'gamma_repair' };
+  }
+
+  // 2. fresh per-signal Gamma fetch by tokenId
+  if (tokenId) {
+    const fresh = await gammaByTokenId(tokenId);
+    const winner = extractWinner(fresh);
+    if (winner) return { winningOutcome: winner, resolvedBy: 'gamma_fresh' };
+  }
+
+  // 3. Gamma by slug
+  if (sig.slug) {
+    const fresh = await gammaBySlug(sig.slug);
+    const winner = extractWinner(fresh);
+    if (winner) return { winningOutcome: winner, resolvedBy: 'gamma_slug' };
+  }
+
+  // 4. wallet REDEEM events (only solo signals — clusters lack a single wallet to query)
+  if (sig.soloWallet && cid) {
+    const winner = await walletRedeemOutcome(sig.soloWallet, cid, sig.direction);
+    if (winner) return { winningOutcome: winner, resolvedBy: 'redeem_inferred' };
+  }
+
+  // 5. cached currentPrice extreme — token settled at 0 or 1
+  if (cachedMi && typeof cachedMi.currentPrice === 'number') {
+    if (cachedMi.currentPrice >= 0.98) {
+      return { winningOutcome: sig.direction, resolvedBy: 'price_extreme' };
+    }
+    if (cachedMi.currentPrice <= 0.02) {
+      const opposite = sig.direction === 'Yes' ? 'No' : 'Yes';
+      return { winningOutcome: opposite, resolvedBy: 'price_extreme' };
+    }
+  }
+
+  return null;
+}
 
 async function main() {
   const signalsFile = path.join(DATA_DIR, 'signals.json.gz');
@@ -45,7 +170,7 @@ async function main() {
   const activeArr = Object.values(active);
   console.log(`Repair starting: ${activeArr.length} active, ${history.length} history`);
 
-  // Refresh markets for active signals via /events endpoint (includes closed).
+  // Bulk Gamma refresh — populates cache for most active markets.
   const refreshList = activeArr.map(s => ({
     tokenId: s.tokenId,
     conditionId: s.conditionId,
@@ -53,53 +178,61 @@ async function main() {
     slug: s.slug,
   }));
   await refreshSignalMarkets(refreshList, marketLookup);
-
-  // Persist refreshed market cache.
   saveGzJSON(marketsFile, Object.fromEntries(marketLookup));
 
-  // Derive a scanIndex for book-keeping. Use analytics.scanCount if present.
   const scanIndex = (analytics.scanCount || signals.stats?.lastScan || 0);
   const now = new Date().toISOString();
 
-  let closedCount = 0;
-  let winsClosed = 0;
-  let lossesClosed = 0;
+  // ── Multi-source resolution chase ─────────────────────────────────
+  let closed = 0, wins = 0, losses = 0;
+  const resolvedBySource = {};
+  const skipReasons = { not_past_enddate: 0, all_sources_failed: 0 };
 
   for (const signalId of Object.keys(active)) {
     const s = active[signalId];
-    const mi = marketLookup.get(s.tokenId);
-    if (!mi) continue;
-    const marketClosed = mi.marketClosed === true;
-    const hasWinner = mi.winningOutcome && mi.winningOutcome.length > 0;
-    if (!(marketClosed && hasWinner)) continue;
 
-    const won = matchesWinningOutcome(s.direction, s.topOutcome, mi.winningOutcome);
+    // Only chase signals whose market has plausibly resolved.
+    // - If endDate is in the future, leave the signal alone (still active).
+    // - If endDate is unknown, fall back to age-based: chase if >24h since
+    //   last update (Polymarket markets typically resolve within hours of endDate).
+    const cachedMi = marketLookup.get(s.tokenId);
+    const endMs = cachedMi && cachedMi.endDate ? new Date(cachedMi.endDate).getTime() : 0;
+    const ageHours = s.openedAt ? (Date.now() - new Date(s.openedAt).getTime()) / 3600000 : 0;
+    const pastEndDate = endMs > 0 && endMs < Date.now();
+    const stale = !endMs && ageHours > 24;
+    if (!pastEndDate && !stale) { skipReasons.not_past_enddate++; continue; }
+
+    const result = await chaseResolution(s, marketLookup);
+    if (!result) { skipReasons.all_sources_failed++; continue; }
+
+    const won = matchesWinningOutcome(s.direction, s.topOutcome, result.winningOutcome);
     const outcome = won ? 'win' : 'loss';
 
-    // Mirror the PnL math processSignals uses for gamma_repair closures.
     const op = s.openMarketPrice || s.avgEntryPrice || 0;
     if (won && op > 0) {
       s.signalReturn = +((1 / op - 1) * 100).toFixed(2);
     } else if (!won) {
       s.signalReturn = -100;
     }
-    s.winningOutcome = mi.winningOutcome;
-    s.resolvedBy = 'gamma_repair';
+    s.winningOutcome = result.winningOutcome;
+    s.resolvedBy = result.resolvedBy;
 
     closeSignal(active, history, signalId, 'resolved', scanIndex, now, outcome);
-    closedCount++;
-    if (won) winsClosed++; else lossesClosed++;
+    closed++;
+    if (won) wins++; else losses++;
+    resolvedBySource[result.resolvedBy] = (resolvedBySource[result.resolvedBy] || 0) + 1;
   }
 
-  // Recompute aggregate stats (mirrors scanner/lib.js:2281-2324).
+  // ── Recompute aggregate stats ─────────────────────────────────────
   const activeSignals = Object.values(active);
-  const wins = history.filter(s => s.outcome === 'win').length;
-  const losses = history.filter(s => s.outcome === 'loss').length;
-  const resolved = wins + losses;
-  const hitRate = resolved > 0 ? +(wins / resolved * 100).toFixed(1) : 0;
+  const totalWins = history.filter(s => s.outcome === 'win').length;
+  const totalLosses = history.filter(s => s.outcome === 'loss').length;
+  const resolved = totalWins + totalLosses;
+  const hitRate = resolved > 0 ? +(totalWins / resolved * 100).toFixed(1) : 0;
   const totalHistoryPnl = history.reduce((sum, sig) => sum + (sig.walletPnl || sig.closedPnl || 0), 0);
   const consensusSignals = activeSignals.filter(s => !s.signalType || s.signalType === 'consensus');
   const clusterSignals = activeSignals.filter(s => s.signalType === 'cluster');
+  const microClusterSignals = activeSignals.filter(s => s.signalType === 'micro-cluster');
   const soloSignals = activeSignals.filter(s => s.signalType === 'solo');
 
   const prevStats = signals.stats || {};
@@ -108,11 +241,12 @@ async function main() {
     activeCount: activeSignals.length,
     consensusCount: consensusSignals.length,
     clusterCount: clusterSignals.length,
+    microClusterCount: microClusterSignals.length,
     soloCount: soloSignals.length,
     historyCount: history.length,
     totalResolved: resolved,
-    wins,
-    losses,
+    wins: totalWins,
+    losses: totalLosses,
     hitRate,
     winRate: hitRate,
     totalPnl: +totalHistoryPnl.toFixed(2),
@@ -127,17 +261,17 @@ async function main() {
     typeBreakdown: {
       consensus: consensusSignals.length,
       cluster: clusterSignals.length,
+      'micro-cluster': microClusterSignals.length,
       solo: soloSignals.length,
     },
-    // Repair-induced close is additive to this-scan tallies — leave those alone.
     lastRepair: now,
-    lastRepairClosed: closedCount,
+    lastRepairClosed: closed,
+    lastRepairBySource: resolvedBySource,
   };
 
   signals.stats = newStats;
   saveGzJSON(signalsFile, signals);
 
-  // Sync analytics.signals so the dashboard sees the new state.
   analytics.signals = {
     active: activeSignals,
     history,
@@ -145,7 +279,14 @@ async function main() {
   };
   saveGzJSON(analyticsFile, analytics);
 
-  console.log(`Repair done: ${closedCount} closed (${winsClosed}W/${lossesClosed}L) | active=${activeSignals.length} history=${history.length} hitRate=${hitRate}%`);
+  // ── Logging ───────────────────────────────────────────────────────
+  console.log(`Repair done: ${closed} closed (${wins}W/${losses}L) | active=${activeSignals.length} history=${history.length} hitRate=${hitRate}%`);
+  if (Object.keys(resolvedBySource).length > 0) {
+    console.log('  By source:', JSON.stringify(resolvedBySource));
+  }
+  if (skipReasons.not_past_enddate || skipReasons.all_sources_failed) {
+    console.log(`  Skipped: ${skipReasons.not_past_enddate} not-past-endDate, ${skipReasons.all_sources_failed} all-sources-failed`);
+  }
 }
 
 main().catch(err => {
