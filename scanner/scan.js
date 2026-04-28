@@ -123,7 +123,14 @@ const CONFIG = {
 
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
-  LOOKBACK_HOURS: 4,                       // Check trades from last 4 hours each loop
+  // Trade lookback — bumped 4 → 48 to match signals.js CONVERGENCE_WINDOW_HOURS.
+  // Pre-fix, Polymarket's API was ignoring our startTs filter and returning the
+  // wallet's last 100 trades (could span weeks). The stale-trade fix on Apr 24
+  // made fetchRecentTrades client-side filter to LOOKBACK_HOURS — but with that
+  // set to 4, the convergence detector's 48h window was effectively starved
+  // because we never gave it more than 4h of data. Result: signals 86k/scan →
+  // 1.1k/scan. Bumping to 48 restores the intended convergence-detection window.
+  LOOKBACK_HOURS: 48,
 
   // Goldsky pagination
   BATCH_SIZE: 1000,
