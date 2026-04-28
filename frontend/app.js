@@ -253,7 +253,7 @@ function renderWalletPool() {
   const wouldEvictCount = lb.filter(w => w.wouldEvict).length;
   const meanPickerCap = lb
     .filter(w => w.stats?.isMeanPickerShape === true)
-    .reduce((s, w) => s + (w.stats?.decidedCapital || 0), 0);
+    .reduce((s, w) => s + (w.stats?.decidedCapital || w.stats?.singleSideCapital || 0), 0);
   const covEl = document.getElementById('wp-scoring-coverage');
   if (covEl) covEl.textContent = `${scoredCount}/${lb.length} (${scoringCoverage.toFixed(0)}%)`;
   const mpEl = document.getElementById('wp-mean-pickers');
@@ -280,6 +280,13 @@ function renderWalletPool() {
       || Math.max(w.stats?.totalPnl || 0, w.stats?.samplePnl || 0),
     decidedROI: w.stats?.decidedROI ?? null,
     decidedCapital: w.stats?.decidedCapital ?? null,
+    // Fallback fields shown when decidedROI/decidedCapital are null. ~30% of
+    // pool wallets lack decided metrics because their positions are on
+    // negRisk markets (Gamma can't resolve) or their cursor scan didn't
+    // capture position data. Scoring already uses these via 0.5× haircut.
+    singleSideROI: w.stats?.singleSideROI ?? null,
+    singleSideCapital: w.stats?.singleSideCapital ?? null,
+    metricSource: w.scoreComponents?.metricSource ?? null,
     isMeanPicker: w.stats?.isMeanPickerShape === true,
     wouldEvict: w.wouldEvict ? w.wouldEvict.reason : null,
     statsSpanDays: w.stats?.statsSpanDays || 0,
@@ -304,14 +311,29 @@ function renderWalletPool() {
       return `${badge}${flag}`;
     }},
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
-    { field: 'decidedROI', label: 'Decided ROI', render: v => {
-      if (v == null) return '<span style="opacity:0.35">—</span>';
+    { field: 'decidedROI', label: 'Decided ROI', render: (v, row) => {
+      if (v == null) {
+        // Fallback to singleSideROI if available — shown with asterisk +
+        // dimmed opacity to indicate it's an estimate, not position-ledger
+        // ground truth. Scoring already applies a 0.5× haircut on this.
+        if (row && row.singleSideROI != null) {
+          const cls = roiClass(row.singleSideROI);
+          const pct = (row.singleSideROI * 100).toFixed(1) + '%';
+          return `<span class="badge ${cls}" style="opacity:0.7" title="Decided metrics not available (likely negRisk market or position-ledger gap). Showing singleSideROI as fallback — scoring uses this with a 0.5× haircut. Raw value: ${pct}">${pct}*</span>`;
+        }
+        return '<span style="opacity:0.35">—</span>';
+      }
       const cls = roiClass(v);
       const pct = (v * 100).toFixed(1) + '%';
       return `<span class="badge ${cls}" title="Ground-truth ROI on resolved capital: (realizedPnl + decidedPnl) / (totalCost − openCapitalAtRisk)">${pct}</span>`;
     }},
-    { field: 'decidedCapital', label: 'Decided cap', render: v => {
-      if (v == null) return '<span style="opacity:0.35">—</span>';
+    { field: 'decidedCapital', label: 'Decided cap', render: (v, row) => {
+      if (v == null) {
+        if (row && row.singleSideCapital != null) {
+          return `<span style="opacity:0.7" title="Decided capital not available — showing singleSideCapital as fallback">${fmtDollars(row.singleSideCapital)}*</span>`;
+        }
+        return '<span style="opacity:0.35">—</span>';
+      }
       return `<span title="Capital-at-risk on resolved positions (totalCost excluding open bets)">${fmtDollars(v)}</span>`;
     }},
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
