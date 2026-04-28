@@ -582,6 +582,12 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 
   let opened = 0, updated = 0, closed = 0;
   const seenMarkets = new Set();
+  // Per-gate kill counts — diagnoses why so few signals emit when many candidates exist.
+  const kills = {
+    category: 0, majority_disqualified: 0, type_floor: 0,
+    ev_filter: 0, market_closed: 0, no_price: 0,
+    resolves_too_soon: 0, stale_follower: 0, open_roi_too_low: 0,
+  };
 
   // --- Phase 1: Process convergence candidates → open or update signals ---
   for (const candidate of candidates) {
@@ -595,13 +601,13 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 
     // Category gate — whitelist-driven; also runs keyword exclusions.
     // See ALLOWED_CATEGORIES for the data-backed list.
-    if (!isWhitelistedCategory(candidate.title)) continue;
+    if (!isWhitelistedCategory(candidate.title)) { kills.category++; continue; }
 
     // Contributor-style gate — reject only if MAJORITY of wallets are
     // disqualified (holder or mm-like). See majorityDisqualified() docs;
     // tightened from "any contributor disqualified" after the latter
     // killed 2/3 of clusters and starved emission volume.
-    if (majorityDisqualified(candidate.wallets, walletPool)) continue;
+    if (majorityDisqualified(candidate.wallets, walletPool)) { kills.majority_disqualified++; continue; }
 
     // Classify signal type
     let signalType, meetsThresholds;
@@ -634,13 +640,14 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       meetsThresholds = avgScore >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_AVG_SCORE
         && totalSize >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_TOTAL_SIZE;
     } else {
+      kills.type_floor++;
       continue; // Doesn't fit any admission path
     }
 
     // EV filter — wallet fill price floor (rare) and implied-ROI ceiling.
-    if (SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE > 0 && candidate.avgEntryPrice < SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE) continue;
+    if (SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE > 0 && candidate.avgEntryPrice < SIGNAL_THRESHOLDS.MIN_ENTRY_PRICE) { kills.ev_filter++; continue; }
     if (SIGNAL_THRESHOLDS.MIN_WALLET_ROI > 0 &&
-        impliedMaxROI(candidate.avgEntryPrice) < SIGNAL_THRESHOLDS.MIN_WALLET_ROI) continue;
+        impliedMaxROI(candidate.avgEntryPrice) < SIGNAL_THRESHOLDS.MIN_WALLET_ROI) { kills.ev_filter++; continue; }
 
     if (active[signalId]) {
       // --- UPDATE existing signal ---
@@ -682,10 +689,10 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       // --- Check market isn't already resolved ---
       const tokenId = candidate.asset || '';
       const mi = tokenId ? marketLookup.get(tokenId) : null;
-      if (mi && mi.marketClosed === true) continue;
+      if (mi && mi.marketClosed === true) { kills.market_closed++; continue; }
 
       // --- Min time-to-resolution: kills BTC 15-min, 1H spreads, etc. ---
-      if (resolvesTooSoon(mi)) continue;
+      if (resolvesTooSoon(mi)) { kills.resolves_too_soon++; continue; }
 
       // --- OPEN new signal ---
       const confidence = computeConvergenceConfidence(candidate, signalType);
@@ -693,13 +700,13 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
 
       // Require a valid live price — without it we can't track return,
       // can't run the MIN_OPEN_ROI filter, and the dashboard shows "-".
-      if (!(currentPrice > 0)) continue;
+      if (!(currentPrice > 0)) { kills.no_price++; continue; }
 
       // EV filter on live market price — what a follower would actually pay.
       // Rejects signals where implied max ROI on the signal side is below
       // MIN_OPEN_ROI (e.g. YES at 0.90 = 11.1% ROI, cut at 15% floor).
       if (SIGNAL_THRESHOLDS.MIN_OPEN_ROI > 0 &&
-          impliedMaxROI(currentPrice) < SIGNAL_THRESHOLDS.MIN_OPEN_ROI) continue;
+          impliedMaxROI(currentPrice) < SIGNAL_THRESHOLDS.MIN_OPEN_ROI) { kills.open_roi_too_low++; continue; }
 
       // Stale-follower gate — reject if the live price has already run past
       // the wallet's entry by more than STALE_FOLLOWER_MAX_PREMIUM. If the
@@ -709,6 +716,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       if (SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM > 0
           && candidate.avgEntryPrice > 0
           && currentPrice > candidate.avgEntryPrice * (1 + SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM)) {
+        kills.stale_follower++;
         continue;
       }
 
@@ -1108,7 +1116,20 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     opened,
     updated,
     closed,
+    lastScanKills: kills,
   };
+
+  // Log per-gate kill counts so we can diagnose why so few signals emit.
+  // Noise-suppress: only log if we processed at least 50 candidates.
+  const totalKilled = Object.values(kills).reduce((a, b) => a + b, 0);
+  if (totalKilled >= 50) {
+    const killStr = Object.entries(kills)
+      .filter(([k, v]) => v > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ');
+    console.log(`  Kill breakdown (${totalKilled} candidates rejected): ${killStr}`);
+  }
 
   return { active, history, stats };
 }
