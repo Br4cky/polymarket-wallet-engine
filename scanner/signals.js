@@ -587,6 +587,14 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
     category: 0, majority_disqualified: 0, type_floor: 0,
     ev_filter: 0, market_closed: 0, no_price: 0,
     resolves_too_soon: 0, stale_follower: 0, open_roi_too_low: 0,
+    // Per-type meetsThresholds failures — candidates that fit a path but
+    // failed avgScore / totalSize / per-wallet floors for that type.
+    cluster_below_thresholds: 0,
+    consensus_below_thresholds: 0,
+    micro_cluster_below_thresholds: 0,
+    // Already-active updates (these don't get rejected — just tracked here
+    // so the budget reconciles)
+    already_active: 0,
   };
 
   // --- Phase 1: Process convergence candidates → open or update signals ---
@@ -639,6 +647,23 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       signalType = 'micro-cluster';
       meetsThresholds = avgScore >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_AVG_SCORE
         && totalSize >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_TOTAL_SIZE;
+    } else if (walletCount >= 2 && walletCount <= 3
+               && (candidate.avgEntryPrice || 0) >= 0.50
+               && (candidate.avgEntryPrice || 1) < 0.70
+               && classifyMarket(candidate.title) !== 'news-event') {
+      // Mid-favorite micro-cluster (added 2026-04-28): 2-3 wallet convergence
+      // on 50-70¢ moderate-favorite markets, EXCLUDING news-event category.
+      //
+      // Backtest (scripts/analyze-killed-buckets.mjs + test-hybrid-vs-options.mjs):
+      // 30 historical signals would have emitted in this cell at 67% WR /
+      // +56.1% avg return / +$1,684 total. Best win across all flexibility
+      // experiments tested. The 4-5 wallet × 50-70¢ cell was -8% so we keep
+      // that rejected; only 2-3 wallets at this price band are profitable.
+      // News-event excluded specifically because that category in this cell
+      // dragged at -18% avg.
+      signalType = 'mid-favorite';
+      meetsThresholds = avgScore >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_AVG_SCORE
+        && totalSize >= SIGNAL_THRESHOLDS.MICRO_CLUSTER_MIN_TOTAL_SIZE;
     } else {
       kills.type_floor++;
       continue; // Doesn't fit any admission path
@@ -650,6 +675,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         impliedMaxROI(candidate.avgEntryPrice) < SIGNAL_THRESHOLDS.MIN_WALLET_ROI) { kills.ev_filter++; continue; }
 
     if (active[signalId]) {
+      kills.already_active++;
       // --- UPDATE existing signal ---
       const signal = active[signalId];
       signal.lastUpdatedAt = now;
@@ -780,6 +806,14 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       };
 
       opened++;
+    } else {
+      // Fits a signal-type path but failed meetsThresholds (avgScore /
+      // totalSize / per-wallet floors). These were the silent-pass-through
+      // ~109 candidates per scan we couldn't account for previously.
+      if (signalType === 'consensus') kills.consensus_below_thresholds++;
+      else if (signalType === 'cluster') kills.cluster_below_thresholds++;
+      else if (signalType === 'micro-cluster') kills.micro_cluster_below_thresholds++;
+      else if (signalType === 'mid-favorite') kills.micro_cluster_below_thresholds++;
     }
   }
 
