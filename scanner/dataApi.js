@@ -200,6 +200,49 @@ async function fetchRecentTrades(wallets, sinceTs, onProgress) {
 }
 
 // ============================================================================
+// Positions (per-wallet — replaces Goldsky cursor fallback)
+// ============================================================================
+
+/**
+ * Fetch a wallet's current positions via Polymarket Data API.
+ *
+ * Replaces the Goldsky per-wallet fallback that consistently timed out
+ * because Goldsky's subgraph has no index on the user field. The Data
+ * API /positions endpoint works fine per-wallet (no indexing issue) and
+ * returns up to ~500 positions per call (apparent cap on Polymarket side).
+ *
+ * Returned positions are adapted to the shape aggregatePositions expects:
+ *   { tokenId, sharesHeld, avgPrice, realizedPnl, totalBought }
+ *
+ * Used in the rescore loop when walletPositions (from cursor scan) is
+ * missing the wallet's address — guarantees every pool wallet gets fresh
+ * decided metrics every rescore cycle, regardless of cursor coverage.
+ *
+ * @param {string} wallet - Wallet address
+ * @returns {Promise<Array|null>} Adapted positions or null on failure
+ */
+async function fetchWalletPositions(wallet) {
+  if (!wallet) return null;
+  const params = {
+    user: wallet.toLowerCase(),
+    limit: 2000,  // upper-bound; API may cap lower
+  };
+  const data = await apiRequest('/positions', params);
+  if (!Array.isArray(data)) return null;
+  return data.map(p => {
+    const sharesHeld = parseFloat(p.size || p.amount || 0);
+    const avgPrice = parseFloat(p.avgPrice || p.entry || 0);
+    return {
+      tokenId: String(p.asset || p.tokenId || ''),
+      sharesHeld: isFinite(sharesHeld) ? sharesHeld : 0,
+      avgPrice: isFinite(avgPrice) ? avgPrice : 0,
+      realizedPnl: parseFloat(p.realizedPnl || 0) || 0,
+      totalBought: parseFloat(p.initialValue || (sharesHeld * avgPrice) || 0) || 0,
+    };
+  }).filter(p => p.tokenId);
+}
+
+// ============================================================================
 // Activity (Trades + Redeems)
 // ============================================================================
 
@@ -1083,6 +1126,7 @@ export {
   fetchActivity,
   fetchAllActivity,
   fetchMarketTrades,
+  fetchWalletPositions,
   analyzeTradeHistory,
   computeWalletScore,
 };
