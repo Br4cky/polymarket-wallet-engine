@@ -973,7 +973,14 @@ function computeWalletScore(stats) {
   if (roiInput == null || capInput == null) {
     if (stats.singleSideROI != null && stats.singleSideCapital != null
         && stats.singleSideCapital > 0) {
-      roiInput = stats.singleSideROI;
+      // Haircut on fallback: singleSideROI is systematically ~3x higher than
+      // decidedROI for the same wallet because it only counts directional
+      // capital (smaller denominator) while decidedROI includes hedging too.
+      // Without the haircut, fallback wallets scored ~7pts higher on median
+      // than decided wallets — see scripts/diagnose-decided-fallback.mjs
+      // (2026-04-27 audit). 0.5× is empirically calibrated to bring the
+      // fallback distribution close to the decided distribution.
+      roiInput = stats.singleSideROI * 0.5;
       capInput = stats.singleSideCapital;
       metricSource = 'singleside';
     } else {
