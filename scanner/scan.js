@@ -1427,6 +1427,25 @@ async function fastLoop(state, walletPool, marketLookup) {
     }
   }
 
+  // Force-refresh market data for top candidates BEFORE processSignals runs.
+  // resolveMarkets() upstream skips tokens already in the lookup cache, so
+  // candidate markets retained stale prices/closed-status. That meant the
+  // stale-follower gate in processSignals never fired even when actual
+  // Polymarket prices had moved 30¢+ since the wallet's buy.
+  // refreshSignalMarkets() force-refreshes via the /events endpoint.
+  // Capped at 50 candidates to bound API cost — those are the highest-
+  // walletCount ones most likely to actually emit.
+  const REFRESH_TOP_N = 50;
+  const refreshCandidates = candidates.slice(0, REFRESH_TOP_N).map(c => ({
+    tokenId: c.asset,
+    conditionId: c.conditionId,
+    eventSlug: c.eventSlug,
+    slug: c.slug,
+  }));
+  if (refreshCandidates.length > 0) {
+    await refreshSignalMarkets(refreshCandidates, marketLookup);
+  }
+
   // Step 4: Generate/update signals
   const updatedSignals = processSignals(
     candidates, existingSignals, recentTrades, walletPoolMap, marketLookup, scanIndex

@@ -300,10 +300,13 @@ function resolvesTooSoon(marketInfo) {
   const endMs = new Date(marketInfo.endDate).getTime();
   if (!isFinite(endMs)) return false;
   const msUntilResolve = endMs - Date.now();
-  // msUntilResolve <= 0 means already past end-date but not yet marked
-  // closed — let the marketClosed check handle that. We only block on
-  // markets that are about to resolve soon.
-  return msUntilResolve > 0 && msUntilResolve < minMs;
+  // Block BOTH: markets already past endDate (likely resolved but our
+  // marketClosed cache is stale — Gamma indexer lag) AND markets about
+  // to resolve too soon for followers to act. Previous version had
+  // `msUntilResolve > 0` which silently let past-endDate markets emit
+  // signals when our cache hadn't caught up. Diagnosed 2026-04-28
+  // when a BTC up/down market that had ALREADY RESOLVED still emitted.
+  return msUntilResolve < minMs;
 }
 
 /**
