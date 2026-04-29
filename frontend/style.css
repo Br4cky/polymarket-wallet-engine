@@ -463,6 +463,26 @@ button {
   font-weight: 600;
 }
 
+.badge-micro-cluster {
+  /* Cluster-adjacent (2-5 wallets at 70-85¢ favorite band) — teal */
+  background: rgba(26, 188, 156, 0.15);
+  color: #1abc9c;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge-mid-favorite {
+  /* 2-3 wallets at 50-70¢ moderate-favorite band — gold */
+  background: rgba(241, 196, 15, 0.15);
+  color: #f1c40f;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .tier-badge {
   padding: 2px 8px;
   border-radius: 4px;

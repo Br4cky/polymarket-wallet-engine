@@ -382,7 +382,11 @@ function renderScoreDistribution(lb) {
   chartInstances['score-dist'] = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: ['0-20', '20-40', '40-60', '60-80', '80-100'],
+      // Labels match bucketEdges = [5, 10, 20, 30]:
+      //   <5 | 5-10 | 10-20 | 20-30 | 30+
+      // Practical max score is ~50 (top decile ~25+); the old 0-100 labels
+      // were a leftover from when scoring was on the legacy 0-100 scale.
+      labels: ['0-5', '5-10', '10-20', '20-30', '30+'],
       datasets: [{
         label: 'Wallets',
         data: buckets,
@@ -581,8 +585,14 @@ function renderSignals() {
   createSortableTable('active-signals-table', [
     { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
     { field: 'signalType', render: v => {
-      const cls = v === 'solo' ? 'badge-solo' : v === 'cluster' ? 'badge-cluster' : 'badge-consensus';
-      return `<span class="badge ${cls}">${v.toUpperCase()}</span>`;
+      // Map each emit-path to its badge color class. Defaults to consensus
+      // for any future type so we always render *something* sensible.
+      const cls = v === 'solo' ? 'badge-solo'
+        : v === 'cluster' ? 'badge-cluster'
+        : v === 'micro-cluster' ? 'badge-micro-cluster'
+        : v === 'mid-favorite' ? 'badge-mid-favorite'
+        : 'badge-consensus';
+      return `<span class="badge ${cls}">${(v || 'consensus').toUpperCase()}</span>`;
     }},
     { field: 'tier', render: v => `<span class="tier-badge tier-${v}">${v.toUpperCase()}</span>` },
     { field: 'direction', render: v => `<span class="badge badge-high">${v}</span>` },
