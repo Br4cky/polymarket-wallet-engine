@@ -122,6 +122,20 @@ const CONFIG = {
   LOW_ROI_MIN_CAPITAL: 3000,           // only if they've deployed meaningful $
   LOW_ROI_MIN_RESOLVED: 20,            // only if sample is trustworthy
 
+  // Bot-pattern discovery gate — reject candidates whose recent activity
+  // looks like a market-making bot we can't act on:
+  //   - >70% of recent buys on crypto-updown markets (5-15min resolution),
+  //     OR
+  //   - median buy size < $50 (algorithmic micro-bets we can't follow)
+  // Without this gate, scripts/evict-bot-pollution sweeps recur weekly
+  // because new bot wallets keep getting admitted via discovery.
+  // Diagnosed via initial pool audit (2026-04-28): 124 of 988 active
+  // wallets (12.6%) matched bot-pattern criteria with zero signal
+  // contributions — pool slots wasted.
+  BOT_PATTERN_CRYPTO_UPDOWN_PCT: 0.70,
+  BOT_PATTERN_MIN_BUY_SIZE: 50,
+  BOT_PATTERN_GATE: true,  // set false to disable (admit bots)
+
   // Fast loop
   FAST_LOOP_INTERVAL_MS: 60 * 60 * 1000, // 60 minutes
   // Trade lookback — bumped 4 → 48 to match signals.js CONVERGENCE_WINDOW_HOURS.
@@ -140,6 +154,58 @@ const CONFIG = {
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// ============================================================================
+// Bot-pattern detection — discovery + rescore gate
+// ============================================================================
+
+/**
+ * Detect bot-pattern wallets from their trade events. Returns
+ *   { isBot: bool, reason: string, cryptoUpdownPct: number, medianBuySize: number }
+ *
+ * "Bot" criteria:
+ *   1. >70% of recent BUYs on crypto-updown markets (5-15min resolution),
+ *      OR
+ *   2. Median buy size < $50 across recent BUYs
+ *
+ * Either alone triggers the bot flag — both indicate algorithmic
+ * activity we structurally can't act on. Used at discovery (admit-time)
+ * and rescore (eviction strike) gates.
+ */
+function detectBotPattern(events) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return { isBot: false, reason: 'no_events' };
+  }
+  const buys = events.filter(e =>
+    e.type === 'TRADE' &&
+    (e.side || '').toUpperCase() === 'BUY' &&
+    e.title
+  );
+  if (buys.length < 20) {
+    return { isBot: false, reason: 'insufficient_sample' };
+  }
+
+  // Crypto-updown: titles matching "Bitcoin/ETH/SOL Up or Down" pattern
+  const isCryptoUpdown = (title) => {
+    const t = (title || '').toLowerCase();
+    if (!/bitcoin|btc|ethereum|eth|solana|sol\b|doge|xrp|crypto|coin/.test(t)) return false;
+    return /reach|above|below|hit|close|\$|\sup\b|\sdown\b|end above|end below|up or down/.test(t);
+  };
+
+  const cryptoUpdownCount = buys.filter(b => isCryptoUpdown(b.title)).length;
+  const cryptoUpdownPct = cryptoUpdownCount / buys.length;
+
+  const sizes = buys.map(b => parseFloat(b.size || 0) * parseFloat(b.price || 0)).filter(s => s > 0).sort((a, b) => a - b);
+  const medianBuySize = sizes.length > 0 ? sizes[Math.floor(sizes.length / 2)] : 0;
+
+  if (cryptoUpdownPct > CONFIG.BOT_PATTERN_CRYPTO_UPDOWN_PCT) {
+    return { isBot: true, reason: 'crypto_updown_dominant', cryptoUpdownPct, medianBuySize };
+  }
+  if (medianBuySize < CONFIG.BOT_PATTERN_MIN_BUY_SIZE) {
+    return { isBot: true, reason: 'median_buy_too_small', cryptoUpdownPct, medianBuySize };
+  }
+  return { isBot: false, cryptoUpdownPct, medianBuySize };
 }
 
 // ============================================================================
@@ -914,6 +980,17 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         processed++;
         continue;
       }
+      // Bot-pattern gate — reject if recent activity skews to crypto-updown
+      // or sub-$50 micro-bets. Saves pool slot from algorithmic wallets that
+      // structurally can't produce copyable signals (kill at MIN_HOURS_TO_RESOLUTION
+      // or SOLO_MIN_BUY_SIZE downstream). See detectBotPattern() comments.
+      if (CONFIG.BOT_PATTERN_GATE) {
+        const bot = detectBotPattern(events);
+        if (bot.isBot) {
+          processed++;
+          continue;
+        }
+      }
 
       const scored = computeWalletScore(stats);
 
@@ -1094,6 +1171,18 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         wallet.removeReason = 'entry_price_too_high';
         decayed++;
         continue;
+      }
+      // Bot-pattern eviction — wallet drifted into bot behavior since last
+      // rescore. Same logic as discovery gate. See detectBotPattern().
+      if (CONFIG.BOT_PATTERN_GATE) {
+        const bot = detectBotPattern(events);
+        if (bot.isBot) {
+          wallet.status = 'removed';
+          wallet.removeReason = 'bot_pattern_rescore';
+          wallet.removeDetail = `${bot.reason}: cryptoUpdownPct=${(bot.cryptoUpdownPct * 100).toFixed(0)}% medianBuy=$${bot.medianBuySize.toFixed(0)}`;
+          decayed++;
+          continue;
+        }
       }
       // Attach goldskyPnl + effectivePnl so scoring uses the better of the two.
       // Stage 0: economicPnl (analyzer-based trade + rewards + rebates +
