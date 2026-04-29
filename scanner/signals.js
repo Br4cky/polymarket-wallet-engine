@@ -205,6 +205,22 @@ const SIGNAL_THRESHOLDS = {
   // signal rejected because the follower has already lost 50%+ of the move.
   // 0 = disabled.
   STALE_FOLLOWER_MAX_PREMIUM: 0.15,
+
+  // Drawdown stale-follower gate — reject signals where the live price
+  // has DROPPED significantly below the wallets' avg entry. The market
+  // moving 15%+ against the wallets means smart money is currently
+  // losing on paper — the market is signalling they were wrong. Following
+  // them in is chasing a -EV bet.
+  //
+  // Smoking gun: 24-wallet Lakers vs Rockets consensus on 2026-04-28.
+  // Wallets bought at 50¢, market dropped to 38¢ (24% drawdown), Lakers
+  // lost. -100% signal return. The price drop predicted the loss.
+  //
+  // Math: reject if currentPrice < avgEntryPrice × (1 - this).
+  //   0.15 → reject if 15%+ below entry
+  //   0.20 → looser; allow some noise
+  //   0.10 → tighter; reject any meaningful move against
+  STALE_FOLLOWER_MAX_DRAWDOWN: 0.15,
 };
 
 // Implied-ROI helper: for a binary outcome token priced at p ∈ (0,1),
@@ -589,7 +605,7 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
   const kills = {
     category: 0, majority_disqualified: 0, type_floor: 0,
     ev_filter: 0, market_closed: 0, no_price: 0,
-    resolves_too_soon: 0, stale_follower: 0, open_roi_too_low: 0,
+    resolves_too_soon: 0, stale_follower: 0, stale_follower_drawdown: 0, open_roi_too_low: 0,
     // Per-type meetsThresholds failures — candidates that fit a path but
     // failed avgScore / totalSize / per-wallet floors for that type.
     cluster_below_thresholds: 0,
@@ -746,6 +762,15 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
           && candidate.avgEntryPrice > 0
           && currentPrice > candidate.avgEntryPrice * (1 + SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM)) {
         kills.stale_follower++;
+        continue;
+      }
+
+      // Drawdown gate — wallets are underwater, market moved against them.
+      // 24-wallet Lakers vs Rockets case: bought 50¢, current 38¢ → -24%.
+      if (SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_DRAWDOWN > 0
+          && candidate.avgEntryPrice > 0
+          && currentPrice < candidate.avgEntryPrice * (1 - SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_DRAWDOWN)) {
+        kills.stale_follower_drawdown++;
         continue;
       }
 
@@ -941,6 +966,12 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
         if (SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM > 0
             && avgPrice > 0
             && currentPrice > avgPrice * (1 + SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_PREMIUM)) {
+          continue;
+        }
+        // Drawdown gate — wallet is underwater, market moved against them.
+        if (SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_DRAWDOWN > 0
+            && avgPrice > 0
+            && currentPrice < avgPrice * (1 - SIGNAL_THRESHOLDS.STALE_FOLLOWER_MAX_DRAWDOWN)) {
           continue;
         }
 
