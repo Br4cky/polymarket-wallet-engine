@@ -95,7 +95,19 @@ const SIGNAL_THRESHOLDS = {
   SOLO_MIN_SCORE: 25,
   SOLO_MIN_WIN_RATE: 0.55,          // WR secondary to decided edge; 55% = real edge
   SOLO_MIN_RESOLVED: 50,
-  SOLO_MIN_BUY_SIZE: 500,           // $500+ buy in a single market
+  // Min buy size for solo signal — lowered 500 → 100 after backtest
+  // (scripts/test-solo-buy-threshold.mjs over 2603 solo-eligible buys)
+  // showed lower-band buys had HIGHER wallet quality than ≥$500:
+  //   <$50 band:    90% WR / 60% ROI (1930 buys, mostly crypto-updown)
+  //   $50-100:      92% WR / 65% ROI (395 buys)
+  //   $100-250:     90% WR / 63% ROI (159 buys)
+  //   $250-500:     91% WR / 57% ROI (36 buys)
+  //   ≥$500:        87% WR / 50% ROI (83 buys — current floor)
+  // The $500 was arbitrary. $100 unlocks ~278 signals/14d (~20/day) at
+  // higher quality. crypto-updown small bets get killed by
+  // MIN_HOURS_TO_RESOLUTION anyway, so the unlock is concentrated in
+  // news-event / NBA / soccer / MMA non-crypto signals where it matters.
+  SOLO_MIN_BUY_SIZE: 100,
   SOLO_MAX_PER_WALLET: 3,
 
   // Excluded market keywords — categories with confirmed negative EV from

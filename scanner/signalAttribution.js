@@ -87,7 +87,12 @@ export function buildAttributionMap(signalsHistory) {
  * At avgReturn = -0.62 (the worst wallet): 1 - 1.24 = -0.24 → clamped to 0.2.
  */
 export function attributionMultiplier(attribution, opts = {}) {
-  const minSignals = opts.minSignals ?? 10;
+  // Min signals lowered from 10 to 5 (2026-04-28 audit). With 10-floor,
+  // wallets like 0x6407a638ff (6 sigs at -66% avg return) escaped any
+  // penalty because sample was below threshold. 5-floor still gives
+  // statistical credibility while letting clearly-bad signal contributors
+  // get penalized faster.
+  const minSignals = opts.minSignals ?? 5;
   if (!attribution || attribution.signals < minSignals) return 1.0;
   const raw = 1 + attribution.avgReturn * 2;
   return Math.max(0.2, Math.min(1.5, raw));
