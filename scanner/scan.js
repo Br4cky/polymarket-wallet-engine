@@ -1510,8 +1510,24 @@ async function fastLoop(state, walletPool, marketLookup) {
     .filter(s => s.conditionId)
     .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId, eventSlug: s.eventSlug, slug: s.slug }));
 
+  // Terminal closeReasons: signal already finalized as unresolvable. Don't
+  // re-fetch every loop — the four-source resolver chase already failed and
+  // the market state won't change. Saves up to 30 Gamma /events queries/loop.
+  const TERMINAL_CLOSE_REASONS = new Set([
+    'voided_no_outcome',         // resolver chase failed; market voided
+    'unresolved_void',           // never got a resolution; treated as void
+    'past_enddate_no_close',     // endDate passed but no payout fixed
+    'market_delisted',           // pulled from Polymarket
+    'force_resolve_recovered',   // recovered via fallback; already terminal
+    'missing_open_price',        // can't compute return without open price
+  ]);
+
   const historyNeedingRepair = (Array.isArray(existingSignals.history) ? existingSignals.history : Object.values(existingSignals.history || {}))
-    .filter(s => s.conditionId && s.outcome !== 'win' && s.outcome !== 'loss')
+    .filter(s => s.conditionId
+      && s.outcome !== 'win'
+      && s.outcome !== 'loss'
+      && s.outcome !== 'void'                                // already terminal
+      && !TERMINAL_CLOSE_REASONS.has(s.closeReason))         // already-failed chase
     .map(s => ({ tokenId: s.tokenId, conditionId: s.conditionId, eventSlug: s.eventSlug, slug: s.slug }));
 
   const allSignalsToRefresh = [...activeSignalsList, ...historyNeedingRepair];
