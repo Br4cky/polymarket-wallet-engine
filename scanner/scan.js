@@ -134,6 +134,14 @@ const CONFIG = {
   // contributions — pool slots wasted.
   BOT_PATTERN_CRYPTO_UPDOWN_PCT: 0.70,
   BOT_PATTERN_MIN_BUY_SIZE: 50,
+  // Algorithmic high-frequency floor — sustained trades per active week.
+  // Verified separation: human directional traders top out at ~410/active-
+  // week (top wallet 0x602785, score 49.9). Confirmed bots in current pool
+  // sit at 1,498 / 1,499 / 2,971 / 2,987 — a clean 3× gap. 700 lands in
+  // the gap and won't false-positive any legitimate score-30+ trader.
+  // Catches single-category algos (NBA bots, tennis arbs) the crypto-
+  // updown and small-buy-size rules above can't see.
+  BOT_PATTERN_MAX_TRADES_PER_ACTIVE_WEEK: 700,
   BOT_PATTERN_GATE: true,  // set false to disable (admit bots)
 
   // Fast loop
@@ -162,16 +170,18 @@ if (!fs.existsSync(DATA_DIR)) {
 
 /**
  * Detect bot-pattern wallets from their trade events. Returns
- *   { isBot: bool, reason: string, cryptoUpdownPct: number, medianBuySize: number }
+ *   { isBot: bool, reason: string, cryptoUpdownPct: number, medianBuySize: number,
+ *     tradesPerActiveWeek?: number }
  *
- * "Bot" criteria:
- *   1. >70% of recent BUYs on crypto-updown markets (5-15min resolution),
- *      OR
+ * "Bot" criteria — ANY one triggers eviction:
+ *   1. >70% of recent BUYs on crypto-updown markets (5-15min resolution)
  *   2. Median buy size < $50 across recent BUYs
+ *   3. Sustained trade frequency > 700 / active week
+ *      (catches algos the cat/size rules miss — single-category NBA
+ *      bots, tennis arbs, etc. Verified gap: human top traders ≤500;
+ *      confirmed bots in pool ≥1500.)
  *
- * Either alone triggers the bot flag — both indicate algorithmic
- * activity we structurally can't act on. Used at discovery (admit-time)
- * and rescore (eviction strike) gates.
+ * Used at discovery (admit-time) and rescore (eviction strike) gates.
  */
 function detectBotPattern(events) {
   if (!Array.isArray(events) || events.length === 0) {
@@ -199,13 +209,27 @@ function detectBotPattern(events) {
   const sizes = buys.map(b => parseFloat(b.size || 0) * parseFloat(b.price || 0)).filter(s => s > 0).sort((a, b) => a - b);
   const medianBuySize = sizes.length > 0 ? sizes[Math.floor(sizes.length / 2)] : 0;
 
+  // Algorithmic-frequency check — uses ALL trades (BUY+SELL), normalised by
+  // distinct-week count rather than raw span, so a single tournament-day
+  // burst doesn't false-positive (gets divided by 1 week → ~burst-size,
+  // typically ≤500). Sustained activity across many weeks stays high.
+  const allTrades = events.filter(e => e.type === 'TRADE' && typeof e.timestamp === 'number');
+  let tradesPerActiveWeek = 0;
+  if (allTrades.length >= 50) {
+    const weeks = new Set(allTrades.map(t => Math.floor(t.timestamp / (86400 * 7))));
+    if (weeks.size > 0) tradesPerActiveWeek = allTrades.length / weeks.size;
+  }
+
   if (cryptoUpdownPct > CONFIG.BOT_PATTERN_CRYPTO_UPDOWN_PCT) {
-    return { isBot: true, reason: 'crypto_updown_dominant', cryptoUpdownPct, medianBuySize };
+    return { isBot: true, reason: 'crypto_updown_dominant', cryptoUpdownPct, medianBuySize, tradesPerActiveWeek };
   }
   if (medianBuySize < CONFIG.BOT_PATTERN_MIN_BUY_SIZE) {
-    return { isBot: true, reason: 'median_buy_too_small', cryptoUpdownPct, medianBuySize };
+    return { isBot: true, reason: 'median_buy_too_small', cryptoUpdownPct, medianBuySize, tradesPerActiveWeek };
   }
-  return { isBot: false, cryptoUpdownPct, medianBuySize };
+  if (tradesPerActiveWeek > CONFIG.BOT_PATTERN_MAX_TRADES_PER_ACTIVE_WEEK) {
+    return { isBot: true, reason: 'algorithmic_high_frequency', cryptoUpdownPct, medianBuySize, tradesPerActiveWeek };
+  }
+  return { isBot: false, cryptoUpdownPct, medianBuySize, tradesPerActiveWeek };
 }
 
 // ============================================================================
@@ -1179,7 +1203,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         if (bot.isBot) {
           wallet.status = 'removed';
           wallet.removeReason = 'bot_pattern_rescore';
-          wallet.removeDetail = `${bot.reason}: cryptoUpdownPct=${(bot.cryptoUpdownPct * 100).toFixed(0)}% medianBuy=$${bot.medianBuySize.toFixed(0)}`;
+          wallet.removeDetail = `${bot.reason}: cryptoUpdownPct=${(bot.cryptoUpdownPct * 100).toFixed(0)}% medianBuy=$${bot.medianBuySize.toFixed(0)} tradesPerActiveWeek=${Math.round(bot.tradesPerActiveWeek || 0)}`;
           decayed++;
           continue;
         }
