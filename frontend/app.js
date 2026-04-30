@@ -311,30 +311,42 @@ function renderWalletPool() {
       return `${badge}${flag}`;
     }},
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
-    { field: 'decidedROI', label: 'Decided ROI', render: (v, row) => {
+    { field: 'singleSideROI', label: 'ROI', render: (v, row) => {
+      // 2026-04-30 audit revealed that the Polymarket /positions API is
+      // biased toward worthless leftovers — winners get redeemed/sold
+      // and disappear from the current-positions snapshot, while losses
+      // stay around as worthless shares. This made decidedROI compute
+      // -100% for ~73% of pool wallets even when they were genuinely
+      // profitable on the trade level (singleSideROI from the full
+      // /activity event log showed +85% on the same wallets).
+      //
+      // Fix: display singleSideROI (from full event history) as primary.
+      // It accurately reflects per-trade ROI on resolved bets. Fall back
+      // to decidedROI only when singleSide is unavailable. Show
+      // decidedROI as a tooltip detail for diagnostic transparency.
       if (v == null) {
-        // Fallback to singleSideROI if available — shown with asterisk +
-        // dimmed opacity to indicate it's an estimate, not position-ledger
-        // ground truth. Scoring already applies a 0.5× haircut on this.
-        if (row && row.singleSideROI != null) {
-          const cls = roiClass(row.singleSideROI);
-          const pct = (row.singleSideROI * 100).toFixed(1) + '%';
-          return `<span class="badge ${cls}" style="opacity:0.7" title="Decided metrics not available (likely negRisk market or position-ledger gap). Showing singleSideROI as fallback — scoring uses this with a 0.5× haircut. Raw value: ${pct}">${pct}*</span>`;
+        if (row && row.decidedROI != null) {
+          const cls = roiClass(row.decidedROI);
+          const pct = (row.decidedROI * 100).toFixed(1) + '%';
+          return `<span class="badge ${cls}" style="opacity:0.7" title="Showing decidedROI (positions-ledger ROI). singleSideROI not available. Note: decidedROI can be biased toward losses for active traders due to /positions API snapshot behavior.">${pct}*</span>`;
         }
         return '<span style="opacity:0.35">—</span>';
       }
       const cls = roiClass(v);
       const pct = (v * 100).toFixed(1) + '%';
-      return `<span class="badge ${cls}" title="Ground-truth ROI on resolved capital: (realizedPnl + decidedPnl) / (totalCost − openCapitalAtRisk)">${pct}</span>`;
+      const decidedDetail = row && row.decidedROI != null
+        ? ` (decidedROI snapshot: ${(row.decidedROI * 100).toFixed(1)}% — may be biased toward losses)`
+        : '';
+      return `<span class="badge ${cls}" title="Per-trade ROI on resolved single-side bets, computed from full /activity event log.${decidedDetail}">${pct}</span>`;
     }},
-    { field: 'decidedCapital', label: 'Decided cap', render: (v, row) => {
+    { field: 'singleSideCapital', label: 'Capital', render: (v, row) => {
       if (v == null) {
-        if (row && row.singleSideCapital != null) {
-          return `<span style="opacity:0.7" title="Decided capital not available — showing singleSideCapital as fallback">${fmtDollars(row.singleSideCapital)}*</span>`;
+        if (row && row.decidedCapital != null) {
+          return `<span style="opacity:0.7" title="Showing decidedCapital fallback">${fmtDollars(row.decidedCapital)}*</span>`;
         }
         return '<span style="opacity:0.35">—</span>';
       }
-      return `<span title="Capital-at-risk on resolved positions (totalCost excluding open bets)">${fmtDollars(v)}</span>`;
+      return `<span title="Capital deployed on resolved single-side bets, from /activity event log">${fmtDollars(v)}</span>`;
     }},
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
     { field: 'effectivePnl', label: 'PnL (effective)', render: v => `<span class="${pnlClass(v)}" title="max(on-chain realized, analyzer sample) — what scoring actually uses">${fmtDollars(v)}</span>` },
