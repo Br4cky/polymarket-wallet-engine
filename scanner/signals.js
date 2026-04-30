@@ -175,6 +175,9 @@ const SIGNAL_THRESHOLDS = {
     // are profitable. Attribution multiplier will down-weight any subleague
     // that proves negative once it accumulates signal history.
     'soccer',
+    // Generic sports catchall — team-vs-team / player props that don't
+    // match a specific sport regex (Giants vs Phillies, Maxey: Pts O/U).
+    'sports-other',
   ]),
 
   // Lifecycle
@@ -301,6 +304,13 @@ function classifyMarket(title) {
   // Conditional calendar markets ("Will X happen by <date>") — sweep into
   // news-event unless otherwise classified. Fat-tail behaviour; some edge.
   if (/\bwill .+ by |\bwill .+ before |\bwill .+ on /.test(q)) return 'news-event';
+
+  // Generic sports catchall — team-vs-team matchups and player props.
+  // Real Polymarket titles often use team/player names without explicit
+  // sport keywords. Without this, ~80% of legitimate sports markets fell
+  // through to 'other' and were killed by the category whitelist.
+  if (/\bvs\.|\bvs\b/.test(q)) return 'sports-other';
+  if (/o\/u|over\/under|points o\/u|rebounds|assists|moneyline|spread/.test(q)) return 'sports-other';
 
   return 'other';
 }

@@ -350,6 +350,7 @@ const EMITTABLE_CATEGORIES = new Set([
   'mlb', 'nfl', 'macro', 'ai-tech',
   'token-launch', 'news-event',
   'soccer',
+  'sports-other',  // generic sports catchall — team-vs-team / player props
 ]);
 const EMITTABLE_MIN_HOURS_TO_RESOLUTION = 4;
 
@@ -379,6 +380,15 @@ function classifyMarketTitleLocal(title) {
   if (/ipo|earnings|revenue|guidance|\beps\b/.test(q)) return 'macro';
   if (/spacex|starship|nasa|rocket launch|announce|statement|\bsay\b|\bsays\b|tweet|post|comment/.test(q)) return 'news-event';
   if (/\bwill .+ by |\bwill .+ before |\bwill .+ on /.test(q)) return 'news-event';
+
+  // Generic sports catchall — team-vs-team matchups and player props.
+  // Real Polymarket titles often use team/player names without explicit
+  // sport keywords ("Giants vs. Phillies", "Tyrese Maxey: Points O/U 24.5",
+  // "Valencia vs. Panathinaikos"). Without this, ~80% of legitimate sports
+  // markets fell through to 'other' and were treated as blocked.
+  if (/\bvs\.|\bvs\b/.test(q)) return 'sports-other';
+  if (/o\/u|over\/under|points o\/u|rebounds|assists|moneyline|spread/.test(q)) return 'sports-other';
+
   return 'other';
 }
 
@@ -746,12 +756,18 @@ function analyzeTradeHistory(events, opts = {}) {
       const titleStr = mt.title || '';
       const titleCategory = classifyMarketTitleLocal(titleStr);
       const isAllowedCat = EMITTABLE_CATEGORIES.has(titleCategory);
-      // Duration gate: market resolved within MIN_HOURS_TO_RESOLUTION of
-      // first buy = killed today. Use the position's actual hold duration
-      // as a proxy (most position holds run from first buy to resolution).
-      const holdHours = (mt.lastTradeTs - mt.firstTradeTs) / 3600;
-      const passesDuration = holdHours >= EMITTABLE_MIN_HOURS_TO_RESOLUTION
-        || holdHours === 0;  // 0 means single-event we can't measure
+      // Duration gate: time from first buy to last sell. mt has buys/sells
+      // arrays but no aggregate timestamp fields, so derive from the trades.
+      // Single-event positions (one buy, no sell) we can't measure → admit.
+      const allMtEvents = [...mt.buys, ...mt.sells];
+      let passesDuration = true;
+      if (allMtEvents.length >= 2) {
+        const tsList = allMtEvents.map(e => e.timestamp).filter(t => t > 0);
+        if (tsList.length >= 2) {
+          const holdHours = (Math.max(...tsList) - Math.min(...tsList)) / 3600;
+          passesDuration = holdHours >= EMITTABLE_MIN_HOURS_TO_RESOLUTION;
+        }
+      }
       if (isAllowedCat && passesDuration) {
         emittableResolvedTrades++;
       }

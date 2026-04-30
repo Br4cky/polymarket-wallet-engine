@@ -43,6 +43,7 @@ const CURRENT_ALLOWED_CATEGORIES = new Set([
   'mlb', 'nfl', 'macro', 'ai-tech',
   'token-launch', 'news-event',
   'soccer',
+  'sports-other',  // generic sports catchall
 ]);
 
 const MIN_HOURS_TO_RESOLUTION = 4;
@@ -72,6 +73,9 @@ function classifyMarketLocal(title) {
   if (/ipo|earnings|revenue|guidance|\beps\b/.test(q)) return 'macro';
   if (/spacex|starship|nasa|rocket launch|announce|statement|\bsay\b|\bsays\b|tweet|post|comment/.test(q)) return 'news-event';
   if (/\bwill .+ by |\bwill .+ before |\bwill .+ on /.test(q)) return 'news-event';
+  // Generic sports catchall — keep in sync with dataApi.js + signals.js
+  if (/\bvs\.|\bvs\b/.test(q)) return 'sports-other';
+  if (/o\/u|over\/under|points o\/u|rebounds|assists|moneyline|spread/.test(q)) return 'sports-other';
   return 'other';
 }
 
