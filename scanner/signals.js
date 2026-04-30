@@ -465,6 +465,24 @@ function detectConvergence(recentTrades, walletPool, marketLookup) {
     if (stats.isMeanPickerShape === true) continue;
     if (stats.alphaVerdict === 'fails') continue;
 
+    // Style gate — applies to ALL signal types, not just solo. Per-style
+    // signal-emission data (calibration audit 2026-04-30, n=14 wallets
+    // with ≥5 emitted signals each):
+    //   averager  +16% avg signal return
+    //   mixed      +2%
+    //   churner   -13%
+    //   holder    -13%   ← 6 of 14 calibration wallets
+    //   mm-like  -100%
+    // Holders make money in their own trading by waiting for resolution.
+    // Followers can't: they exit early or absorb full drawdown. Previously
+    // blocked from solo via SOLO_ALLOWED_STYLES; clusters admitted them
+    // unless they were >50% of contributors (majorityDisqualified rule),
+    // dragging cluster outcomes -13% on average. Hard-blocking here closes
+    // the leak across cluster, consensus, micro-cluster, and mid-favorite
+    // paths in one place.
+    const contribStyle = classifyWalletStyle(stats);
+    if (DISQUALIFIED_STYLES.has(contribStyle)) continue;
+
     // Per-wallet score floor — filters wallets that pass all quality
     // gates but are still too weak to contribute meaningful edge.
     if ((walletInfo.score || 0) < SIGNAL_THRESHOLDS.PER_WALLET_MIN_SCORE) continue;

@@ -73,29 +73,49 @@ export function buildAttributionMap(signalsHistory) {
 /**
  * Compute the score multiplier from a wallet's attribution record.
  *
- * Calibration:
- *   < 10 signals             → 1.0  (neutral — not enough sample to judge)
- *   avg return = 0%          → 1.0  (break-even, no boost or penalty)
- *   avg return = +25% per sig → 1.5 (capped boost)
+ * Calibration (post 2026-04-30 audit — widened band, lowered sample floor):
+ *   < 3 signals               → 1.0  (neutral — sample insufficient)
+ *   avg return = 0%           → 1.0  (break-even)
+ *   avg return = +25% / sig   → 1.5
+ *   avg return = +50% / sig   → 2.0  (NEW cap — strong signal alpha rewarded)
  *   avg return = -12.5%       → 0.75
  *   avg return = -25%         → 0.50
- *   avg return ≤ -40%         → 0.2  (floored — effectively evicted from signal sourcing)
+ *   avg return = -40%         → 0.20
+ *   avg return ≤ -50%         → 0.0  (NEW floor — bad emitter fully evicted from sourcing)
  *
- * Formula: multiplier = clamp(1 + avgReturn × 2, 0.2, 1.5)
- * At avgReturn = +0.162 (the top wallet): 1 + 0.324 = 1.324 (below 1.5 cap)
- *   actually 162% wasn't 0.162 — let me recheck. +162% = 1.62, so 1 + 3.24 = 4.24 → clamped to 1.5.
- * At avgReturn = -0.62 (the worst wallet): 1 - 1.24 = -0.24 → clamped to 0.2.
+ * Formula: multiplier = clamp(1 + avgReturn × 2, 0.0, 2.0)
+ *
+ * Why widen / lower the sample floor:
+ *
+ * The 2026-04-30 wallet-scoring-validity audit ran a Pearson correlation
+ * across 14 wallets that had both trade-side stats and ≥5 emitted signals
+ * with measurable returns. Findings:
+ *   - score (current formula) vs signal EV:  r = 0.113   ← uncorrelated
+ *   - tradeROI vs signal EV:                 r = -0.502  ← INVERSE
+ *   - avgEntryPrice vs signal EV:            r = +0.675  ← strong, but n=14
+ *   - sellRatio vs signal EV:                r = +0.387
+ *
+ * Translation: trade-side metrics (which dominate the score) don't predict
+ * signal EV — they actively mispredict it. The only direct measurement of
+ * signal EV for each wallet is its own attribution record. So we should
+ * (a) start using attribution as soon as we have any sample at all (≥3),
+ * and (b) let it dominate score when present. Widening the band means a
+ * wallet with proven +50% signal returns gets 2× score, and a wallet with
+ * proven -50% signal returns gets 0× score (effectively evicted from
+ * signal sourcing). Self-correcting feedback loop, no manual tuning.
+ *
+ * The trade-side score still matters for wallets with <3 signals — those
+ * are the prior. Once 3+ signals accumulate, attribution becomes the
+ * posterior and dominates.
  */
 export function attributionMultiplier(attribution, opts = {}) {
-  // Min signals lowered from 10 to 5 (2026-04-28 audit). With 10-floor,
-  // wallets like 0x6407a638ff (6 sigs at -66% avg return) escaped any
-  // penalty because sample was below threshold. 5-floor still gives
-  // statistical credibility while letting clearly-bad signal contributors
-  // get penalized faster.
-  const minSignals = opts.minSignals ?? 5;
+  // Min signals lowered 5→3. With n=3 at -50% avg return that's almost
+  // certainly a real bad emitter (P(3 in a row by chance | true mean ≥ 0)
+  // is small at sustained -50% scale). Tighter feedback loop.
+  const minSignals = opts.minSignals ?? 3;
   if (!attribution || attribution.signals < minSignals) return 1.0;
   const raw = 1 + attribution.avgReturn * 2;
-  return Math.max(0.2, Math.min(1.5, raw));
+  return Math.max(0.0, Math.min(2.0, raw));
 }
 
 /**
