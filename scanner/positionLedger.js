@@ -93,12 +93,30 @@ export function classifyPosition(pos, market) {
  * (all numeric, post-USDC-divisor).
  */
 export function aggregatePositions(positions, marketLookup) {
-  let realized = 0, decided = 0, openMtm = 0;
+  // Split into two parallel ledgers. Decided (closed_win, closed_loss,
+  // closed_breakeven, unredeemed_win, worthless_loss) feeds decidedPnl
+  // and decidedCapital. Undecided (open / unknown / closed_undetermined)
+  // tracked separately so realizedPnl from partial sells on still-open
+  // or unclassifiable positions can't contaminate decidedROI.
+  //
+  // Pre-fix this function summed realizedPnl across every non-phantom
+  // position into one accumulator, then divided by (totalCost minus
+  // openCapitalAtRisk). Wins/losses counters and the ROI numerator were
+  // computed against different sets — for thin-data wallets this gave
+  // absurd values like decidedROI=9841% on $5 cap with 0W/1L.
+
+  let decidedRealized = 0, decidedSettled = 0, decidedTotalBought = 0;
+  let undecidedRealized = 0, undecidedCost = 0, openMtm = 0;
+  let openCapitalAtRisk = 0;
   let wins = 0, losses = 0, open = 0, scratch = 0;
   let unresolvedMarket = 0, closedUndetermined = 0;
-  let totalCost = 0, openCapitalAtRisk = 0;
   let unredeemedWins = 0, worthlessLosses = 0;
   let phantomSkipped = 0;
+
+  const DECIDED_STATUSES = new Set([
+    'closed_win', 'closed_loss', 'closed_breakeven',
+    'unredeemed_win', 'worthless_loss',
+  ]);
 
   for (const pos of positions) {
     const mEntry = marketLookup?.get(pos.tokenId);
@@ -107,27 +125,36 @@ export function aggregatePositions(positions, marketLookup) {
 
     if (verdict.status === 'phantom') { phantomSkipped++; continue; }
 
-    realized += pos.realizedPnl;
-    if (verdict.decidedPnl != null) decided += verdict.decidedPnl;
-    totalCost += pos.totalBought;
+    if (DECIDED_STATUSES.has(verdict.status)) {
+      decidedRealized += pos.realizedPnl;
+      if (verdict.decidedPnl != null) decidedSettled += verdict.decidedPnl;
+      decidedTotalBought += pos.totalBought;
+    } else {
+      undecidedRealized += pos.realizedPnl;
+      undecidedCost += pos.totalBought;
+      if (verdict.outcome === 'pending') openCapitalAtRisk += pos.totalBought;
+      if (verdict.status === 'open' && verdict.mtm != null) openMtm += verdict.mtm;
+    }
 
     if (verdict.outcome === 'win') wins++;
     else if (verdict.outcome === 'loss') losses++;
-    else if (verdict.outcome === 'pending') { open++; openCapitalAtRisk += pos.totalBought; }
+    else if (verdict.outcome === 'pending') open++;
     else if (verdict.outcome === 'scratch') scratch++;
     else if (verdict.status === 'closed_undetermined') closedUndetermined++;
     else if (verdict.status === 'unknown') unresolvedMarket++;
 
     if (verdict.status === 'unredeemed_win') unredeemedWins++;
     if (verdict.status === 'worthless_loss') worthlessLosses++;
-    if (verdict.status === 'open' && verdict.mtm != null) openMtm += verdict.mtm;
   }
 
   const resolvedCount = wins + losses;
   const winRate = resolvedCount > 0 ? wins / resolvedCount : null;
-  const decidedCapital = totalCost - openCapitalAtRisk;
-  const decidedPnl = realized + decided;
+  const decidedCapital = decidedTotalBought;
+  const decidedPnl = decidedRealized + decidedSettled;
   const decidedROI = decidedCapital > 0 ? decidedPnl / decidedCapital : null;
+  const realized = decidedRealized + undecidedRealized;
+  const decided = decidedSettled;
+  const totalCost = decidedTotalBought + undecidedCost;
   const totalRoi = totalCost > 0 ? (realized + decided + openMtm) / totalCost : null;
 
   return {
