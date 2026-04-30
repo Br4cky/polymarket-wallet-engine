@@ -1728,6 +1728,18 @@ async function fastLoop(state, walletPool, marketLookup) {
       decidedOpenCapitalAtRisk: w.stats?.decidedOpenCapitalAtRisk ?? null,
       isMeanPickerShape: w.stats?.isMeanPickerShape === true,
       decidedMeasuredAt: w.stats?.decidedMeasuredAt || null,
+      // singleSide* — per-trade ROI from full /activity event log. The
+      // dashboard 'ROI' column displays these as PRIMARY because the
+      // /positions snapshot used for decidedROI is biased toward
+      // worthless-loss leftovers (winners get redeemed and disappear,
+      // losses stay around as worthless shares). Without these in the
+      // leaderboard projection, the frontend falls back to decidedROI
+      // and shows -100% for ~73% of wallets even when their actual
+      // trade-level performance is positive. See commit 3eaea2d.
+      singleSideROI: w.stats?.singleSideROI ?? null,
+      singleSideCapital: w.stats?.singleSideCapital ?? null,
+      singleSideHitRate: w.stats?.singleSideHitRate ?? null,
+      singleSideResolved: w.stats?.singleSideResolved ?? null,
     },
   }));
 
