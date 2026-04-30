@@ -986,130 +986,163 @@ function recencyMultiplier(lastTradeTs) {
   return 1 - (days - 7) / 23;
 }
 
+// V2 SCORING — signal-EV-relevance composite (2026-04-30 redesign)
+//
+// Previous formula made decidedROI the magnitude term:
+//   roi = roiPoints(decidedROI) ∈ [0, 50]
+//   score = roi × multipliers + activityBonus
+// The 2026-04-30 wallet-scoring-validity audit measured this against
+// the ground truth — wallets with ≥2 emitted signals and a known
+// signal-EV. Result over n=32 calibration wallets: r = -0.222. The score
+// was negatively correlated with what we want to predict.
+//
+// Trading ROI measures "did this wallet make money on their own trades?"
+// That includes entry, exit timing, sizing, hedging, holding through
+// drawdown. Followers can only replicate ENTRY. The other components
+// are usually where the alpha lives, so trade-ROI doesn't predict
+// signal-emission ROI.
+//
+// V2 replaces the magnitude with a composite of metrics that DO correlate
+// with signal-EV per the audit:
+//   avgEntryPrice    r = +0.675   ← strongest predictor
+//   resolvedMarkets  r = +0.461   (sample size)
+//   sellRatio        r = +0.387   (wallets that close, not hold)
+//
+// Plus existing safety multipliers (recency, mmPenalty), a style
+// multiplier (snipers/averagers full weight, holders/mm zero), and the
+// attribution multiplier with widened band — once a wallet has 2+
+// emitted signals, its actual measured signal-EV dominates the score.
+//
+// Variant V4 (best of 8 tested) achieves r = +0.601 vs current r = -0.222.
+// See scripts/rescore-pool-v2.mjs for the one-time pool sweep.
+const SCORING_V2 = {
+  // Favourite-buyer band — wallets buying at higher prices produce
+  // signals followers can replicate (the resolution is closer to settled).
+  favLo: 0.30, favLoMid: 0.55, favHi: 0.85,
+  favBonusLow: 0,      // 0.30-0.55: underdog buyer, no bonus
+  favBonusMid: 15,     // 0.55-0.85: mid favorite, mid bonus
+  favBonusHigh: 30,    // ≥0.85: heavy favorite, full bonus
+  // Sample-size confidence — log-shaped, saturating
+  sampleSat: 50, sampleBase: 10, sampleSatHigh: 150, sampleExtra: 5,
+  // Sell-ratio bonus — wallets that close positions (not pure holders)
+  sellThreshold: 0.20, sellBonus: 5,
+  // Attribution band: ≥2 sigs = meaningful signal, [0.0, 2.5] band,
+  // sensitivity 3 (so -33% avg → mul 0; +50% avg → mul 2.5).
+  attrMin: 2, attrFloor: 0.0, attrCap: 2.5, attrSensitivity: 3,
+  // Style multipliers — snipers/averagers replicate well; holders/MM don't
+  styles: { sniper: 1.0, averager: 1.0, mixed: 0.7, churner: 0.5, holder: 0.0, 'mm-like': 0.0 },
+};
+
+// Style classifier — kept in sync with signals.js classifyWalletStyle.
+// Defined inline here to avoid circular import.
+function classifyWalletStyleLocal(s) {
+  if (!s) return 'unknown';
+  if ((s.dualSideRate || 0) > 0.30 || (s.mmScore || 0) >= 3) return 'mm-like';
+  const tt = s.totalTrades || 0, um = s.uniqueMarkets || 0;
+  const tpm = um > 0 ? tt / um : 0;
+  const sr = s.sellRatio ?? 1, hold = s.avgHoldTimeHours || 0;
+  if (tpm > 8) return 'churner';
+  if (tpm >= 3 && sr > 0.30) return 'averager';
+  if (tpm <= 2 && hold < 48) return 'sniper';
+  if (sr < 0.15) return 'holder';
+  return 'mixed';
+}
+
 function computeWalletScore(stats) {
   if (!stats) return { score: null, reason: 'no_stats', components: null };
 
-  // Scoring requires decided-truth metrics. Wallets without them (not yet
-  // rescored, or freshly discovered) get score=null so callers can decide
-  // whether to skip ranking or provisionally admit.
-  // Pick the ROI / capital pair to score against. `decided*` comes from the
-  // position-ledger pass (positionLedger.js) and is preferred because it
-  // accounts for open positions and unredeemed winners. But many wallets
-  // don't have position data captured — typically specialists who don't
-  // show up in the cursor scan — and their `decided*` is null even when
-  // they have great trade-level performance.
-  //
-  // Fallback: `singleSideROI` + `singleSideCapital` from analyzeTradeHistory.
-  // Trade-level only, slightly inflates ROI because it ignores open
-  // positions, but it's always available from trade events alone. Marks
-  // metricSource='singleside' so the UI / diagnostics can tell the two
-  // apart. Attribution multiplier will calibrate actual signal quality
-  // regardless of which ROI source we used.
-  //
-  // Before this fallback, specialists like 0x06a0402a (18 sigs, 72% WR,
-  // +38% ret, tier_a alpha, 0 MM score, +92% singleSideROI) were rejected
-  // at admission because decidedROI was null — the signal engine never
-  // saw them. See scripts/inspect-specialists.mjs for the diagnostic.
-  let roiInput = stats.decidedROI;
-  let capInput = stats.decidedCapital;
-  let metricSource = 'decided';
-  if (roiInput == null || capInput == null) {
-    if (stats.singleSideROI != null && stats.singleSideCapital != null
-        && stats.singleSideCapital > 0) {
-      // Haircut on fallback: singleSideROI is systematically ~3x higher than
-      // decidedROI for the same wallet because it only counts directional
-      // capital (smaller denominator) while decidedROI includes hedging too.
-      // Without the haircut, fallback wallets scored ~7pts higher on median
-      // than decided wallets — see scripts/diagnose-decided-fallback.mjs
-      // (2026-04-27 audit). 0.5× is empirically calibrated to bring the
-      // fallback distribution close to the decided distribution.
-      roiInput = stats.singleSideROI * 0.5;
-      capInput = stats.singleSideCapital;
-      metricSource = 'singleside';
-    } else {
-      return { score: null, reason: 'no_decided_metrics', components: null };
-    }
+  // Hard reject mean-picker shape — the historical decidedROI-based
+  // formula soft-penalised these (multiplier 0.2). V2 is stricter:
+  // mean-pickers can't produce copyable directional signals by definition.
+  if (stats.isMeanPickerShape === true) {
+    return { score: 0, reason: 'mean_picker', components: { hardReject: 'mean_picker', scoringVersion: 'v2' } };
   }
+
+  // Magnitude — composite of signal-EV predictors
+  const aep = stats.avgEntryPrice ?? 0;
+  let favoriteBonus = 0;
+  if (aep >= SCORING_V2.favLo && aep < SCORING_V2.favLoMid) favoriteBonus = SCORING_V2.favBonusLow;
+  else if (aep >= SCORING_V2.favLoMid && aep < SCORING_V2.favHi) favoriteBonus = SCORING_V2.favBonusMid;
+  else if (aep >= SCORING_V2.favHi) favoriteBonus = SCORING_V2.favBonusHigh;
 
   const resolved = stats.decidedWins != null && stats.decidedLosses != null
     ? stats.decidedWins + stats.decidedLosses
     : (stats.singleSideResolved || stats.resolvedMarkets || 0);
 
-  const roi = roiPoints(roiInput);
-  const capConf = capConfidence(capInput);
-  const sampleConf = sampleConfidence(resolved);
-  const recency = recencyMultiplier(stats.lastTradeTs);
-  const meanPickerPenalty = stats.isMeanPickerShape === true ? 0.2 : 1.0;
-  const mmPenalty = (typeof stats.mmPenalty === 'number') ? stats.mmPenalty : 1.0;
-
-  // Attribution multiplier — feedback loop from historical SIGNAL outcomes.
-  // decidedROI measures trading skill overall; attribution measures whether
-  // this wallet's signals actually win when followers copy them. They can
-  // diverge sharply (wallet great at exits we don't copy, degraded recently,
-  // off-category edge, copy lag, etc.). Wallets with ≥10 resolved signals
-  // get scaled by their proven signal EV. Caller must run attachAttribution
-  // from signalAttribution.js before calling this function.
-  const attrMultiplier = (typeof stats.attributionMultiplier === 'number')
-    ? stats.attributionMultiplier : 1.0;
-
-  // Churn penalty — a wallet that does many trades per unique market is
-  // a rebalancer / scale-in-out player, not a sniper. Their entry bears
-  // little resemblance to their final exposure, so emitting a signal on
-  // their entry misses most of the alpha. Diagnostic found wallet 0x6204a
-  // at 9.5 trades/market had -62% signal returns despite a strong +54%
-  // decidedROI. Sniper-style wallet 0x0ebbb was at 1.75 trades/market and
-  // produced +162%.
-  //
-  // Formula: churn = totalTrades / uniqueMarkets. Map to [0.5, 1.0]:
-  //   churn ≤ 2.0 → 1.00   (one or two trades per market — clean)
-  //   churn = 3.0 → 0.90
-  //   churn = 4.0 → 0.80
-  //   churn = 6.0 → 0.65
-  //   churn ≥ 9.0 → 0.50   (heavy rebalancer — hard cap)
-  // Wallets with <30 total trades or <10 unique markets skip this term
-  // (insufficient sample for the ratio to be meaningful).
-  let churnPenalty = 1.0;
-  const tt = stats.totalTrades || 0;
-  const um = stats.uniqueMarkets || 0;
-  if (tt >= 30 && um >= 10) {
-    const churn = tt / um;
-    if (churn > 2.0) {
-      churnPenalty = Math.max(0.5, 1.0 - (churn - 2.0) * 0.1);
-    }
+  let sampleBonus;
+  if (resolved < SCORING_V2.sampleSat) {
+    sampleBonus = (resolved / SCORING_V2.sampleSat) * SCORING_V2.sampleBase;
+  } else {
+    sampleBonus = SCORING_V2.sampleBase + Math.min(
+      SCORING_V2.sampleExtra,
+      ((resolved - SCORING_V2.sampleSat) / SCORING_V2.sampleSatHigh) * SCORING_V2.sampleExtra,
+    );
   }
 
-  // Activity bonus (0-5 pts, additive) — log-scaled trades/day, so a
-  // wallet with 0.1 trades/day → ~1pt, 1/day → ~3pts, 10+/day → 5pts.
-  const tpd = stats.recentTradesPerDay || 0;
-  const activityBonus = Math.min(5, Math.log10(1 + tpd * 10) * 2);
+  const sellRatio = stats.sellRatio ?? 0;
+  const sellRatioBonus = sellRatio >= SCORING_V2.sellThreshold ? SCORING_V2.sellBonus : 0;
 
-  const core = roi * capConf * sampleConf * recency * meanPickerPenalty * mmPenalty * attrMultiplier * churnPenalty;
-  // Activity is a tiebreaker, not a floor — only award it when the wallet
-  // has a non-zero core. Otherwise losing/dormant wallets collect free points
-  // just for churning.
-  const total = core > 0 ? core + activityBonus : 0;
+  const magnitude = favoriteBonus + sampleBonus + sellRatioBonus;
+
+  // Attribution multiplier — direct measurement of signal EV when sample exists
+  const attr = stats.signalAttribution;
+  const attrMultiplier = (attr && attr.signals >= SCORING_V2.attrMin && typeof attr.avgReturn === 'number')
+    ? Math.max(SCORING_V2.attrFloor, Math.min(SCORING_V2.attrCap, 1 + attr.avgReturn * SCORING_V2.attrSensitivity))
+    : 1.0;
+
+  const recency = recencyMultiplier(stats.lastTradeTs);
+  const mmPenalty = (typeof stats.mmPenalty === 'number') ? stats.mmPenalty : 1.0;
+  const style = classifyWalletStyleLocal(stats);
+  const styleMul = SCORING_V2.styles[style] ?? 0.5;
+
+  const total = magnitude * attrMultiplier * recency * mmPenalty * styleMul;
+
+  // Backwards-compat: report decidedROI source for diagnostic display,
+  // even though it no longer drives the score.
+  let metricSource = 'v2';
+  let roiInput = null, capInput = null;
+  if (stats.decidedROI != null && stats.decidedCapital != null) {
+    metricSource = 'v2_decided';
+    roiInput = stats.decidedROI;
+    capInput = stats.decidedCapital;
+  } else if (stats.singleSideROI != null && stats.singleSideCapital != null) {
+    metricSource = 'v2_singleside';
+    roiInput = stats.singleSideROI;
+    capInput = stats.singleSideCapital;
+  }
 
   return {
     score: Math.min(100, Math.round(total * 10) / 10),
     reason: 'ok',
     components: {
-      roi: +roi.toFixed(2),
-      capConf: +capConf.toFixed(3),
-      sampleConf: +sampleConf.toFixed(3),
+      // V2 fields — what actually drives the score
+      scoringVersion: 'v2',
+      magnitude: +magnitude.toFixed(2),
+      favoriteBonus,
+      sampleBonus: +sampleBonus.toFixed(2),
+      sellRatioBonus,
+      attrMultiplier: +attrMultiplier.toFixed(3),
+      attrSignals: attr ? attr.signals : 0,
+      attrAvgReturn: attr ? attr.avgReturn : null,
       recency: +recency.toFixed(3),
-      meanPickerPenalty,
       mmPenalty,
       mmScore: stats.mmScore ?? null,
-      attrMultiplier,
-      attrSignals: stats.signalAttribution ? stats.signalAttribution.signals : 0,
-      attrAvgReturn: stats.signalAttribution ? stats.signalAttribution.avgReturn : null,
-      churnPenalty: +churnPenalty.toFixed(3),
-      churnRatio: (tt >= 30 && um >= 10) ? +(tt / um).toFixed(2) : null,
-      activityBonus: +activityBonus.toFixed(2),
+      style,
+      styleMul,
+      avgEntryPrice: stats.avgEntryPrice != null ? +stats.avgEntryPrice.toFixed(4) : null,
       resolved,
-      metricSource,  // 'decided' (position-ledger) or 'singleside' (trade-only fallback)
-      roiInput: +roiInput.toFixed(4),
-      capInput: Math.round(capInput),
+      sellRatio: stats.sellRatio != null ? +stats.sellRatio.toFixed(3) : null,
+      // Backwards-compat fields kept so dashboards / scripts that read
+      // these keys don't break. roi/capConf/sampleConf are no longer
+      // inputs to the score.
+      roi: 0, capConf: 1.0, sampleConf: 1.0,
+      meanPickerPenalty: stats.isMeanPickerShape === true ? 0 : 1,
+      churnPenalty: 1.0,
+      activityBonus: 0,
+      churnRatio: null,
+      metricSource,
+      roiInput: roiInput != null ? +roiInput.toFixed(4) : null,
+      capInput: capInput != null ? Math.round(capInput) : null,
     },
   };
 }
