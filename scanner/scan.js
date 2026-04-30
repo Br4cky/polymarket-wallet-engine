@@ -1402,7 +1402,16 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
   console.log(`\n  ✅ Wallet pool: ${Object.keys(trimmedPool).length} wallets (from ${qualified} qualified)`);
   const topWallets = ranked.slice(0, 5);
   for (const [addr, w] of topWallets) {
-    const roi = w.stats?.decidedROI != null ? ` ROI:${(w.stats.decidedROI * 100).toFixed(0)}%` : '';
+    // Display singleSideROI (per-trade ROI from full /activity event log).
+    // decidedROI from /positions snapshot is biased toward worthless
+    // leftovers — see frontend/app.js notes (commit 3eaea2d). Fall back to
+    // decidedROI only when singleSide unavailable. V2 scoring uses neither
+    // as a primary input, so this is purely cosmetic.
+    const ssROI = w.stats?.singleSideROI;
+    const dROI = w.stats?.decidedROI;
+    const roi = ssROI != null
+      ? ` ROI:${(ssROI * 100).toFixed(0)}%`
+      : (dROI != null ? ` ROI:${(dROI * 100).toFixed(0)}%*` : '');
     console.log(`    #${w.rank} ${addr.slice(0, 12)}... score:${w.score ?? '—'} WR:${((w.stats?.recentWinRate || w.stats?.winRate || 0) * 100).toFixed(0)}% PnL:$${(w.stats?.totalPnl || 0).toFixed(0)}${roi}`);
   }
 
