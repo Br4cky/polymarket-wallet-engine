@@ -56,12 +56,12 @@
           <div class="metric-value" id="wp-avg-wr">0%</div>
           <div class="metric-unit">resolved markets</div>
         </div>
-        <div class="metric-card" title="Percent of pool that has a populated score (decidedROI measured + ranked). Wallets without a score are unranked until their next rescore cycle.">
+        <div class="metric-card" title="Percent of pool that has a populated V2 score. Wallets with score=null are still pending their first rescore cycle.">
           <div class="metric-label">Scoring Coverage</div>
           <div class="metric-value" id="wp-scoring-coverage">—</div>
           <div class="metric-unit">wallets scored</div>
         </div>
-        <div class="metric-card" title="Wallets with isMeanPickerShape=true (≥95% WR, ≥25 resolved, ≥$50k decided capital, <5% decidedROI). Score penalised 5× to push them out of the ranker.">
+        <div class="metric-card" title="Wallets with isMeanPickerShape=true. Under V2 scoring these are hard-rejected (score=0) — their high-WR-on-tiny-bets pattern can't produce copyable directional signals.">
           <div class="metric-label">Mean-pickers</div>
           <div class="metric-value" id="wp-mean-pickers">—</div>
           <div class="metric-unit">in pool</div>
@@ -95,10 +95,10 @@
             <thead>
               <tr>
                 <th data-field="rank">#</th>
-                <th data-field="score" class="sortable" title="Wallet quality score. Keys on decidedROI weighted by capital + sample confidence + recency, with 5× mean-picker suppression and up to 10× market-maker suppression. ✂ = flagged for shadow eviction, ◇ = mean-picker shape. — means the wallet hasn't been scored yet.">Score</th>
+                <th data-field="score" class="sortable" title="V2 wallet score (post 2026-04-30 redesign). Composite of signal-EV-relevance predictors: avgEntryPrice favorite-band bonus, sample-size confidence, sellRatio bonus, attribution multiplier (when ≥2 emitted signals — actual measured signal-EV dominates), recency, mmPenalty, style multiplier (snipers/averagers full weight, holders/mm zero). Scale 0-100. ✂ = flagged eviction, ◇ = mean-picker shape (hard reject). — means not yet scored.">Score</th>
                 <th data-field="address">Address</th>
-                <th data-field="decidedROI" class="sortable" title="Ground-truth ROI on resolved capital: (realizedPnl + decidedPnl) / (totalCost − openCapitalAtRisk). Rolls up closed wins/losses, unredeemed winners, and worthless losers. Primary driver of score.">Decided ROI</th>
-                <th data-field="decidedCapital" class="sortable" title="Capital-at-risk on resolved positions only — totalCost minus capital still sitting in open bets. Sample-confidence weight.">Decided Cap</th>
+                <th data-field="singleSideROI" class="sortable" title="Per-trade ROI on resolved single-side bets, computed from the full /activity event log. Reliable across the whole pool. NOTE: V2 scoring no longer uses ROI as a primary input — it uses signal-EV predictors instead. ROI shown here for diagnostic context only.">ROI</th>
+                <th data-field="singleSideCapital" class="sortable" title="Capital deployed on resolved single-side bets, from /activity event log.">Capital</th>
                 <th data-field="winRate" class="sortable" title="Win rate over the sample window (last N days, see Span column)">WR (sample)</th>
                 <th data-field="effectivePnl" class="sortable" title="max(on-chain, sample). What legacy scoring uses. Both measurement systems miss things — on-chain misses unredeemed winners, sample misses history beyond 3000 events.">PnL (effective)</th>
                 <th data-field="onChainPnl" class="sortable" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold on-chain. $0 for unredeemed winners.">On-chain</th>

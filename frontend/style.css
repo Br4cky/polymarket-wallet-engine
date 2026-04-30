@@ -483,6 +483,22 @@ button {
   font-weight: 600;
 }
 
+.badge-v2 {
+  /* Marker for signals emitted under V2 scoring (post 2026-04-30 13:00 UTC).
+     Lets the user visually separate old vs new signal performance in the
+     active list and history table. Compact (10px) so it fits inline before
+     the market title without dominating the row. */
+  background: rgba(108, 92, 231, 0.18);
+  color: #a29bfe;
+  border: 1px solid rgba(108, 92, 231, 0.45);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  margin-right: 4px;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
 .tier-badge {
   padding: 2px 8px;
   border-radius: 4px;

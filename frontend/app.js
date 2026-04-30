@@ -19,6 +19,31 @@ let sigFilterType = null;
    Utility Functions
    ============================================================================ */
 
+// V2 scoring went live 2026-04-30 ~13:00 UTC (commit 34b94be). Signals
+// with openedAt at or after this timestamp were emitted under the new
+// scoring formula and are flagged in the UI with a V2 badge so old +
+// new performance can be visually separated.
+const V2_CUTOVER_MS = Date.parse('2026-04-30T13:00:00Z');
+
+function isV2Signal(s) {
+  const opened = toMs(s && (s.openedAt || s.signalTime || s.createdAt));
+  return opened > 0 && opened >= V2_CUTOVER_MS;
+}
+
+// Normalise a timestamp value to milliseconds. Handles ISO strings,
+// numeric seconds (pre-2001 era values), and numeric milliseconds.
+// Used by the signals renderer (active + history) to make sort/format
+// agree across legacy entries with mixed timestamp shapes.
+function toMs(t) {
+  if (!t) return 0;
+  if (typeof t === 'string') {
+    const p = Date.parse(t);
+    return isFinite(p) ? p : 0;
+  }
+  if (typeof t !== 'number' || !isFinite(t)) return 0;
+  return t > 1e11 ? t : t * 1000;
+}
+
 function fmt(n, decimals = 2) {
   if (n === null || n === undefined) return '0';
   if (typeof n !== 'number') return String(n);
@@ -592,10 +617,19 @@ function renderSignals() {
     confidence: s.confidence || 0,
     avgScore: s.avgScore || 0,
     scansActive: s.scansActive || 0,
-  }));
+    openedAtMs: toMs(s.openedAt),
+    isV2: isV2Signal(s),
+  }))
+  // Default sort: newest first. createSortableTable doesn't apply any
+  // sort until a column header is clicked, so the natural data order
+  // (oldest signals at the top of signals.active) was rendering first.
+  .sort((a, b) => b.openedAtMs - a.openedAtMs);
 
   createSortableTable('active-signals-table', [
-    { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
+    { field: 'marketTitle', render: (v, row) => {
+      const v2 = row.isV2 ? '<span class="badge badge-v2" title="Emitted under V2 scoring (post 2026-04-30 13:00 UTC). Useful for separating old vs new signals when measuring whether the redesign worked.">V2</span> ' : '';
+      return `${v2}<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>`;
+    } },
     { field: 'signalType', render: v => {
       // Map each emit-path to its badge color class. Defaults to consensus
       // for any future type so we always render *something* sensible.
@@ -622,14 +656,7 @@ function renderSignals() {
   // (e.g. a repair pass closes a batch of old stragglers).
   //
   // closedAt is stored as unix SECONDS for new signals but some legacy
-  // entries have MILLISECONDS. Normalize to ms at ingest so render /
-  // sort / format all agree. Threshold: any unix timestamp in the 2020s
-  // is ~10^9 seconds or ~10^12 ms; 10^11 cleanly separates them.
-  const toMs = (t) => {
-    if (!t || typeof t !== 'number' || !isFinite(t)) return 0;
-    return t > 1e11 ? t : t * 1000;
-  };
-
+  // entries have MILLISECONDS. toMs (module scope) normalises both.
   const histData = history
     .slice()
     .map(s => ({
@@ -645,8 +672,15 @@ function renderSignals() {
       closeReason: s.closeReason || '-',
       closedAt: toMs(s.closedAt),   // always ms after this
       closedScan: s.closedScan || 0,
+      isV2: isV2Signal(s),
     }))
     .sort((a, b) => b.closedAt - a.closedAt);
+  // Tell the sortable-table helper this is the canonical sort so the
+  // header arrow renders correctly + clicking 'closedAt' header again
+  // toggles instead of re-applying the same sort silently.
+  if (typeof sortState !== 'undefined') {
+    sortState['signal-history-table'] = { field: 'closedAt', dir: 'desc' };
+  }
 
   createSortableTable('signal-history-table', [
     { field: 'closedAt', label: 'Closed', render: v => {
@@ -663,7 +697,10 @@ function renderSignals() {
       const abs = d.toISOString().replace('T', ' ').slice(0, 16) + 'Z';
       return `<span title="${abs}">${rel}</span>`;
     }},
-    { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>` },
+    { field: 'marketTitle', render: (v, row) => {
+      const v2 = row.isV2 ? '<span class="badge badge-v2" title="Emitted under V2 scoring (post 2026-04-30 13:00 UTC)">V2</span> ' : '';
+      return `${v2}<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color: var(--accent-light);">${truncate(v, 45)}</a>`;
+    } },
     { field: 'outcome', render: (v, row) => {
       if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
       if (v === 'loss') return `<span class="badge badge-low">LOSS</span>`;
@@ -740,7 +777,11 @@ function renderPaperTrader() {
   createSortableTable('paper-open-table', [
     { field: 'marketTitle', render: v => truncate(v, 45) },
     { field: 'signalType', render: v => {
-      const cls = v === 'solo' ? 'badge-solo' : v === 'cluster' ? 'badge-cluster' : 'badge-consensus';
+      const cls = v === 'solo' ? 'badge-solo'
+        : v === 'cluster' ? 'badge-cluster'
+        : v === 'micro-cluster' ? 'badge-micro-cluster'
+        : v === 'mid-favorite' ? 'badge-mid-favorite'
+        : 'badge-consensus';
       return `<span class="badge ${cls}">${(v || 'consensus').toUpperCase()}</span>`;
     }},
     { field: 'tier', render: v => `<span class="tier-badge tier-${v || 'starter'}">${(v || 'starter').toUpperCase()}</span>` },
@@ -757,7 +798,11 @@ function renderPaperTrader() {
   createSortableTable('paper-closed-table', [
     { field: 'marketTitle', render: v => truncate(v, 45) },
     { field: 'signalType', render: v => {
-      const cls = v === 'solo' ? 'badge-solo' : v === 'cluster' ? 'badge-cluster' : 'badge-consensus';
+      const cls = v === 'solo' ? 'badge-solo'
+        : v === 'cluster' ? 'badge-cluster'
+        : v === 'micro-cluster' ? 'badge-micro-cluster'
+        : v === 'mid-favorite' ? 'badge-mid-favorite'
+        : 'badge-consensus';
       return `<span class="badge ${cls}">${(v || 'consensus').toUpperCase()}</span>`;
     }},
     { field: 'tier', render: v => `<span class="tier-badge tier-${v || 'starter'}">${(v || 'starter').toUpperCase()}</span>` },
