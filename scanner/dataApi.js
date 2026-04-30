@@ -1026,9 +1026,15 @@ const SCORING_V2 = {
   sampleSat: 50, sampleBase: 10, sampleSatHigh: 150, sampleExtra: 5,
   // Sell-ratio bonus — wallets that close positions (not pure holders)
   sellThreshold: 0.20, sellBonus: 5,
-  // Attribution band: ≥2 sigs = meaningful signal, [0.0, 2.5] band,
+  // Attribution band: ≥5 sigs = meaningful signal, [0.0, 2.5] band,
   // sensitivity 3 (so -33% avg → mul 0; +50% avg → mul 2.5).
-  attrMin: 2, attrFloor: 0.0, attrCap: 2.5, attrSensitivity: 3,
+  // Raised from 2 to 5 after the 2026-04-30 probe found the #1 wallet
+  // had only 2 attribution signals — both on BTC-updown 5-min markets
+  // we no longer emit on — yet was getting the max 2.5× boost. Min 5
+  // requires more emittable signals to accumulate before attribution
+  // dominates. Combined with buildAttributionMap's filter to only
+  // currently-emittable signals, prevents stale-regime credit.
+  attrMin: 5, attrFloor: 0.0, attrCap: 2.5, attrSensitivity: 3,
   // Style multipliers — snipers/averagers replicate well; holders/MM don't
   styles: { sniper: 1.0, averager: 1.0, mixed: 0.7, churner: 0.5, holder: 0.0, 'mm-like': 0.0 },
 };

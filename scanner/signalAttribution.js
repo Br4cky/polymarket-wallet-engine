@@ -23,16 +23,110 @@
  */
 
 /**
+ * Categories currently allowed to emit signals. Mirror of
+ * signals.js SIGNAL_THRESHOLDS.ALLOWED_CATEGORIES — kept duplicated
+ * here to avoid circular imports. KEEP IN SYNC.
+ *
+ * Used by buildAttributionMap to filter out historical signals on
+ * markets the current code would no longer emit on. Without this,
+ * a wallet's attribution multiplier was inflated by signals on
+ * categories we've since blocked (e.g. crypto-updown 5-min markets,
+ * esports, NHL, golf). The 2026-04-30 audit found the #1 ranked
+ * wallet (0x022c654f4b, score 67.5) had both its attribution wins
+ * on Bitcoin Up/Down 5-MIN markets — exactly what
+ * MIN_HOURS_TO_RESOLUTION=4 now blocks. The wallet was getting the
+ * max 2.5× boost from a regime that's structurally closed off.
+ */
+const CURRENT_ALLOWED_CATEGORIES = new Set([
+  'tennis', 'nba', 'mma', 'weather',
+  'crypto-updown', 'crypto-other',
+  'mlb', 'nfl', 'macro', 'ai-tech',
+  'token-launch', 'news-event',
+  'soccer',
+]);
+
+const MIN_HOURS_TO_RESOLUTION = 4;
+
+function classifyMarketLocal(title) {
+  const q = (title || '').toLowerCase();
+  if (!q) return 'other';
+  if (/dota|lol|league of legends|counter-strike|valorant|cs:?go|cs2|csgo|call of duty|apex|fortnite|pubg/.test(q)) return 'esports';
+  if (/\blaunch a token|\btoken launch|\btge\b/.test(q)) return 'token-launch';
+  if (/bitcoin|btc|ethereum|eth|solana|sol\b|doge|xrp|crypto|coin/.test(q)) {
+    if (/reach|above|below|hit|close|\$|\sup\b|\sdown\b|end above|end below/.test(q)) return 'crypto-updown';
+    return 'crypto-other';
+  }
+  if (/nhl|stanley cup| hockey /.test(q)) return 'nhl';
+  if (/nba|lakers|celtics|warriors|knicks|heat|nba playoffs/.test(q)) return 'nba';
+  if (/nfl|super bowl|touchdown|quarterback/.test(q)) return 'nfl';
+  if (/mlb|baseball|world series/.test(q)) return 'mlb';
+  if (/epl|premier league|champions league|la liga|bundesliga|serie a|manchester|arsenal|liverpool|chelsea/.test(q)) return 'soccer';
+  if (/tennis|wimbledon|us open|french open|atp|wta/.test(q)) return 'tennis';
+  if (/ufc|\bmma\b|fight night/.test(q)) return 'mma';
+  if (/ pga |golf|masters tournament/.test(q)) return 'golf';
+  if (/f1\b|formula 1|grand prix/.test(q)) return 'f1';
+  if (/trump|biden|harris|election|senate|house race|republican|democrat|congressional/.test(q)) return 'politics';
+  if (/ai\b|openai|anthropic|gpt|gemini|\bllm\b|tech|apple|google|microsoft|nvidia/.test(q)) return 'ai-tech';
+  if (/weather|temperature|hurricane|tornado|snow|rainfall/.test(q)) return 'weather';
+  if (/fed rate|fomc|inflation|cpi|ppi|\bgdp\b|recession|jobs report|unemployment|nonfarm/.test(q)) return 'macro';
+  if (/ipo|earnings|revenue|guidance|\beps\b/.test(q)) return 'macro';
+  if (/spacex|starship|nasa|rocket launch|announce|statement|\bsay\b|\bsays\b|tweet|post|comment/.test(q)) return 'news-event';
+  if (/\bwill .+ by |\bwill .+ before |\bwill .+ on /.test(q)) return 'news-event';
+  return 'other';
+}
+
+/**
+ * Returns true if a historical signal would PASS today's emission
+ * gates. Used by buildAttributionMap to credit only signals on
+ * markets the current code would still emit on.
+ *
+ * Excludes:
+ *   - Markets in categories not in CURRENT_ALLOWED_CATEGORIES
+ *     (e.g. esports, golf, nhl, politics, f1)
+ *   - Markets that resolved within MIN_HOURS_TO_RESOLUTION hours of
+ *     opening (5-min BTC markets, intraday spreads, etc.)
+ */
+function signalCurrentlyEmittable(sig) {
+  if (!sig) return false;
+  // Category gate
+  const category = classifyMarketLocal(sig.marketTitle);
+  if (!CURRENT_ALLOWED_CATEGORIES.has(category)) return false;
+  // Time-to-resolution gate. closedAt and openedAt may be ms or s; use Date.parse for ISO.
+  const opened = sig.openedAt ? Date.parse(sig.openedAt) : null;
+  const closed = sig.closedAt
+    ? (typeof sig.closedAt === 'number'
+      ? (sig.closedAt > 1e11 ? sig.closedAt : sig.closedAt * 1000)
+      : Date.parse(sig.closedAt))
+    : null;
+  if (opened && closed && isFinite(opened) && isFinite(closed)) {
+    const hours = (closed - opened) / (3600 * 1000);
+    if (hours < MIN_HOURS_TO_RESOLUTION) return false;
+  }
+  return true;
+}
+
+/**
  * Build an attribution map from signal history.
  * @param {Array} signalsHistory - The array under signals.history
+ * @param {object} opts
+ * @param {boolean} opts.filterCurrentlyEmittable - When true (default),
+ *   only counts historical signals that would pass today's category +
+ *   resolution-time gates. Stops attribution credit from accumulating
+ *   on markets we no longer emit on (e.g. wallet that won 2 BTC
+ *   5-minute signals doesn't get 2.5× boost when those markets are
+ *   structurally blocked today).
  * @returns {Map<string, { signals, wins, losses, wr, avgReturn }>}
  *          avgReturn is a DECIMAL fraction (e.g. 0.16 = +16% avg return)
  */
-export function buildAttributionMap(signalsHistory) {
+export function buildAttributionMap(signalsHistory, opts = {}) {
   const attr = new Map();
   if (!Array.isArray(signalsHistory)) return attr;
+  const filterCurrentlyEmittable = opts.filterCurrentlyEmittable !== false;  // default true
 
-  const resolved = signalsHistory.filter(s => s && (s.outcome === 'win' || s.outcome === 'loss'));
+  const resolved = signalsHistory.filter(s =>
+    s && (s.outcome === 'win' || s.outcome === 'loss')
+    && (!filterCurrentlyEmittable || signalCurrentlyEmittable(s))
+  );
   for (const sig of resolved) {
     const wallets = new Set();
     if (Array.isArray(sig.currentWallets)) {
@@ -109,10 +203,19 @@ export function buildAttributionMap(signalsHistory) {
  * posterior and dominates.
  */
 export function attributionMultiplier(attribution, opts = {}) {
-  // Min signals lowered 5→3. With n=3 at -50% avg return that's almost
-  // certainly a real bad emitter (P(3 in a row by chance | true mean ≥ 0)
-  // is small at sustained -50% scale). Tighter feedback loop.
-  const minSignals = opts.minSignals ?? 3;
+  // Min signals raised from 3 → 5 after the 2026-04-30 probe revealed
+  // the #1-ranked wallet (0x022c654f4b, score 67.5) was getting the max
+  // 2.5× boost from only TWO BTC-updown 5-min signals — markets we no
+  // longer emit on. Two wins at +62% avg is too thin a sample to
+  // justify capping out the multiplier; one streak from a now-blocked
+  // category was distorting the leaderboard.
+  //
+  // 5-signal minimum gives genuinely emittable signals time to
+  // accumulate before attribution dominates. Combined with the
+  // CURRENT_ALLOWED_CATEGORIES filter in buildAttributionMap, this
+  // ensures attribution credit only flows from markets the engine
+  // would still emit on today.
+  const minSignals = opts.minSignals ?? 5;
   if (!attribution || attribution.signals < minSignals) return 1.0;
   const raw = 1 + attribution.avgReturn * 2;
   return Math.max(0.0, Math.min(2.0, raw));
