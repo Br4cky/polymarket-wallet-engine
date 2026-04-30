@@ -341,6 +341,47 @@ async function fetchAllActivity(wallet, opts = {}) {
  *                                  (winners who didn't redeem, losers whose shares went to $0).
  * @returns {object} Computed stats (includes `tradesTruncated` if pagination capped)
  */
+// Categories the signal engine currently emits on. KEEP IN SYNC with
+// signals.js SIGNAL_THRESHOLDS.ALLOWED_CATEGORIES and
+// signalAttribution.js CURRENT_ALLOWED_CATEGORIES.
+const EMITTABLE_CATEGORIES = new Set([
+  'tennis', 'nba', 'mma', 'weather',
+  'crypto-other',  // crypto-updown excluded — short windows blocked by duration
+  'mlb', 'nfl', 'macro', 'ai-tech',
+  'token-launch', 'news-event',
+  'soccer',
+]);
+const EMITTABLE_MIN_HOURS_TO_RESOLUTION = 4;
+
+// Local classifier — duplicated from signals.js to avoid circular import.
+function classifyMarketTitleLocal(title) {
+  const q = (title || '').toLowerCase();
+  if (!q) return 'other';
+  if (/dota|lol|league of legends|counter-strike|valorant|cs:?go|cs2|csgo|call of duty|apex|fortnite|pubg/.test(q)) return 'esports';
+  if (/\blaunch a token|\btoken launch|\btge\b/.test(q)) return 'token-launch';
+  if (/bitcoin|btc|ethereum|eth|solana|sol\b|doge|xrp|crypto|coin/.test(q)) {
+    if (/reach|above|below|hit|close|\$|\sup\b|\sdown\b|end above|end below/.test(q)) return 'crypto-updown';
+    return 'crypto-other';
+  }
+  if (/nhl|stanley cup| hockey /.test(q)) return 'nhl';
+  if (/nba|lakers|celtics|warriors|knicks|heat|nba playoffs/.test(q)) return 'nba';
+  if (/nfl|super bowl|touchdown|quarterback/.test(q)) return 'nfl';
+  if (/mlb|baseball|world series/.test(q)) return 'mlb';
+  if (/epl|premier league|champions league|la liga|bundesliga|serie a|manchester|arsenal|liverpool|chelsea/.test(q)) return 'soccer';
+  if (/tennis|wimbledon|us open|french open|atp|wta/.test(q)) return 'tennis';
+  if (/ufc|\bmma\b|fight night/.test(q)) return 'mma';
+  if (/ pga |golf|masters tournament/.test(q)) return 'golf';
+  if (/f1\b|formula 1|grand prix/.test(q)) return 'f1';
+  if (/trump|biden|harris|election|senate|house race|republican|democrat|congressional/.test(q)) return 'politics';
+  if (/ai\b|openai|anthropic|gpt|gemini|\bllm\b|tech|apple|google|microsoft|nvidia/.test(q)) return 'ai-tech';
+  if (/weather|temperature|hurricane|tornado|snow|rainfall/.test(q)) return 'weather';
+  if (/fed rate|fomc|inflation|cpi|ppi|\bgdp\b|recession|jobs report|unemployment|nonfarm/.test(q)) return 'macro';
+  if (/ipo|earnings|revenue|guidance|\beps\b/.test(q)) return 'macro';
+  if (/spacex|starship|nasa|rocket launch|announce|statement|\bsay\b|\bsays\b|tweet|post|comment/.test(q)) return 'news-event';
+  if (/\bwill .+ by |\bwill .+ before |\bwill .+ on /.test(q)) return 'news-event';
+  return 'other';
+}
+
 function analyzeTradeHistory(events, opts = {}) {
   if (!events || events.length === 0) {
     return null;
@@ -541,6 +582,13 @@ function analyzeTradeHistory(events, opts = {}) {
   let losses = 0;
   let totalPnl = 0;
   let openPositions = 0;
+  // categoryAlignment counters — fraction of resolved trades on
+  // markets the engine would emit a signal on TODAY (passes category
+  // whitelist + duration gate). 2026-04-30 fix: prevents wallets like
+  // 0x022c654f4b (100% BTC up/down 5-min trader) from scoring high
+  // based on stats computed across markets we never emit on.
+  let totalResolvedTrades = 0;
+  let emittableResolvedTrades = 0;
   const marketResults = [];
   const categories = new Map(); // category → { wins, losses, pnl }
 
@@ -680,17 +728,46 @@ function analyzeTradeHistory(events, opts = {}) {
         buyOutcomeCount: buyOutcomes.size,
       });
 
-      // Category tracking
+      // Category tracking — eventSlug-prefix bucket (kept for diagnostic)
       const cat = mt.eventSlug?.split('-')[0] || 'unknown';
       if (!categories.has(cat)) categories.set(cat, { wins: 0, losses: 0, pnl: 0 });
       const catStats = categories.get(cat);
       catStats.pnl += pnl;
       if (pnl > 0) catStats.wins++;
       else catStats.losses++;
+
+      // Currently-emittable check — used to compute categoryAlignment.
+      // The wallet's TRADING UNIVERSE matters: a wallet that trades 100%
+      // in markets we'd never emit on (e.g. BTC up/down 5-min) shouldn't
+      // be scored as if their stats were emit-relevant. categoryAlignment
+      // is the fraction of resolved trades on markets that pass today's
+      // category whitelist + duration gate. Used as a multiplier in
+      // computeWalletScore to prevent stale-regime wallets from ranking.
+      const titleStr = mt.title || '';
+      const titleCategory = classifyMarketTitleLocal(titleStr);
+      const isAllowedCat = EMITTABLE_CATEGORIES.has(titleCategory);
+      // Duration gate: market resolved within MIN_HOURS_TO_RESOLUTION of
+      // first buy = killed today. Use the position's actual hold duration
+      // as a proxy (most position holds run from first buy to resolution).
+      const holdHours = (mt.lastTradeTs - mt.firstTradeTs) / 3600;
+      const passesDuration = holdHours >= EMITTABLE_MIN_HOURS_TO_RESOLUTION
+        || holdHours === 0;  // 0 means single-event we can't measure
+      if (isAllowedCat && passesDuration) {
+        emittableResolvedTrades++;
+      }
+      totalResolvedTrades++;
     } else {
       openPositions++;
     }
   }
+
+  // categoryAlignment: fraction of resolved trades on markets the engine
+  // would emit a signal on TODAY (passes category whitelist + duration gate).
+  // Multiplier in computeWalletScore — wallets at 0 alignment get score 0,
+  // wallets at 1.0 alignment unaffected.
+  const categoryAlignment = totalResolvedTrades > 0
+    ? emittableResolvedTrades / totalResolvedTrades
+    : 0;
 
   // Compute derived metrics
   const winRate = resolvedMarkets > 0 ? wins / resolvedMarkets : 0;
@@ -843,6 +920,12 @@ function analyzeTradeHistory(events, opts = {}) {
     recentTrades: recentTradeCount,
     uniqueMarkets: marketTrades.size,
     openPositions,
+    // Fraction of resolved trades on currently-emittable markets
+    // (passes category whitelist + duration gate). Used as multiplier
+    // in computeWalletScore to prevent stale-regime bots scoring high.
+    categoryAlignment: +categoryAlignment.toFixed(3),
+    emittableResolvedTrades,
+    totalResolvedTrades,
     tradesPerDay: +tradesPerDay.toFixed(2),
     recentTradesPerDay: +recentTradesPerDay.toFixed(2),
     marketsPerDay: +marketsPerDay.toFixed(2),
@@ -1101,7 +1184,19 @@ function computeWalletScore(stats) {
   const style = classifyWalletStyleLocal(stats);
   const styleMul = SCORING_V2.styles[style] ?? 0.5;
 
-  const total = magnitude * attrMultiplier * recency * mmPenalty * styleMul;
+  // categoryAlignment — fraction of resolved trades on currently-emittable
+  // markets. The 2026-04-30 audit found wallets like 0x022c654f4b scoring
+  // 67.5 despite trading 100% in BTC up/down 5-min markets we never emit
+  // on. Their pool-wide stats (avgEntryPrice, sellRatio, style) all
+  // looked legitimate but every input was from non-emittable markets.
+  // Multiplying by alignment makes a 0%-aligned BTC bot score 0,
+  // a 100%-aligned wallet unaffected, intermediate wallets penalised
+  // proportionally. Default 1.0 only for backwards compat with stats
+  // computed before this field existed (will be 0.0 once re-analyzed).
+  const categoryAlignment = (typeof stats.categoryAlignment === 'number')
+    ? stats.categoryAlignment : 1.0;
+
+  const total = magnitude * attrMultiplier * recency * mmPenalty * styleMul * categoryAlignment;
 
   // Backwards-compat: report decidedROI source for diagnostic display,
   // even though it no longer drives the score.
@@ -1135,6 +1230,8 @@ function computeWalletScore(stats) {
       mmScore: stats.mmScore ?? null,
       style,
       styleMul,
+      categoryAlignment: +categoryAlignment.toFixed(3),
+      emittableResolvedTrades: stats.emittableResolvedTrades ?? null,
       avgEntryPrice: stats.avgEntryPrice != null ? +stats.avgEntryPrice.toFixed(4) : null,
       resolved,
       sellRatio: stats.sellRatio != null ? +stats.sellRatio.toFixed(3) : null,
