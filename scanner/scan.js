@@ -1473,11 +1473,17 @@ function snapshotWalletHistory(pool, scanCount) {
 async function fastLoop(state, walletPool, marketLookup) {
   const scanIndex = state.scanCount;
   console.log(`\n⚡ FAST LOOP #${scanIndex} — ${new Date().toISOString()}`);
-  console.log(`  Tracked wallets: ${Object.keys(walletPool).length}`);
+  // Only iterate ACTIVE wallets — Object.keys(walletPool) would include
+  // status='removed' entries and waste an /activity API call per evicted
+  // wallet (~270 wasted calls/scan post-V2 sweep).
+  const activeAddresses = Object.entries(walletPool)
+    .filter(([, w]) => w?.status !== 'removed')
+    .map(([addr]) => addr);
+  console.log(`  Tracked wallets: ${activeAddresses.length}`);
 
   // Step 1: Fetch recent trades for all tracked wallets
   const lookbackTs = Math.floor(Date.now() / 1000) - (CONFIG.LOOKBACK_HOURS * 3600);
-  const walletAddresses = Object.keys(walletPool);
+  const walletAddresses = activeAddresses;
 
   console.log(`  Fetching trades since ${new Date(lookbackTs * 1000).toISOString()}...`);
   const recentTrades = await fetchRecentTrades(walletAddresses, lookbackTs, (done, total) => {
@@ -1622,10 +1628,14 @@ async function fastLoop(state, walletPool, marketLookup) {
   let analytics = loadGzJSON(analyticsFile) || { trendline: [] };
 
   // 7a: Trendline
+  // trackedWallets counts only ACTIVE wallets — Object.keys(walletPool).length
+  // would include status='removed' entries (eviction sets status but doesn't
+  // delete the entry, so stats and history can be retained). Pre-fix the chart
+  // showed e.g. 828 instead of 557 active, hiding any post-eviction drop.
   analytics.trendline.push({
     scanIndex,
     timestamp: new Date().toISOString(),
-    trackedWallets: Object.keys(walletPool).length,
+    trackedWallets: Object.values(walletPool).filter(w => w?.status !== 'removed').length,
     activeWalletsThisScan: recentTrades.size,
     newTrades: totalNewTrades,
     convergenceCandidates: candidates.length,
@@ -1949,15 +1959,21 @@ async function run() {
   const signalsDataForAttr = loadGzJSON(signalsFileForAttr) || {};
   const attributionMap = buildAttributionMap(signalsDataForAttr.history || []);
 
+  // Pool size for logs and discovery decisions = ACTIVE wallets only.
+  // Object.keys(walletPool).length includes status='removed' entries which
+  // makes pool look bigger than it is and can suppress discovery (e.g. if
+  // active=557 but total=828, "below target" check might incorrectly pass).
+  const activePoolEntries = Object.entries(walletPool).filter(([, w]) => w?.status !== 'removed');
+  const activePoolSize = activePoolEntries.length;
   console.log(`\n📋 State: Scan #${state.scanCount}`);
-  console.log(`  Wallet pool: ${Object.keys(walletPool).length}`);
+  console.log(`  Wallet pool: ${activePoolSize} active (${Object.keys(walletPool).length} total in store)`);
   console.log(`  Known markets: ${marketLookup.size}`);
   console.log(`  Attribution map: ${attributionMap.size} wallets with signal history`);
   console.log(`  Last discovery: scan #${state.lastDiscovery}`);
 
   // Decide whether to run discovery (slow loop)
   // Force discovery if pool is below target (e.g. after state reset)
-  const poolSize = Object.keys(walletPool).length;
+  const poolSize = activePoolSize;
   const poolEmpty = poolSize === 0;
   const poolBelowTarget = poolSize < CONFIG.TARGET_POOL_SIZE * 0.5;
   const needsDiscovery = poolEmpty ||
