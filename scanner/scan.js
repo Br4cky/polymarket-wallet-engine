@@ -1018,9 +1018,20 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
 
       const scored = computeWalletScore(stats);
 
+      // Discovery-time score floor — reject wallets whose V2 score is
+      // below the pool floor at admission. Without this, BTC-updown bots,
+      // esports-only wallets, etc. (categoryAlignment ~0 → score ~0) get
+      // admitted, take up pool slots, and have to wait for the next
+      // pool-trim cycle to evict. Score floor at admission saves the slot
+      // for the next candidate that might actually pass.
+      if (scored.score == null || scored.score < CONFIG.MIN_SCORE_POOL) {
+        processed++;
+        continue;
+      }
+
       pool[address] = {
         address,
-        score: scored.score != null ? scored.score : undefined,
+        score: scored.score,
         scoreComponents: scored.components || undefined,
         stats,
         goldskyPnl: summary.totalPnl,
