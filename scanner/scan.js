@@ -572,10 +572,15 @@ async function discoverFromPolymarketLeaderboard() {
   // PNL window catches the trader-side. VOL catches high-volume wallets that
   // might be high-frequency traders or whales we'd otherwise miss.
   const queries = [
-    { timePeriod: 'month', orderBy: 'PNL', category: 'overall', maxOffset: 1900 },
+    // Overall — top profit + volume across all categories
+    { timePeriod: 'month', orderBy: 'PNL', category: 'overall', maxOffset: 500 },
     { timePeriod: 'week',  orderBy: 'PNL', category: 'overall', maxOffset: 500 },
-    { timePeriod: 'all',   orderBy: 'PNL', category: 'overall', maxOffset: 1900 },
+    { timePeriod: 'all',   orderBy: 'PNL', category: 'overall', maxOffset: 500 },
     { timePeriod: 'month', orderBy: 'VOL', category: 'overall', maxOffset: 500 },
+    // Per-category for breadth — leaderboard caps each at ~50-100 entries
+    { timePeriod: 'month', orderBy: 'PNL', category: 'sports',   maxOffset: 200 },
+    { timePeriod: 'month', orderBy: 'PNL', category: 'politics', maxOffset: 200 },
+    { timePeriod: 'month', orderBy: 'PNL', category: 'crypto',   maxOffset: 200 },
   ];
 
   console.log('  Fetching leaderboards from Polymarket data-api...');
@@ -1143,20 +1148,15 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
 
       const scored = computeWalletScore(stats);
 
-      // Discovery-time score floor — reject wallets whose V2 score is
-      // below the pool floor at admission. Without this, BTC-updown bots,
-      // esports-only wallets, etc. (categoryAlignment ~0 → score ~0) get
-      // admitted, take up pool slots, and have to wait for the next
-      // pool-trim cycle to evict. Score floor at admission saves the slot
-      // for the next candidate that might actually pass.
-      if (scored.score == null || scored.score < CONFIG.MIN_SCORE_POOL) {
-        processed++;
-        continue;
-      }
-
+      // Note: NO discovery-time score floor. Categories our classifier
+      // doesn't recognize (esports without explicit "lol" keyword, niche
+      // sports, crypto-other) yield categoryAlignment=0 → score=0, which
+      // would reject every candidate. Admit them; let signal-emission
+      // gates filter at the right level. Bots are already caught by the
+      // bot-pattern check above, mean-pickers by the explicit gate.
       pool[address] = {
         address,
-        score: scored.score,
+        score: scored.score != null ? scored.score : undefined,
         scoreComponents: scored.components || undefined,
         stats,
         goldskyPnl: summary.totalPnl,
