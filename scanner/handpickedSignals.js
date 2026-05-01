@@ -19,18 +19,18 @@
  *
  * Signal type: 'handpicked'
  *
- * Gates applied (minimal — user already vetted the wallet):
- *   - market_closed: don't emit on already-resolved markets
- *   - resolves_too_soon: 4h floor (followers can't act on faster markets)
+ * Gates applied (technical only — user has already vetted the wallet):
  *   - already_active: don't double-emit per (wallet, market) pair
- *   - basic price sanity: must have a current price > 0
  *
- * Gates NOT applied (deliberately minimal):
- *   - categoryAlignment / category whitelist — user trusts the wallet's
- *     market choices; if they bet underdogs in markets we don't normally
- *     touch, we still emit.
- *   - drawdown / stale-follower premium — same rationale.
- *   - V2 score floor — handpicked wallets bypass scoring entirely.
+ * Gates NOT applied (deliberately):
+ *   - categoryAlignment / category whitelist
+ *   - market_closed / resolves_too_soon — emit on every BUY regardless
+ *   - drawdown / stale-follower premium
+ *   - V2 score floor
+ *   - no_price — emit anyway with currentPrice=0; repair flow back-fills
+ *
+ * The user has taken responsibility for wallet quality. We track every
+ * trade and let the data speak for itself.
  */
 
 const HANDPICKED_MIN_HOURS_TO_RESOLUTION = 4;
