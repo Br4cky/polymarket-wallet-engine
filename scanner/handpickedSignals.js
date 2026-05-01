@@ -89,22 +89,15 @@ export function processHandpickedSignals(recentTrades, handpickedList, signals, 
         continue;
       }
 
+      // No quality/timing gates on handpicked — user has already vetted
+      // the wallet. We emit on EVERY new BUY, even on closed markets,
+      // short-window markets, and markets without current price.
+      // Repair flow later back-fills resolution + price for incomplete
+      // data. The only gate we keep below is already_active — pure
+      // technical anti-dup, has nothing to do with quality.
       const tokenId = trade.asset || '';
       const mi = tokenId ? marketLookup.get(tokenId) : null;
-
-      // Gate: market resolved
-      if (mi && mi.marketClosed === true) { kills.market_closed++; continue; }
-
-      // Gate: resolves too soon
-      if (mi && mi.endDate) {
-        const minMs = HANDPICKED_MIN_HOURS_TO_RESOLUTION * 3600 * 1000;
-        const msUntil = new Date(mi.endDate).getTime() - Date.now();
-        if (msUntil < minMs) { kills.resolves_too_soon++; continue; }
-      }
-
-      // Gate: must have a price to track signal-return later
       const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
-      if (!(currentPrice > 0)) { kills.no_price++; continue; }
 
       // Open a new handpicked signal
       const entryPrice = parseFloat(trade.price) || currentPrice;
