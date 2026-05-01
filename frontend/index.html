@@ -23,6 +23,7 @@
       <button class="tab" data-tab="convergence">Convergence</button>
       <button class="tab" data-tab="signals">Signals</button>
       <button class="tab" data-tab="paper">Paper Trader</button>
+      <button class="tab" data-tab="handpicked">Handpicked</button>
     </div>
   </nav>
 
@@ -394,6 +395,99 @@
             </thead>
             <tbody id="paper-comparison-tbody">
               <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ────────────────────────  Handpicked tab  ──────────────────────── -->
+    <div id="tab-handpicked" class="tab-content">
+      <div class="card">
+        <h2 style="display: flex; align-items: center; gap: 8px;">Handpicked Wallet Pool <span class="badge badge-handpicked">HP</span></h2>
+        <p style="opacity:0.75; font-size:13px; margin-top: 4px;">
+          Manually-curated wallets the user has personally vetted. Bypasses scoring/admission gates from the automated scanner —
+          every BUY from these wallets becomes a handpicked-type signal. Add wallets via
+          <code style="background:var(--bg-soft); padding:2px 6px; border-radius:4px;">node scripts/add-handpicked.mjs &lt;address&gt;</code>.
+        </p>
+
+        <div class="metric-grid" style="margin-top: 16px;">
+          <div class="metric-card" title="Number of wallets in the handpicked pool">
+            <div class="metric-label">Pool Size</div>
+            <div class="metric-value" id="hp-pool-size">0</div>
+            <div class="metric-unit">wallets</div>
+          </div>
+          <div class="metric-card" title="Total handpicked signals emitted (active + history)">
+            <div class="metric-label">Total Signals</div>
+            <div class="metric-value" id="hp-total-signals">0</div>
+            <div class="metric-unit">all time</div>
+          </div>
+          <div class="metric-card" title="Currently active handpicked signals (not yet resolved)">
+            <div class="metric-label">Active</div>
+            <div class="metric-value" id="hp-active-signals">0</div>
+            <div class="metric-unit">open</div>
+          </div>
+          <div class="metric-card" title="Resolved signals (win + loss)">
+            <div class="metric-label">Resolved</div>
+            <div class="metric-value" id="hp-resolved">0</div>
+            <div class="metric-unit">closed</div>
+          </div>
+          <div class="metric-card" title="Win rate across resolved handpicked signals">
+            <div class="metric-label">WR</div>
+            <div class="metric-value" id="hp-wr">—</div>
+            <div class="metric-unit">resolved</div>
+          </div>
+          <div class="metric-card" title="Average signal return across all resolved handpicked signals">
+            <div class="metric-label">Avg Return</div>
+            <div class="metric-value" id="hp-avg-return">—</div>
+            <div class="metric-unit">per signal</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Handpicked Wallets</h3>
+        <div class="table-wrapper">
+          <table id="handpicked-wallet-table" class="data-table sortable">
+            <thead>
+              <tr>
+                <th data-field="address">Wallet</th>
+                <th data-field="notes">Notes</th>
+                <th data-field="walletPnl" class="sortable" title="Wallet's totalPnl from /activity at time of admission">PnL</th>
+                <th data-field="walletROI" class="sortable" title="singleSideROI on resolved bets">ROI</th>
+                <th data-field="walletWR" class="sortable">WR</th>
+                <th data-field="walletResolved" class="sortable">Resolved</th>
+                <th data-field="sigsActive" class="sortable" title="Currently-active handpicked signals from this wallet">Active</th>
+                <th data-field="sigsResolved" class="sortable" title="Resolved handpicked signals">Resolved HP</th>
+                <th data-field="sigWR" class="sortable" title="Win rate on this wallet's handpicked signals">HP WR</th>
+                <th data-field="sigAvgRet" class="sortable" title="Average signal return on this wallet's handpicked signals">HP AvgRet</th>
+              </tr>
+            </thead>
+            <tbody id="handpicked-wallet-tbody">
+              <tr><td colspan="10" class="empty-state">No handpicked wallets yet. Add via <code>node scripts/add-handpicked.mjs &lt;address&gt;</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Recent Handpicked Signals</h3>
+        <div class="table-wrapper">
+          <table id="handpicked-signals-table" class="data-table sortable">
+            <thead>
+              <tr>
+                <th data-field="openedAt" class="sortable">Opened</th>
+                <th data-field="marketTitle">Market</th>
+                <th data-field="soloWallet">From</th>
+                <th data-field="direction">Side</th>
+                <th data-field="avgEntryPrice" class="sortable">Entry</th>
+                <th data-field="currentMarketPrice" class="sortable">Now</th>
+                <th data-field="outcome" class="sortable">Outcome</th>
+                <th data-field="signalReturn" class="sortable">Return</th>
+              </tr>
+            </thead>
+            <tbody id="handpicked-signals-tbody">
+              <tr><td colspan="8" class="empty-state">Waiting for first handpicked signal...</td></tr>
             </tbody>
           </table>
         </div>

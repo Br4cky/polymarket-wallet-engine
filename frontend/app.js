@@ -148,11 +148,14 @@ async function fetchGzJSON(url) {
 
 async function loadData() {
   try {
-    const analytics = await fetchGzJSON(DATA_BASE + 'analytics.json.gz');
-    return { analytics };
+    const [analytics, handpicked] = await Promise.all([
+      fetchGzJSON(DATA_BASE + 'analytics.json.gz'),
+      fetchGzJSON(DATA_BASE + 'handpicked-wallets.json.gz').catch(() => null),
+    ]);
+    return { analytics, handpicked };
   } catch (error) {
     console.error('Data load error:', error);
-    return { analytics: null };
+    return { analytics: null, handpicked: null };
   }
 }
 
@@ -902,7 +905,139 @@ function renderCurrentTab() {
     case 'convergence': renderConvergence(); break;
     case 'signals': renderSignals(); break;
     case 'paper': renderPaperTrader(); break;
+    case 'handpicked': renderHandpicked(); break;
   }
+}
+
+function renderHandpicked() {
+  // Handpicked tab — manually-curated wallets + the signal track they
+  // produce. Decoupled from the automated scanner. As wallets are added
+  // (via scripts/add-handpicked.mjs) and signals resolve, this tab
+  // accumulates clean ground-truth attribution data.
+  const store = data.handpicked;
+  const allSignals = data.analytics?.signals || {};
+  const active = Object.values(allSignals.active || {});
+  const history = Array.isArray(allSignals.history) ? allSignals.history : Object.values(allSignals.history || {});
+
+  const wallets = store?.wallets || [];
+
+  // Per-wallet: accumulate signals from this wallet
+  const sigByWallet = {};
+  function key(addr) { return (addr || '').toLowerCase(); }
+  function attachSig(s, list) {
+    if (s.signalType !== 'handpicked') return;
+    const w = key(s.soloWallet);
+    if (!w) return;
+    if (!sigByWallet[w]) sigByWallet[w] = { active: 0, wins: 0, losses: 0, pending: 0, totalReturn: 0, returnCount: 0 };
+    list.push(s);
+    if (s.outcome === 'win') { sigByWallet[w].wins++; if (typeof s.signalReturn === 'number') { sigByWallet[w].totalReturn += s.signalReturn; sigByWallet[w].returnCount++; } }
+    else if (s.outcome === 'loss') { sigByWallet[w].losses++; if (typeof s.signalReturn === 'number') { sigByWallet[w].totalReturn += s.signalReturn; sigByWallet[w].returnCount++; } }
+    else if (s.outcome === 'win' || s.outcome === 'loss') {} // unreachable
+    else sigByWallet[w].pending++;
+  }
+  const allHpSignals = [];
+  for (const s of active) attachSig(s, allHpSignals);
+  for (const s of history) attachSig(s, allHpSignals);
+  for (const w of wallets) {
+    const k = key(w.address);
+    if (!sigByWallet[k]) sigByWallet[k] = { active: 0, wins: 0, losses: 0, pending: 0, totalReturn: 0, returnCount: 0 };
+    sigByWallet[k].active = active.filter(s => s.signalType === 'handpicked' && key(s.soloWallet) === k).length;
+  }
+
+  // Aggregate stats
+  const totalSigs = allHpSignals.length;
+  const totalActive = active.filter(s => s.signalType === 'handpicked').length;
+  const totalWins = allHpSignals.filter(s => s.outcome === 'win').length;
+  const totalLosses = allHpSignals.filter(s => s.outcome === 'loss').length;
+  const totalResolved = totalWins + totalLosses;
+  const wr = totalResolved > 0 ? (totalWins / totalResolved * 100) : 0;
+  const returns = allHpSignals.map(s => s.signalReturn).filter(r => typeof r === 'number');
+  const avgRet = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+
+  // Top metric tiles
+  el('hp-pool-size').textContent = wallets.length.toString();
+  el('hp-total-signals').textContent = totalSigs.toString();
+  el('hp-active-signals').textContent = totalActive.toString();
+  el('hp-resolved').textContent = totalResolved.toString();
+  el('hp-wr').textContent = wr.toFixed(1) + '%';
+  el('hp-avg-return').textContent = (avgRet >= 0 ? '+' : '') + avgRet.toFixed(1) + '%';
+
+  // Wallet table
+  const walletData = wallets.map(w => {
+    const k = key(w.address);
+    const sigStats = sigByWallet[k] || { active: 0, wins: 0, losses: 0, pending: 0, totalReturn: 0, returnCount: 0 };
+    const resolvedSigs = sigStats.wins + sigStats.losses;
+    const walletWR = resolvedSigs > 0 ? (sigStats.wins / resolvedSigs * 100) : null;
+    const walletAvgRet = sigStats.returnCount > 0 ? (sigStats.totalReturn / sigStats.returnCount) : null;
+    return {
+      address: w.address,
+      addedAt: w.addedAt,
+      notes: w.notes || '—',
+      walletPnl: w.stats?.totalPnl ?? null,
+      walletWR: w.stats?.winRate ?? null,
+      walletROI: w.stats?.singleSideROI ?? null,
+      walletResolved: w.stats?.resolvedMarkets ?? null,
+      sigsActive: sigStats.active,
+      sigsResolved: resolvedSigs,
+      sigsPending: sigStats.pending - sigStats.active,  // history pending only
+      sigWR: walletWR,
+      sigAvgRet: walletAvgRet,
+    };
+  });
+
+  createSortableTable('handpicked-wallet-table', [
+    { field: 'address', label: 'Wallet', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
+    { field: 'notes', label: 'Notes', render: v => `<span style="opacity:0.85; font-size:12px;">${v}</span>` },
+    { field: 'walletPnl', label: 'Wallet PnL', render: v => v != null ? `<span class="${pnlClass(v)}">${fmtDollars(v)}</span>` : '—' },
+    { field: 'walletROI', label: 'Wallet ROI', render: v => v != null ? `<span class="${pnlClass(v)}">${(v * 100).toFixed(0)}%</span>` : '—' },
+    { field: 'walletWR', label: 'Wallet WR', render: v => v != null ? `${(v * 100).toFixed(0)}%` : '—' },
+    { field: 'walletResolved', label: 'Resolved', render: v => v != null ? String(v) : '—' },
+    { field: 'sigsActive', label: 'HP Active', render: v => `<span class="badge badge-handpicked">${v}</span>` },
+    { field: 'sigsResolved', label: 'HP Resolved', render: v => String(v) },
+    { field: 'sigWR', label: 'HP WR', render: v => v != null ? `${v.toFixed(0)}%` : '—' },
+    { field: 'sigAvgRet', label: 'HP AvgRet', render: v => v != null ? `<span class="${pnlClass(v)}">${(v >= 0 ? '+' : '') + v.toFixed(0)}%</span>` : '—' },
+  ], walletData);
+
+  // Recent handpicked signals (cap 50, newest first)
+  allHpSignals.sort((a, b) => toMs(b.openedAt) - toMs(a.openedAt));
+  const sigDisplay = allHpSignals.slice(0, 50).map(s => ({
+    marketTitle: s.marketTitle || 'Unknown',
+    slug: s.slug || '',
+    eventSlug: s.eventSlug || '',
+    soloWallet: s.soloWallet,
+    openedAt: s.openedAt,
+    outcome: s.outcome || 'pending',
+    signalReturn: s.signalReturn,
+    direction: s.direction || '',
+    avgEntryPrice: s.avgEntryPrice || 0,
+    currentMarketPrice: s.currentMarketPrice || 0,
+    closeReason: s.closeReason || null,
+  }));
+
+  createSortableTable('handpicked-signals-table', [
+    { field: 'openedAt', label: 'Opened', render: v => {
+      if (!v) return '<span style="opacity:0.4">-</span>';
+      const ms = toMs(v);
+      const secsAgo = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      let rel;
+      if (secsAgo < 60) rel = `${secsAgo}s ago`;
+      else if (secsAgo < 3600) rel = `${Math.floor(secsAgo / 60)}m ago`;
+      else if (secsAgo < 86400) rel = `${Math.floor(secsAgo / 3600)}h ago`;
+      else rel = `${Math.floor(secsAgo / 86400)}d ago`;
+      return `<span title="${new Date(ms).toISOString()}">${rel}</span>`;
+    }},
+    { field: 'marketTitle', render: (v, row) => `<a href="${polymarketUrl(row.slug, row.eventSlug)}" target="_blank" style="color:var(--accent-light);">${truncate(v, 50)}</a>` },
+    { field: 'soloWallet', label: 'From', render: v => v ? `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` : '—' },
+    { field: 'direction', render: v => v || '—' },
+    { field: 'avgEntryPrice', label: 'Entry', render: v => v > 0 ? (v * 100).toFixed(0) + '¢' : '—' },
+    { field: 'currentMarketPrice', label: 'Now', render: v => v > 0 ? (v * 100).toFixed(0) + '¢' : '—' },
+    { field: 'outcome', render: (v, row) => {
+      if (v === 'win') return `<span class="badge badge-high">WIN</span>`;
+      if (v === 'loss') return `<span class="badge badge-low">LOSS</span>`;
+      return `<span style="opacity:0.6">${v}</span>`;
+    }},
+    { field: 'signalReturn', label: 'Return', render: v => v != null ? `<span class="${pnlClass(v)}">${(v >= 0 ? '+' : '') + v.toFixed(0)}%</span>` : '—' },
+  ], sigDisplay);
 }
 
 async function init() {
