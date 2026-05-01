@@ -891,6 +891,27 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
   const pool = { ...existingPool };
   let qualified = 0;
   let processed = 0;
+  // Discovery rejection counters — tracks why each candidate was killed at
+  // admission. Surfaced in the post-discovery summary log so the user can
+  // tell which gate is over-tight when admission rates are low.
+  const discoveryKills = {
+    insufficient_events: 0,        // <10 /activity events
+    no_stats: 0,                   // analyzer returned null
+    insufficient_resolved: 0,      // resolvedMarkets < MIN_RESOLVED_MARKETS
+    dormant: 0,                    // last trade > DORMANCY_DAYS ago
+    entry_price_too_high: 0,       // avgEntryPrice > MAX_WALLET_AVG_ENTRY_PRICE
+    mean_picker_decided: 0,        // isMeanPickerShape from positions
+    decided_capital_too_low: 0,    // decidedCapital < threshold
+    decided_roi_too_low: 0,        // decidedROI < threshold
+    decided_wr_too_high: 0,        // wr > 99% with meaningful sample (mean-picker)
+    singleside_capital_too_low: 0, // singleSide fallback: capital < threshold
+    singleside_roi_too_low: 0,     // singleSide fallback: ROI < threshold
+    singleside_wr_too_high: 0,     // singleSide fallback: hit rate too high
+    likely_mm: 0,                  // isLikelyMM
+    alpha_fails: 0,                // alphaVerdict === 'fails'
+    bot_pattern: 0,                // detectBotPattern triggered
+    fetch_error: 0,                // /activity fetch threw
+  };
 
   for (const [address, summary] of candidates) {
     // Skip if already in pool and scored recently.
@@ -965,6 +986,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
       // otherwise look "still open" to the analyzer and contribute $0 to PnL.
       const events = await fetchAllActivity(address, { maxEvents: 5000 });
       if (!events || events.length < 10) {
+        discoveryKills.insufficient_events++;
         processed++;
         continue;
       }
@@ -975,6 +997,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
       // on their first re-score cycle via ensureMarketsResolved (Step 5).
       const stats = analyzeTradeHistory(events, { marketLookup });
       if (!stats) {
+        discoveryKills.no_stats++;
         processed++;
         continue;
       }
@@ -996,6 +1019,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
 
       // Require minimum resolved markets — no flukes
       if ((stats.resolvedMarkets || 0) < CONFIG.MIN_RESOLVED_MARKETS) {
+        discoveryKills.insufficient_resolved++;
         processed++;
         continue;
       }
@@ -1007,6 +1031,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         : Infinity;
       const freshInactiveFloor = CONFIG.DORMANCY_DAYS;
       if (daysSinceLastTrade > freshInactiveFloor) {
+        discoveryKills.dormant++;
         processed++;
         continue;
       }
@@ -1018,6 +1043,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
           CONFIG.MAX_WALLET_AVG_ENTRY_PRICE < 1 &&
           stats.avgEntryPrice > 0 &&
           stats.avgEntryPrice > CONFIG.MAX_WALLET_AVG_ENTRY_PRICE) {
+        discoveryKills.entry_price_too_high++;
         processed++;
         continue;
       }
@@ -1051,17 +1077,20 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         if (decidedMetrics) {
           // Reject obvious mean-picker shape on sight
           if (decidedMetrics.isMeanPickerShape === true) {
+            discoveryKills.mean_picker_decided++;
             processed++;
             continue;
           }
           // Require meaningful capital-at-risk on resolved bets
           if ((decidedMetrics.decidedCapital || 0) < CONFIG.DISCOVERY_MIN_DECIDED_CAPITAL) {
+            discoveryKills.decided_capital_too_low++;
             processed++;
             continue;
           }
           // Require real edge, not just WR
           if (decidedMetrics.decidedROI == null
               || decidedMetrics.decidedROI < CONFIG.DISCOVERY_MIN_DECIDED_ROI) {
+            discoveryKills.decided_roi_too_low++;
             processed++;
             continue;
           }
@@ -1071,6 +1100,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
           if (resolvedNow >= CONFIG.DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED
               && decidedMetrics.winRate != null
               && decidedMetrics.winRate > CONFIG.DISCOVERY_MAX_WIN_RATE) {
+            discoveryKills.decided_wr_too_high++;
             processed++;
             continue;
           }
@@ -1080,10 +1110,12 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
           // quality-bar the same whether we got decided or single-side data.
           // See dataApi.js computeWalletScore for how this feeds scoring.
           if (stats.singleSideCapital < CONFIG.DISCOVERY_MIN_DECIDED_CAPITAL) {
+            discoveryKills.singleside_capital_too_low++;
             processed++;
             continue;
           }
           if (stats.singleSideROI < CONFIG.DISCOVERY_MIN_DECIDED_ROI) {
+            discoveryKills.singleside_roi_too_low++;
             processed++;
             continue;
           }
@@ -1091,6 +1123,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
           if (resolvedSS >= CONFIG.DISCOVERY_MAX_WIN_RATE_MIN_RESOLVED
               && stats.singleSideHitRate != null
               && stats.singleSideHitRate > CONFIG.DISCOVERY_MAX_WIN_RATE) {
+            discoveryKills.singleside_wr_too_high++;
             processed++;
             continue;
           }
@@ -1127,10 +1160,12 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
       // are admitted; they can prove themselves later. We don't want to block
       // promising newer wallets — only clear negatives.
       if (stats.isLikelyMM === true) {
+        discoveryKills.likely_mm++;
         processed++;
         continue;
       }
       if (stats.alphaVerdict === 'fails') {
+        discoveryKills.alpha_fails++;
         processed++;
         continue;
       }
@@ -1139,8 +1174,9 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
       // structurally can't produce copyable signals (kill at MIN_HOURS_TO_RESOLUTION
       // or SOLO_MIN_BUY_SIZE downstream). See detectBotPattern() comments.
       if (CONFIG.BOT_PATTERN_GATE) {
-        const bot = detectBotPattern(events);
+        const bot = detectBotPattern(events, { categoryAlignment: stats?.categoryAlignment });
         if (bot.isBot) {
+          discoveryKills.bot_pattern++;
           processed++;
           continue;
         }
@@ -1169,6 +1205,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
 
       qualified++;
     } catch (err) {
+      discoveryKills.fetch_error++;
       // Log first few errors per scan so silent failures are visible
       if (processed < 5 || (err && err.message && !/timeout|ECONNRESET|fetch failed/i.test(err.message))) {
         console.log(`    ⚠ qualify err ${address.slice(0, 10)}: ${err?.message || err}`);
@@ -1178,6 +1215,17 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
     processed++;
     if (processed % 50 === 0) {
       console.log(`  Processed ${processed}/${candidates.length} (${qualified} qualified)...`);
+    }
+  }
+
+  // Per-gate rejection summary — surfaces which discovery gate killed
+  // most candidates so we can see if any are over-tight.
+  const totalRejected = Object.values(discoveryKills).reduce((s, n) => s + n, 0);
+  if (totalRejected > 0) {
+    console.log(`\n  Discovery rejection breakdown (${totalRejected} of ${candidates.length} rejected):`);
+    const sorted = Object.entries(discoveryKills).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+    for (const [reason, n] of sorted) {
+      console.log(`    ${reason.padEnd(30)} ${String(n).padStart(5)}`);
     }
   }
 
