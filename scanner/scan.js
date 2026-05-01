@@ -50,6 +50,7 @@ import { aggregatePositions } from './positionLedger.js';
 import { attachMMClassification } from './mmClassifier.js';
 import { attachAlphaEvaluation, ALPHA_THRESHOLDS } from './alphaTest.js';
 import { buildAttributionMap, attachAttribution } from './signalAttribution.js';
+import { processHandpickedSignals } from './handpickedSignals.js';
 
 import fs from 'fs';
 import path from 'path';
@@ -1632,6 +1633,50 @@ async function fastLoop(state, walletPool, marketLookup) {
 
   console.log(`  Signals: ${updatedSignals.stats.opened} opened, ${updatedSignals.stats.updated} updated, ${updatedSignals.stats.closed} closed`);
   console.log(`  Active: ${updatedSignals.stats.activeCount} | History: ${updatedSignals.stats.historyCount} | WR: ${updatedSignals.stats.winRate}%`);
+
+  // Step 4b: Handpicked-wallet signals — separate parallel track
+  // (manually-curated wallets bypass scoring/admission; every BUY emits
+  // a signal). See scanner/handpickedSignals.js for the full design.
+  const handpickedFile = path.join(DATA_DIR, 'handpicked-wallets.json.gz');
+  if (fs.existsSync(handpickedFile)) {
+    try {
+      const handpickedStore = loadGzJSON(handpickedFile);
+      const handpickedList = handpickedStore?.wallets || [];
+      if (handpickedList.length > 0) {
+        // Fetch trades for handpicked wallets if not already in recentTrades.
+        // Most handpicked wallets won't be in the regular tracked pool, so
+        // fetch them as a batch via fetchRecentTrades.
+        const missing = handpickedList
+          .map(w => w.address.toLowerCase())
+          .filter(addr => !recentTrades.has(addr));
+        let handpickedTrades = new Map();
+        if (missing.length > 0) {
+          try {
+            handpickedTrades = await fetchRecentTrades(missing, lookbackTs);
+          } catch (err) { /* tolerate; skip this scan if API hiccup */ }
+        }
+        // Merge in any handpicked wallets that ARE already in recentTrades
+        for (const w of handpickedList) {
+          const addr = w.address.toLowerCase();
+          if (recentTrades.has(addr)) handpickedTrades.set(addr, recentTrades.get(addr));
+        }
+
+        const hpResult = processHandpickedSignals(
+          handpickedTrades, handpickedList, updatedSignals, marketLookup, scanIndex
+        );
+        // Merge handpicked signals into updatedSignals.active (history/stats unchanged here)
+        updatedSignals.active = hpResult.active;
+        updatedSignals.stats.activeCount = Object.keys(updatedSignals.active).length;
+        console.log(`  Handpicked: ${hpResult.opened} opened, ${hpResult.updated} updated  (pool=${handpickedList.length})`);
+        if (hpResult.opened === 0 && hpResult.updated === 0) {
+          const reasons = Object.entries(hpResult.kills).filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n}`).join(', ');
+          if (reasons) console.log(`    HP kills: ${reasons}`);
+        }
+      }
+    } catch (err) {
+      console.log(`  Handpicked: error — ${err.message}`);
+    }
+  }
 
   // Step 5: Paper trading
   const paperFile = path.join(DATA_DIR, 'paper-trades.json.gz');

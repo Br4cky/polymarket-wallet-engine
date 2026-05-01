@@ -483,6 +483,20 @@ button {
   font-weight: 600;
 }
 
+.badge-handpicked {
+  /* Manually-curated wallet — the user vouches for this trader directly.
+     Visually distinct (orange) so handpicked signals stand out from the
+     automated convergence stream. */
+  background: rgba(230, 126, 34, 0.20);
+  color: #e67e22;
+  border: 1px solid rgba(230, 126, 34, 0.45);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
 .badge-v2 {
   /* Marker for signals emitted under V2 scoring (post 2026-04-30 13:00 UTC).
      Lets the user visually separate old vs new signal performance in the

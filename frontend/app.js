@@ -637,6 +637,7 @@ function renderSignals() {
         : v === 'cluster' ? 'badge-cluster'
         : v === 'micro-cluster' ? 'badge-micro-cluster'
         : v === 'mid-favorite' ? 'badge-mid-favorite'
+        : v === 'handpicked' ? 'badge-handpicked'
         : 'badge-consensus';
       return `<span class="badge ${cls}">${(v || 'consensus').toUpperCase()}</span>`;
     }},
@@ -781,6 +782,7 @@ function renderPaperTrader() {
         : v === 'cluster' ? 'badge-cluster'
         : v === 'micro-cluster' ? 'badge-micro-cluster'
         : v === 'mid-favorite' ? 'badge-mid-favorite'
+        : v === 'handpicked' ? 'badge-handpicked'
         : 'badge-consensus';
       return `<span class="badge ${cls}">${(v || 'consensus').toUpperCase()}</span>`;
     }},
@@ -802,6 +804,7 @@ function renderPaperTrader() {
         : v === 'cluster' ? 'badge-cluster'
         : v === 'micro-cluster' ? 'badge-micro-cluster'
         : v === 'mid-favorite' ? 'badge-mid-favorite'
+        : v === 'handpicked' ? 'badge-handpicked'
         : 'badge-consensus';
       return `<span class="badge ${cls}">${(v || 'consensus').toUpperCase()}</span>`;
     }},
