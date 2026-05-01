@@ -541,6 +541,99 @@ async function ensureMarketsResolved(events, marketLookup) {
 }
 
 /**
+ * Discover wallets from Polymarket's public leaderboard API.
+ *
+ * Endpoint: data-api.polymarket.com/v1/leaderboard
+ * Params: timePeriod (day|week|month|all), orderBy (PNL|VOL),
+ *         category (overall|sports|...), limit, offset.
+ * Returns: [{ rank, proxyWallet, userName, vol, pnl, ... }]
+ *
+ * Built as a Goldsky-failure fallback after Goldsky's sgd2684→sgd4477
+ * subgraph migration started timing out on cursor pagination
+ * (2026-05-01). Polymarket's own leaderboard is more directly aligned
+ * with what we want anyway — wallets ranked by actual PnL — and avoids
+ * the "scan 2M positions, find 100 wallets" inefficiency of cursor
+ * iteration.
+ *
+ * Returns Map<address, { pnl, vol, userName, sourceQuery }> deduped
+ * across multiple (timePeriod × orderBy) queries.
+ */
+async function discoverFromPolymarketLeaderboard() {
+  const candidates = new Map(); // address → { pnl, vol, userName, sourceQuery }
+  const PAGE_LIMIT = 100;       // Polymarket's leaderboard endpoint limit
+  const HEADERS = {
+    'Origin': 'https://polymarket.com',
+    'Referer': 'https://polymarket.com/',
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (compatible; PolymarketSignalEngine/1.0)',
+  };
+
+  // Pull from multiple windows + orderings to maximize unique candidate count.
+  // PNL window catches the trader-side. VOL catches high-volume wallets that
+  // might be high-frequency traders or whales we'd otherwise miss.
+  const queries = [
+    { timePeriod: 'month', orderBy: 'PNL', category: 'overall', maxOffset: 1900 },
+    { timePeriod: 'week',  orderBy: 'PNL', category: 'overall', maxOffset: 500 },
+    { timePeriod: 'all',   orderBy: 'PNL', category: 'overall', maxOffset: 1900 },
+    { timePeriod: 'month', orderBy: 'VOL', category: 'overall', maxOffset: 500 },
+  ];
+
+  console.log('  Fetching leaderboards from Polymarket data-api...');
+  for (const q of queries) {
+    const queryTag = `${q.timePeriod}/${q.orderBy}/${q.category}`;
+    let added = 0;
+    for (let offset = 0; offset <= q.maxOffset; offset += PAGE_LIMIT) {
+      const url = `https://data-api.polymarket.com/v1/leaderboard?timePeriod=${q.timePeriod}&orderBy=${q.orderBy}&limit=${PAGE_LIMIT}&offset=${offset}&category=${q.category}`;
+      let resp;
+      try {
+        resp = await fetch(url, { headers: HEADERS });
+      } catch (e) {
+        console.log(`    ⚠ ${queryTag} offset=${offset} — network error: ${e.message}`);
+        break;
+      }
+      if (!resp.ok) {
+        console.log(`    ⚠ ${queryTag} offset=${offset} — HTTP ${resp.status}`);
+        break;
+      }
+      let data;
+      try { data = await resp.json(); } catch { break; }
+      if (!Array.isArray(data) || data.length === 0) break;
+
+      for (const entry of data) {
+        const addr = (entry.proxyWallet || '').toLowerCase();
+        if (!/^0x[a-f0-9]{40}$/.test(addr)) continue;
+        if (!candidates.has(addr)) {
+          candidates.set(addr, {
+            pnl: +(entry.pnl || 0),
+            vol: +(entry.vol || 0),
+            userName: entry.userName || '',
+            sourceQuery: queryTag,
+          });
+          added++;
+        } else {
+          // Already seen — keep the higher PnL stat across queries
+          const existing = candidates.get(addr);
+          if ((entry.pnl || 0) > existing.pnl) {
+            existing.pnl = +(entry.pnl || 0);
+            existing.sourceQuery = queryTag;
+          }
+        }
+      }
+
+      // Page returned fewer than PAGE_LIMIT → end of leaderboard reached
+      if (data.length < PAGE_LIMIT) break;
+
+      // Be polite — small delay between paginated fetches
+      await new Promise(r => setTimeout(r, 50));
+    }
+    console.log(`    ${queryTag.padEnd(28)} +${added} unique wallets`);
+  }
+
+  console.log(`  ✓ Polymarket leaderboard: ${candidates.size} unique candidates`);
+  return candidates;
+}
+
+/**
  * Discover wallet addresses from Goldsky and qualify them via Data API.
  * This runs periodically (every DISCOVERY_INTERVAL_SCANS fast loops).
  */
@@ -738,13 +831,44 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
   state.lastId = cursor;
   console.log(`  Found ${walletSummaries.size.toLocaleString()} wallets from ${totalFetched.toLocaleString()} positions${wrapped ? ' (reached end, will restart next cycle)' : ''}${bucketAdvancesThisCycle > 0 ? ` [${bucketAdvancesThisCycle} bucket advances]` : ''}`);
 
+  // Step 2b: Polymarket leaderboard fallback. When Goldsky returns 0
+  // (subgraph migration/timeout) or returns thin results, supplement
+  // candidates from Polymarket's own leaderboard API. These come pre-
+  // ranked by PnL — exactly what we want — and use proxyWallet
+  // addresses our /activity API already works on. See
+  // discoverFromPolymarketLeaderboard() docstring for full design.
+  let leaderboardAdded = 0;
+  try {
+    const leaderboardCandidates = await discoverFromPolymarketLeaderboard();
+    for (const [addr, info] of leaderboardCandidates) {
+      if (walletSummaries.has(addr)) continue;       // already from Goldsky
+      if (existingPool[addr]) continue;               // already in pool
+      walletSummaries.set(addr, {
+        totalPnl: info.pnl,
+        positionCount: 0,                             // unknown from leaderboard, qualify pass will fill
+        totalBought: 0,
+        sourceQuery: info.sourceQuery,
+        userName: info.userName,
+        leaderboardVol: info.vol,
+      });
+      leaderboardAdded++;
+    }
+    console.log(`  Polymarket leaderboard contributed ${leaderboardAdded} new candidates (pre-existing in Goldsky/pool: ${leaderboardCandidates.size - leaderboardAdded})`);
+  } catch (err) {
+    console.log(`  ⚠ Polymarket leaderboard fetch failed: ${err.message}`);
+  }
+
   // Step 3: Filter to candidates worth qualifying
+  // Note: leaderboard-sourced wallets have positionCount=0 (unknown), so we
+  // can't filter them on MIN_POSITIONS_DISCOVERY. Trust their PnL ranking
+  // and let the per-wallet /activity fetch in Step 4 do the real qualifying.
   const candidates = [...walletSummaries.entries()]
-    .filter(([, ws]) => ws.totalPnl >= CONFIG.MIN_PNL_DISCOVERY && ws.positionCount >= CONFIG.MIN_POSITIONS_DISCOVERY)
+    .filter(([, ws]) => ws.totalPnl >= CONFIG.MIN_PNL_DISCOVERY
+      && (ws.positionCount >= CONFIG.MIN_POSITIONS_DISCOVERY || ws.sourceQuery))
     .sort((a, b) => b[1].totalPnl - a[1].totalPnl)
     .slice(0, CONFIG.MAX_DISCOVERY_WALLETS);
 
-  console.log(`  ${candidates.length} candidates pass PnL/position filters`);
+  console.log(`  ${candidates.length} candidates pass PnL/position filters (${leaderboardAdded} from leaderboard, ${candidates.length - leaderboardAdded} from Goldsky)`);
 
   // Free position data for wallets that didn't make the candidate cut — they'll
   // never be used and releasing early keeps peak memory bounded. We keep positions
