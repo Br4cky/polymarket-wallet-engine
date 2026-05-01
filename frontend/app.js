@@ -910,6 +910,7 @@ function renderCurrentTab() {
 }
 
 function renderHandpicked() {
+  const el = id => document.getElementById(id);
   // Handpicked tab — manually-curated wallets + the signal track they
   // produce. Decoupled from the automated scanner. As wallets are added
   // (via scripts/add-handpicked.mjs) and signals resolve, this tab
