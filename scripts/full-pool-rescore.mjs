@@ -30,6 +30,7 @@ import {
   analyzeTradeHistory,
   computeWalletScore,
 } from '../scanner/dataApi.js';
+import { resolveMarkets } from '../scanner/lib.js';
 import { aggregatePositions } from '../scanner/positionLedger.js';
 import {
   buildAttributionMap,
@@ -43,6 +44,11 @@ const APPLY = process.argv.includes('--apply');
 const SCORE_FLOOR = 5;
 const BOT_TPAW_FLOOR = 700;
 const RATE_MS = 150;
+// Mirror the discovery gate in scan.js. Capital-weighted because a wallet
+// that holds tiny conviction positions but flips its big bets is still a
+// flipper in $ terms.
+const MIN_HOLD_RATIO = 0.6;
+const MIN_HOLD_RATIO_SAMPLE = 10;
 
 const walletsData = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(ROOT, 'data/wallets.json.gz'))).toString());
 const signalsData = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(ROOT, 'data/signals.json.gz'))).toString());
@@ -69,6 +75,7 @@ const results = {
   evicted_bot: [],
   evicted_score: [],
   evicted_mean_picker: [],
+  evicted_flipper: [],
   fetch_failed: [],
   no_events: [],
 };
@@ -111,10 +118,55 @@ for (const [addr, w] of allActive) {
     }
   }
 
-  // 3. Run analyzeTradeHistory → fresh stats
+  // 2.5. Resolve any markets this wallet trades that aren't yet in the
+  // global lookup. This is what enables holdRatio to be computed
+  // accurately for esports / weather / sub-minute crypto wallets — the
+  // categories Gamma doesn't index. CLOB fallback fires automatically
+  // when Gamma returns empty for a tokenId, provided we pass tokenToCid.
+  const tokenToCid = new Map();
+  const unresolvedTokens = new Set();
+  for (const ev of events) {
+    if (ev.asset && ev.conditionId && !tokenToCid.has(ev.asset)) {
+      tokenToCid.set(ev.asset, ev.conditionId);
+    }
+    if (ev.asset && !marketLookup.has(ev.asset)) {
+      unresolvedTokens.add(ev.asset);
+    }
+  }
+  if (unresolvedTokens.size > 0) {
+    try {
+      const resolved = await resolveMarkets(unresolvedTokens, { tokenToCid });
+      for (const [tid, m] of resolved) marketLookup.set(tid, m);
+    } catch (e) {
+      // Non-fatal — analyzer falls back to whatever's already in marketLookup
+    }
+  }
+
+  // 3. Run analyzeTradeHistory → fresh stats (now with full marketLookup)
   const stats = analyzeTradeHistory(events, { marketLookup });
   if (!stats) {
     results.no_events.push({ addr });
+    await sleep(RATE_MS);
+    continue;
+  }
+
+  // 3.5. holdRatio gate — flippers / market-makers / scalpers can't be
+  // followed (we emit on BUY; they exit before resolution). Same threshold
+  // and sample requirement as the discovery gate in scan.js. Skip the
+  // V2 score path entirely for these — eviction reason is structural,
+  // not score-based.
+  if (stats.classifiedPositions != null &&
+      stats.classifiedPositions >= MIN_HOLD_RATIO_SAMPLE &&
+      stats.holdRatioCapital != null &&
+      stats.holdRatioCapital < MIN_HOLD_RATIO) {
+    results.evicted_flipper.push({
+      addr,
+      oldScore: w.score || 0,
+      holdRatio: +(stats.holdRatio || 0).toFixed(3),
+      holdRatioCapital: +(stats.holdRatioCapital || 0).toFixed(3),
+      classifiedPositions: stats.classifiedPositions,
+      exitStyle: stats.exitStyle,
+    });
     await sleep(RATE_MS);
     continue;
   }
@@ -184,11 +236,26 @@ console.log('═'.repeat(78));
 console.log(`  rescored:               ${results.rescored.length}`);
 console.log(`  evicted_bot:            ${results.evicted_bot.length}  (tpaw > ${BOT_TPAW_FLOOR})`);
 console.log(`  evicted_mean_picker:    ${results.evicted_mean_picker.length}`);
+console.log(`  evicted_flipper:        ${results.evicted_flipper.length}  (holdRatioCapital < ${MIN_HOLD_RATIO})`);
 console.log(`  evicted_score (<${SCORE_FLOOR}):    ${results.evicted_score.length}`);
 console.log(`  fetch_failed:           ${results.fetch_failed.length}`);
 console.log(`  no_events:              ${results.no_events.length}`);
-const totalEvicted = results.evicted_bot.length + results.evicted_mean_picker.length + results.evicted_score.length;
+const totalEvicted =
+  results.evicted_bot.length +
+  results.evicted_mean_picker.length +
+  results.evicted_flipper.length +
+  results.evicted_score.length;
 console.log(`  TOTAL EVICTED:          ${totalEvicted}`);
+
+// Show worst flippers so user can eyeball before applying
+if (results.evicted_flipper.length > 0) {
+  console.log('\n── Worst 15 flippers (by capital-weighted hold ratio) ──');
+  const worst = [...results.evicted_flipper].sort((a, b) => a.holdRatioCapital - b.holdRatioCapital).slice(0, 15);
+  for (const e of worst) {
+    const es = e.exitStyle || {};
+    console.log(`  ${e.addr.slice(0, 12)}  hold$=${(e.holdRatioCapital*100).toFixed(0)}%  count=${e.classifiedPositions.toString().padStart(4)}  REDEEM=${es.REDEEM||0} HOLD0=${es.HOLD_TO_ZERO||0} S_AFTER=${es.SELL_AFTER||0} S_BEFORE=${es.SELL_BEFORE||0}  oldScore=${(e.oldScore||0).toFixed(1)}`);
+  }
+}
 
 console.log();
 console.log('── Largest score swings ──');
@@ -199,14 +266,30 @@ for (const r of swings) {
 }
 
 if (APPLY) {
-  for (const arr of [results.evicted_bot, results.evicted_mean_picker, results.evicted_score]) {
+  // Tag each eviction with a clear reason so the wallet record carries
+  // an audit trail. Reasons match the discoveryKills bucket names in
+  // scan.js so downstream tooling can group by them.
+  const evictionReasons = [
+    [results.evicted_bot,         'bot_pattern_full_rescore'],
+    [results.evicted_mean_picker, 'mean_picker_full_rescore'],
+    [results.evicted_flipper,     'flipper_full_rescore'],
+    [results.evicted_score,       'score_below_floor_full_rescore'],
+  ];
+  for (const [arr, reason] of evictionReasons) {
     for (const ev of arr) {
       const w = pool[ev.addr];
+      if (!w) continue;
       w.status = 'removed';
-      w.removeReason = ev.tpaw ? 'bot_pattern_full_rescore' : (ev === results.evicted_mean_picker[0] || results.evicted_mean_picker.includes(ev) ? 'mean_picker_full_rescore' : 'score_below_floor_full_rescore');
+      w.removeReason = reason;
       w.removeDetail = JSON.stringify(ev);
       w.removedAt = new Date().toISOString();
     }
+  }
+  // Persist the refreshed stats + scores on the survivors too.
+  for (const r of results.rescored) {
+    const w = pool[r.addr];
+    if (!w) continue;
+    // (stats/score were already mutated in the loop above)
   }
   walletsData.pool = pool;
   if (!walletsData.metadata) walletsData.metadata = {};
