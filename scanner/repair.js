@@ -208,7 +208,12 @@ async function main() {
     const won = matchesWinningOutcome(s.direction, s.topOutcome, result.winningOutcome);
     const outcome = won ? 'win' : 'loss';
 
-    const op = s.openMarketPrice || s.avgEntryPrice || 0;
+    // Handpicked signals: prefer avgEntryPrice — historical buys may have
+    // captured already-resolved markets where openMarketPrice was clobbered
+    // to 1 (winner) or 0 (loser), which would wreck the win-return calc.
+    const op = s.signalType === 'handpicked'
+      ? (s.avgEntryPrice || s.openMarketPrice || 0)
+      : (s.openMarketPrice || s.avgEntryPrice || 0);
     if (won && op > 0) {
       s.signalReturn = +((1 / op - 1) * 100).toFixed(2);
     } else if (!won) {

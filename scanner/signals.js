@@ -1126,7 +1126,14 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       closeSignal(active, history, signalId, 'resolved', scanIndex, now, outcome);
       const lastEntry = history[history.length - 1];
       if (lastEntry && lastEntry.signalId === signalId) {
-        const openPrice = signal.openMarketPrice || signal.avgEntryPrice || 0;
+        // For handpicked signals, prefer avgEntryPrice — handpicked emission
+        // can capture historical buys whose markets have already resolved, in
+        // which case openMarketPrice was the resolved price (1 for winners,
+        // 0 for losers) and would collapse the win-return calc to 0%. The
+        // wallet's actual fill (avgEntryPrice) is the right reference price.
+        const openPrice = signal.signalType === 'handpicked'
+          ? (signal.avgEntryPrice || signal.openMarketPrice || 0)
+          : (signal.openMarketPrice || signal.avgEntryPrice || 0);
         if (outcome === 'win' && openPrice > 0) {
           lastEntry.signalReturn = +((1 / openPrice - 1) * 100).toFixed(2);
         } else if (outcome === 'loss') {
@@ -1192,7 +1199,10 @@ function processSignals(candidates, existingSignals, recentTrades, walletPool, m
       h.resolvedBy = 'gamma_repair';
       h.closeReason = 'resolved';
       h.winningOutcome = hmi.winningOutcome;
-      const op = h.openMarketPrice || h.avgEntryPrice || 0;
+      // Handpicked signals: prefer avgEntryPrice (see Phase-2 close note).
+      const op = h.signalType === 'handpicked'
+        ? (h.avgEntryPrice || h.openMarketPrice || 0)
+        : (h.openMarketPrice || h.avgEntryPrice || 0);
       if (h.outcome === 'win' && op > 0) {
         h.signalReturn = +((1 / op - 1) * 100).toFixed(2);
       } else if (h.outcome === 'loss') {

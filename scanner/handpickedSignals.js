@@ -129,9 +129,17 @@ export function processHandpickedSignals(recentTrades, handpickedList, signals, 
         lastTradeTs: trade.timestamp,
         scansActive: 1,
 
-        // Pricing
+        // Pricing — `openMarketPrice` MUST reflect what the wallet actually
+        // paid, not the market's price at signal-open time. If we open a
+        // handpicked signal on a wallet's HISTORICAL buy whose market has
+        // already resolved, `currentPrice` will be 1 (winning side) or 0
+        // (losing side), which makes the win-return calc — `(1/openPrice - 1)
+        // * 100` — collapse to 0 on every winner. Mirroring `entryPrice`
+        // here keeps the close-time math anchored to the wallet's actual
+        // fill, and matches the close path's existing fallback (which uses
+        // avgEntryPrice when openMarketPrice is missing).
         avgEntryPrice: entryPrice,
-        openMarketPrice: currentPrice,
+        openMarketPrice: entryPrice,
         currentMarketPrice: currentPrice,
         totalBuySize: +buySize.toFixed(2),
 
