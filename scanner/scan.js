@@ -102,6 +102,21 @@ const CONFIG = {
   // and rescore-eviction paths.
   DORMANCY_DAYS: 30,
 
+  // Hold-to-resolution gate. We emit follower signals on BUYs; a follower
+  // copies the BUY and holds. If the source wallet's edge comes from
+  // selling before resolution (flipping), the follower can't replicate
+  // the exit and the signal is noise. Reject any candidate whose
+  // capital-weighted holdRatio falls below this threshold, regardless of
+  // their nominal WR / PnL / V2 score. Set to 0 to disable.
+  // Validated 2026-05-04 against the handpicked pool — flippers had
+  // capital-weighted holdRatio in the 4-41% band; clean holders 91-100%.
+  // 0.6 keeps the MIXED bucket out while leaving headroom for genuine
+  // edge cases.
+  MIN_HOLD_RATIO: 0.6,
+  // Need at least this many classified positions before the gate fires.
+  // Below this we have too little signal to call holder vs flipper.
+  MIN_HOLD_RATIO_SAMPLE: 10,
+
   // ── Eviction rules ──────────────────────────────────────────────────────
   //   'off'    — do nothing
   //   'shadow' — log what would be evicted, don't remove
@@ -500,6 +515,15 @@ async function ensureMarketsResolved(events, marketLookup) {
   }
 
   const unresolvedTokens = new Set();
+  // tokenId → conditionId, for the CLOB fallback in resolveMarkets.
+  // Built from the same events we just walked, so we don't need a second
+  // pass anywhere.
+  const tokenToCid = new Map();
+  for (const ev of events) {
+    if (ev.asset && ev.conditionId && !tokenToCid.has(ev.asset)) {
+      tokenToCid.set(ev.asset, ev.conditionId);
+    }
+  }
   for (const [asset, buySize] of assetBuys) {
     const sellSize = assetSells.get(asset) || 0;
     // Only need resolution for open positions (buy > 95% sold)
@@ -525,7 +549,7 @@ async function ensureMarketsResolved(events, marketLookup) {
   }
 
   try {
-    const resolved = await resolveMarkets(tokensToResolve);
+    const resolved = await resolveMarkets(tokensToResolve, { tokenToCid });
     let newResolutions = 0;
     for (const [id, market] of resolved) {
       marketLookup.set(id, market);
@@ -900,6 +924,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
     insufficient_resolved: 0,      // resolvedMarkets < MIN_RESOLVED_MARKETS
     dormant: 0,                    // last trade > DORMANCY_DAYS ago
     entry_price_too_high: 0,       // avgEntryPrice > MAX_WALLET_AVG_ENTRY_PRICE
+    flipper: 0,                    // holdRatioCapital < MIN_HOLD_RATIO (sells before resolution)
     mean_picker_decided: 0,        // isMeanPickerShape from positions
     decided_capital_too_low: 0,    // decidedCapital < threshold
     decided_roi_too_low: 0,        // decidedROI < threshold
@@ -1044,6 +1069,23 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
           stats.avgEntryPrice > 0 &&
           stats.avgEntryPrice > CONFIG.MAX_WALLET_AVG_ENTRY_PRICE) {
         discoveryKills.entry_price_too_high++;
+        processed++;
+        continue;
+      }
+
+      // Hold-to-resolution gate. We emit follower signals on BUYs; if
+      // the source wallet sells before resolution (flipper / market
+      // maker / scalper), a follower copying the BUY can't replicate
+      // the exit and the signal becomes noise. Capital-weighted because
+      // a wallet that holds tiny conviction positions but flips its big
+      // bets is still a flipper in $ terms. Requires MIN_HOLD_RATIO_SAMPLE
+      // classified positions before firing — small samples are too noisy
+      // to call.
+      if (CONFIG.MIN_HOLD_RATIO > 0 &&
+          (stats.classifiedPositions || 0) >= CONFIG.MIN_HOLD_RATIO_SAMPLE &&
+          stats.holdRatioCapital != null &&
+          stats.holdRatioCapital < CONFIG.MIN_HOLD_RATIO) {
+        discoveryKills.flipper++;
         processed++;
         continue;
       }
@@ -1696,10 +1738,15 @@ async function fastLoop(state, walletPool, marketLookup) {
 
   // Step 2: Resolve market data for tokens in recent trades
   const tokensToResolve = new Set();
+  // tokenId → conditionId, for the CLOB fallback in resolveMarkets.
+  const tokenToCid = new Map();
   for (const trades of recentTrades.values()) {
     for (const trade of trades) {
       if (trade.asset && !marketLookup.has(trade.asset)) {
         tokensToResolve.add(trade.asset);
+      }
+      if (trade.asset && trade.conditionId && !tokenToCid.has(trade.asset)) {
+        tokenToCid.set(trade.asset, trade.conditionId);
       }
     }
   }
@@ -1710,12 +1757,15 @@ async function fastLoop(state, walletPool, marketLookup) {
 
   for (const signal of Object.values(existingSignals.active || {})) {
     if (signal.tokenId) tokensToResolve.add(signal.tokenId);
+    if (signal.tokenId && signal.conditionId && !tokenToCid.has(signal.tokenId)) {
+      tokenToCid.set(signal.tokenId, signal.conditionId);
+    }
   }
 
   if (tokensToResolve.size > 0) {
-    console.log(`  Resolving ${tokensToResolve.size} market tokens via Gamma...`);
+    console.log(`  Resolving ${tokensToResolve.size} market tokens via Gamma (with CLOB fallback)...`);
     try {
-      const resolved = await resolveMarkets(tokensToResolve);
+      const resolved = await resolveMarkets(tokensToResolve, { tokenToCid });
       for (const [id, market] of resolved) {
         marketLookup.set(id, market);
       }

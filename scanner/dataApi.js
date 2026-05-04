@@ -620,6 +620,24 @@ function analyzeTradeHistory(events, opts = {}) {
   let unredeemedWins = 0;
   let worthlessLosses = 0;
 
+  // Exit-style classification — per resolved position, did the wallet hold
+  // to resolution (replicable by a follower who copies the BUY) or sell
+  // before resolution (a flip — the follower has no exit signal)?
+  // Validated on the handpicked pool 2026-05-04: market-makers and
+  // scalpers that always SELL_BEFORE produced zero useful follower signals
+  // even when nominally profitable. Pool's holdRatio is gated downstream
+  // in scan.js.
+  const exitStyle = {
+    REDEEM: 0,         // had a REDEEM event → held to resolution and claimed payout
+    HOLD_TO_ZERO: 0,   // bought losing side, no sell, no redeem → held to worthlessness
+    SELL_AFTER: 0,     // sold ≥95% AFTER market endDate
+    SELL_BEFORE: 0,    // sold ≥95% BEFORE market endDate (flipper)
+    PARTIAL: 0,        // sold some, held some
+    UNRESOLVED: 0,     // genuinely still open — excluded from holdRatio
+  };
+  let holderCapital = 0;
+  let flipperCapital = 0;
+
   for (const [cid, mt] of marketTrades) {
     const totalBought = mt.buys.reduce((sum, t) => sum + (t.size * t.price), 0);
     const totalSoldRaw = mt.sells.reduce((sum, t) => sum + (t.size * t.price), 0);
@@ -775,6 +793,62 @@ function analyzeTradeHistory(events, opts = {}) {
     } else {
       openPositions++;
     }
+
+    // ── Exit-style classification ────────────────────────────────────
+    // Inspect REAL sells separately from redeem-derived synthetic sells,
+    // because a wallet that redeemed is a holder regardless of the
+    // synthetic-SELL bookkeeping. We need this distinction here even
+    // though the PnL math doesn't.
+    {
+      if (totalBuySize > 0) {
+        const realSells = mt.sells.filter(s => !s._fromRedeem);
+        const realSellSize = realSells.reduce((sum, t) => sum + t.size, 0);
+        const realSoldFraction = realSellSize / totalBuySize;
+        const lastRealSellTs = realSells.length
+          ? Math.max(...realSells.map(t => t.timestamp || 0))
+          : 0;
+        const hasRedeem = mt.sells.some(s => s._fromRedeem);
+
+        // Pull endTs from marketLookup if available (any of the
+        // wallet's trades on this market shares the same conditionId,
+        // and marketLookup is keyed by tokenId — first asset suffices).
+        const firstTradeAsset = (mt.buys[0] || mt.sells[0])?.asset;
+        const mInfo = firstTradeAsset && marketLookup ? marketLookup.get(firstTradeAsset) : null;
+        const endIso = mInfo?.endDate || mInfo?.end_date_iso || null;
+        const endTs = endIso ? new Date(endIso).getTime() / 1000 : 0;
+        const marketEnded = mInfo?.marketClosed === true || (endTs > 0 && endTs < (Date.now() / 1000));
+
+        let bucket = null;
+        if (hasRedeem) {
+          bucket = 'REDEEM';
+          holderCapital += totalBought;
+        } else if (realSoldFraction >= 0.95) {
+          if (endTs > 0 && lastRealSellTs > endTs) {
+            bucket = 'SELL_AFTER';
+            holderCapital += totalBought;
+          } else {
+            // Sold out before resolution OR endTs unknown → treat as flip.
+            // The unknown-endTs case is conservative on purpose: a wallet
+            // that fully exits markets we can't even date is exactly the
+            // pattern we want to filter (market-makers / scalpers).
+            bucket = 'SELL_BEFORE';
+            flipperCapital += totalBought;
+          }
+        } else if (realSoldFraction >= 0.05) {
+          bucket = 'PARTIAL';
+          holderCapital += totalBought * (1 - realSoldFraction);
+          flipperCapital += totalBought * realSoldFraction;
+        } else if (marketEnded) {
+          // No real sells, no redeem, market has ended → losing shares
+          // held to zero. Still a holder.
+          bucket = 'HOLD_TO_ZERO';
+          holderCapital += totalBought;
+        } else {
+          bucket = 'UNRESOLVED';
+        }
+        exitStyle[bucket]++;
+      }
+    }
   }
 
   // categoryAlignment: fraction of resolved trades on markets the engine
@@ -784,6 +858,21 @@ function analyzeTradeHistory(events, opts = {}) {
   const categoryAlignment = totalResolvedTrades > 0
     ? emittableResolvedTrades / totalResolvedTrades
     : 0;
+
+  // holdRatio: fraction of CLASSIFIED positions the wallet held to
+  // resolution (REDEEM + HOLD_TO_ZERO + SELL_AFTER + the held portion of
+  // PARTIALs) vs flipped early. Markets in UNRESOLVED state are excluded
+  // from the denominator — we don't penalise wallets for genuinely still
+  // holding active positions. Used by the discovery gate in scan.js.
+  // PARTIAL counts as half-flip in the count-weighted ratio.
+  const holderCount = exitStyle.REDEEM + exitStyle.HOLD_TO_ZERO + exitStyle.SELL_AFTER + (exitStyle.PARTIAL * 0.5);
+  const flipperCount = exitStyle.SELL_BEFORE + (exitStyle.PARTIAL * 0.5);
+  const classifiedCount = holderCount + flipperCount;
+  const holdRatio = classifiedCount > 0 ? holderCount / classifiedCount : null;
+  const totalClassifiedCapital = holderCapital + flipperCapital;
+  const holdRatioCapital = totalClassifiedCapital > 0
+    ? holderCapital / totalClassifiedCapital
+    : null;
 
   // Compute derived metrics
   const winRate = resolvedMarkets > 0 ? wins / resolvedMarkets : 0;
@@ -948,6 +1037,12 @@ function analyzeTradeHistory(events, opts = {}) {
     tradingSpanDays: Math.round(tradingSpanDays),
     statsSpanDays,                      // actual days covered by the analysed sample
     unredeemedWins,                     // WR fix: winners closed via marketLookup
+
+    // Exit-style classification — used by holdRatio gate in scan.js
+    exitStyle,                          // { REDEEM, HOLD_TO_ZERO, SELL_AFTER, SELL_BEFORE, PARTIAL, UNRESOLVED }
+    holdRatio,                          // count-weighted: holders / classified
+    holdRatioCapital,                   // capital-weighted: holder $ / classified $
+    classifiedPositions: classifiedCount,
     worthlessLosses,                    // WR fix: losers closed via marketLookup
 
     // ── Event-type breakdown (Stage 0 — MM classifier + true economic PnL) ──

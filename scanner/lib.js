@@ -697,13 +697,40 @@ function computeScore(stats, lastActiveTimestamp) {
 // ============================================================================
 
 /**
- * Resolve market data from Gamma API
- * @param {Set} tokenIds - Set of token IDs to resolve
- * @param {Function} [onCheckpoint] - Optional callback(lookup) called every ~5000 tokens to save progress
- * @returns {Promise<Map>} Map of tokenId → {title, slug, category, image}
+ * Resolve market data from Gamma API, with CLOB fallback for niche markets.
+ *
+ * Gamma indexes the marketing/discovery surface but excludes niche markets
+ * (esports / weather / sub-minute crypto / etc.). For wallets that trade
+ * those, every Gamma lookup returns []. CLOB has them all — `closed`,
+ * `end_date_iso`, and tokens[] with resolved prices.
+ *
+ * The CLOB endpoint (clob.polymarket.com/markets/<conditionId>) is keyed
+ * by conditionId, not tokenId. The caller supplies an optional
+ * `tokenToCid` map (built from the same events/trades that produced the
+ * tokenId list) so we can bridge from one to the other.
+ *
+ * Validated 2026-05-04 against ieuei31's wallet: Gamma returned 0/30
+ * markets via `clob_token_ids=`, CLOB returned 30/30 by conditionId.
+ *
+ * @param {Set<string>} tokenIds - Set of token IDs to resolve
+ * @param {object} [opts] - Options
+ * @param {Function} [opts.onCheckpoint] - Callback(lookup) called every ~5000 tokens to save progress
+ * @param {Map<string,string>} [opts.tokenToCid] - tokenId → conditionId map for CLOB fallback
+ * @returns {Promise<Map>} Map of tokenId → market metadata
  */
-async function resolveMarkets(tokenIds, onCheckpoint) {
+async function resolveMarkets(tokenIds, opts) {
   if (tokenIds.size === 0) return new Map();
+
+  // Backward-compat: second arg used to be `onCheckpoint` (a function).
+  // Accept either form so existing callers keep working.
+  let onCheckpoint = null;
+  let tokenToCid = null;
+  if (typeof opts === 'function') {
+    onCheckpoint = opts;
+  } else if (opts && typeof opts === 'object') {
+    onCheckpoint = opts.onCheckpoint || null;
+    tokenToCid = opts.tokenToCid || null;
+  }
 
   const lookup = new Map();
   const idsSet = new Set(tokenIds); // for fast has() checks
@@ -711,7 +738,85 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
   const CONCURRENCY = 5; // parallel requests — conservative to avoid 429s
   let queried = 0;
   let errors = 0;
+  let clobResolutions = 0; // diagnostic: how many tokens fell back to CLOB
   let delay = 100; // adaptive delay in ms — increases on 429, decreases on success
+
+  /**
+   * CLOB fallback: when Gamma has no record of a market (niche markets
+   * like esports, weather, sub-minute crypto), look it up by conditionId
+   * on CLOB. Mutates the shared `lookup` Map. Non-fatal on any error.
+   */
+  async function fetchOneFromCLOB(tokenId, conditionId) {
+    try {
+      const url = `https://clob.polymarket.com/markets/${conditionId}`;
+      const res = await fetch(url);
+      if (!res.ok) return false;
+      const market = await res.json();
+      if (!market || !market.condition_id) return false;
+
+      const marketClosed = market.closed === true;
+      const marketActive = market.active === true;
+      const endDate = market.end_date_iso || market.endDate || null;
+      const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true;
+
+      // Winning outcome: prefer explicit winner flag, fall back to price ≥ 0.95.
+      let winningOutcome = null;
+      if (Array.isArray(market.tokens)) {
+        for (const tok of market.tokens) {
+          if (tok.winner === true) { winningOutcome = tok.outcome || null; break; }
+        }
+        if (!winningOutcome && marketClosed) {
+          for (const tok of market.tokens) {
+            if (parseFloat(tok.price || 0) >= 0.95) { winningOutcome = tok.outcome || null; break; }
+          }
+        }
+      }
+
+      const commonFields = {
+        title: market.question || `Market ${tokenId.slice(0, 8)}...`,
+        slug: market.market_slug || '',
+        category: market.category || '',
+        image: market.image || '',
+        groupId: market.condition_id,
+        marketClosed,
+        marketActive,
+        endDate,
+        acceptingOrders,
+        winningOutcome,
+        // CLOB doesn't return aggregate volume/liquidity; leave at 0.
+        volume: 0,
+        liquidity: 0,
+        volume24hr: 0,
+        _resolvedVia: 'clob',
+      };
+
+      // Mirror the Gamma path: write one entry per token in the market's
+      // tokens[] array, so both Yes/No tokenIds end up populated.
+      if (Array.isArray(market.tokens)) {
+        for (const tok of market.tokens) {
+          const tid = tok.token_id || tok.tokenId;
+          if (tid) {
+            lookup.set(tid, {
+              ...commonFields,
+              outcome: tok.outcome || 'Unknown',
+              currentPrice: parseFloat(tok.price || 0),
+            });
+          }
+        }
+      }
+      // Final guard: if the requested tokenId still isn't covered (CLOB
+      // tokens[] missing it for whatever reason), seed a stub so the
+      // caller knows resolution succeeded.
+      if (!lookup.has(tokenId)) {
+        lookup.set(tokenId, { ...commonFields, outcome: 'Unknown', currentPrice: 0 });
+      }
+      clobResolutions++;
+      return true;
+    } catch (err) {
+      // non-fatal — fall through to the existing Gamma-empty behaviour
+      return false;
+    }
+  }
 
   /**
    * Fetch a single token from Gamma API with retry on 429
@@ -902,6 +1007,11 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
               outcome: 'Unknown',
             });
           }
+        } else if (tokenToCid && tokenToCid.has(tokenId)) {
+          // Gamma returned an empty array — niche market not in their
+          // index. Try CLOB by conditionId. Validated against esports
+          // markets where Gamma had 0/30 hits and CLOB had 30/30.
+          await fetchOneFromCLOB(tokenId, tokenToCid.get(tokenId));
         }
         return; // success, no retry needed
       } catch (err) {
@@ -924,7 +1034,8 @@ async function resolveMarkets(tokenIds, onCheckpoint) {
     queried = Math.min(i + CONCURRENCY, ids.length);
 
     if (queried % 500 === 0 || queried >= ids.length) {
-      console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved, ${errors} errors, delay=${delay}ms`);
+      const clobNote = clobResolutions > 0 ? ` (${clobResolutions} via CLOB)` : '';
+      console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved${clobNote}, ${errors} errors, delay=${delay}ms`);
     }
 
     // Checkpoint save every 5000 tokens to preserve progress
