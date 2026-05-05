@@ -117,6 +117,19 @@ const CONFIG = {
   // Below this we have too little signal to call holder vs flipper.
   MIN_HOLD_RATIO_SAMPLE: 10,
 
+  // Trade-PnL gate. V2's `effectivePnl = max(economicPnl, goldskyPnl)`
+  // is the right number for whether a wallet *makes money* — but for
+  // FOLLOWER signals it's the wrong number. Rewards / rebates / MERGE
+  // income are wallet-side returns that don't transfer to a follower
+  // copying a BUY. Only trade PnL transfers. So the admission gate must
+  // require positive *trade* PnL specifically — wallets that lose
+  // trading but earn rebates are correctly profitable for themselves
+  // and useless as alpha for us.
+  // Discovered 2026-05-04 via diff-pool-vs-profile: 73 of 251 active
+  // wallets had negative trade PnL but positive scores because their
+  // economic PnL was propped up by rebate income.
+  MIN_TRADE_PNL: 0,
+
   // ── Eviction rules ──────────────────────────────────────────────────────
   //   'off'    — do nothing
   //   'shadow' — log what would be evicted, don't remove
@@ -925,6 +938,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
     dormant: 0,                    // last trade > DORMANCY_DAYS ago
     entry_price_too_high: 0,       // avgEntryPrice > MAX_WALLET_AVG_ENTRY_PRICE
     flipper: 0,                    // holdRatioCapital < MIN_HOLD_RATIO (sells before resolution)
+    negative_trade_pnl: 0,         // stats.totalPnl < MIN_TRADE_PNL (rebate-only / loser)
     mean_picker_decided: 0,        // isMeanPickerShape from positions
     decided_capital_too_low: 0,    // decidedCapital < threshold
     decided_roi_too_low: 0,        // decidedROI < threshold
@@ -1016,10 +1030,20 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         continue;
       }
 
-      // Discovery uses the global lookup as-is for initial qualification.
-      // Per-wallet Gamma resolution is too slow for 1000+ candidates (~9s each).
-      // Wallets enter the pool with a rough score and get properly corrected
-      // on their first re-score cycle via ensureMarketsResolved (Step 5).
+      // Refresh marketLookup for THIS wallet's tokens before analysis. The
+      // global lookup carries stale Gamma entries (marketClosed:false on
+      // markets that have actually settled), and using it as-is at
+      // admission inflates PnL — losing positions stay bucketed as "open"
+      // and don't contribute to the loss tally. That's how we ended up
+      // admitting 73 wallets with negative real PnL on inflated stats.
+      // ensureMarketsResolved re-resolves any token whose entry isn't
+      // confirmed closed, and resolveMarkets now does CLOB closure-
+      // override for any market Gamma has wrong.
+      // Cost: only fires for wallets past the cooldown above (typically
+      // 50-200 wallets per scan, not the full candidate set), and bounded
+      // by per-wallet MAX_RESOLVE_PER_WALLET cap inside ensureMarketsResolved.
+      await ensureMarketsResolved(events, marketLookup);
+
       const stats = analyzeTradeHistory(events, { marketLookup });
       if (!stats) {
         discoveryKills.no_stats++;
@@ -1086,6 +1110,20 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
           stats.holdRatioCapital != null &&
           stats.holdRatioCapital < CONFIG.MIN_HOLD_RATIO) {
         discoveryKills.flipper++;
+        processed++;
+        continue;
+      }
+
+      // Trade-PnL gate. V2 scoring uses economicPnl (trade + rewards +
+      // rebates + MERGE) which can be net positive even when bare trade
+      // PnL is deeply negative — that's correct for "is this wallet
+      // profitable" but wrong for "should we follow this wallet's BUYs".
+      // A follower can't replicate maker rebates. Reject on negative
+      // trade PnL regardless of score.
+      if (typeof stats.totalPnl === 'number' &&
+          (stats.resolvedMarkets || 0) >= 10 &&
+          stats.totalPnl < CONFIG.MIN_TRADE_PNL) {
+        discoveryKills.negative_trade_pnl++;
         processed++;
         continue;
       }
