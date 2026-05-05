@@ -1090,6 +1090,26 @@ async function init() {
   data = await loadData();
   updateStatusBar();
   renderCurrentTab();
+
+  // Auto-refresh: re-fetch every 5 min and re-render if the analytics
+  // timestamp moved. Cron pushes every 2 hours so most ticks no-op,
+  // but the 5-min cadence keeps the dashboard within one CDN cache
+  // window of fresh data without requiring a manual reload.
+  setInterval(async () => {
+    try {
+      const fresh = await loadData();
+      if (!fresh.analytics) return;
+      const oldTs = data?.analytics?.timestamp;
+      const newTs = fresh.analytics?.timestamp;
+      if (oldTs === newTs) return; // nothing changed, skip re-render
+      data = fresh;
+      updateStatusBar();
+      renderCurrentTab();
+      console.log('[dashboard] data refreshed', newTs);
+    } catch (e) {
+      console.warn('[dashboard] refresh failed', e);
+    }
+  }, 5 * 60 * 1000);
 }
 
 document.addEventListener('DOMContentLoaded', init);
