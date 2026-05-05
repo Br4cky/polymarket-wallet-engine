@@ -1114,15 +1114,18 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         continue;
       }
 
-      // Trade-PnL gate. V2 scoring uses economicPnl (trade + rewards +
-      // rebates + MERGE) which can be net positive even when bare trade
-      // PnL is deeply negative — that's correct for "is this wallet
-      // profitable" but wrong for "should we follow this wallet's BUYs".
-      // A follower can't replicate maker rebates. Reject on negative
-      // trade PnL regardless of score.
-      if (typeof stats.totalPnl === 'number' &&
+      // Directional-PnL gate. The right input for follower scoring is
+      // PnL from price moves on the wallet's BUYs — not economic PnL
+      // (which adds rewards / rebates) and not totalPnl (which adds
+      // MERGE-derived synthetic SELLs from MM-style YES+NO pairing
+      // arbitrage). A follower copying a BUY captures only the
+      // directional component; everything else is wallet-side income
+      // that doesn't transfer. Reject on negative directional PnL
+      // regardless of V2 score.
+      const dirPnl = stats.directionalPnl != null ? stats.directionalPnl : stats.totalPnl;
+      if (typeof dirPnl === 'number' &&
           (stats.resolvedMarkets || 0) >= 10 &&
-          stats.totalPnl < CONFIG.MIN_TRADE_PNL) {
+          dirPnl < CONFIG.MIN_TRADE_PNL) {
         discoveryKills.negative_trade_pnl++;
         processed++;
         continue;

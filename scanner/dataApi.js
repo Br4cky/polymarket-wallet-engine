@@ -638,6 +638,15 @@ function analyzeTradeHistory(events, opts = {}) {
   let holderCapital = 0;
   let flipperCapital = 0;
 
+  // Directional PnL: trade PnL EXCLUDING merge-derived synthetic SELLs.
+  // For follower-signal scoring this is the right number — MERGE income
+  // is wallet-side arbitrage (combining YES+NO → USDC) that a follower
+  // copying just the BUY cannot replicate. Same class as rewards/rebates:
+  // belongs to the wallet, doesn't transfer. Used by the admission gate
+  // and eviction script in scan.js. `totalPnl` keeps its current
+  // include-merges meaning for dashboard / legacy consumers.
+  let directionalPnl = 0;
+
   for (const [cid, mt] of marketTrades) {
     const totalBought = mt.buys.reduce((sum, t) => sum + (t.size * t.price), 0);
     const totalSoldRaw = mt.sells.reduce((sum, t) => sum + (t.size * t.price), 0);
@@ -725,6 +734,16 @@ function analyzeTradeHistory(events, opts = {}) {
       const pnl = totalSold - totalBought;
       resolvedMarkets++;
       totalPnl += pnl;
+
+      // Directional PnL: subtract any MERGE-derived "revenue" from this
+      // market's totalSold before computing the follower-replicable PnL.
+      // A MERGE pairs N YES + N NO shares back into N USDC — closes the
+      // position from the wallet's perspective but isn't a directional
+      // outcome a follower could copy.
+      const mergeRevenueOnThisMarket = mt.sells
+        .filter(s => s._fromMerge)
+        .reduce((sum, s) => sum + s.size * s.price, 0);
+      directionalPnl += pnl - mergeRevenueOnThisMarket;
 
       if (pnl > 0) {
         wins++;
@@ -1043,6 +1062,13 @@ function analyzeTradeHistory(events, opts = {}) {
     holdRatio,                          // count-weighted: holders / classified
     holdRatioCapital,                   // capital-weighted: holder $ / classified $
     classifiedPositions: classifiedCount,
+
+    // Directional PnL — totalPnl with MERGE-derived synthetic SELL revenue
+    // subtracted out. The right input for follower-signal admission gates
+    // and eviction scripts. MERGE-only "profitable" wallets (MM-style
+    // arbitrageurs) score negatively here, which matches what they
+    // contribute to a follower copying their BUYs.
+    directionalPnl: +directionalPnl.toFixed(2),
     worthlessLosses,                    // WR fix: losers closed via marketLookup
 
     // ── Event-type breakdown (Stage 0 — MM classifier + true economic PnL) ──

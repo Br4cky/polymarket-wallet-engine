@@ -51,7 +51,10 @@ console.log(`Threshold: trade PnL < $${MIN_TRADE_PNL}, sample ≥ ${MIN_SAMPLE} 
 const evictions = [];
 const kept = [];
 for (const [addr, w] of candidates) {
-  const pnl = w.stats?.totalPnl;
+  // Prefer directionalPnl (totalPnl with MERGE-derived revenue stripped
+  // out — the right input for follower-signal scoring). Falls back to
+  // totalPnl for wallets whose stats predate the directionalPnl field.
+  const pnl = w.stats?.directionalPnl != null ? w.stats.directionalPnl : w.stats?.totalPnl;
   const resolved = w.stats?.resolvedMarkets || 0;
   if (typeof pnl !== 'number' || resolved < MIN_SAMPLE) {
     kept.push({ addr, reason: 'insufficient_sample' });
@@ -61,6 +64,7 @@ for (const [addr, w] of candidates) {
     evictions.push({
       addr,
       pnl,
+      totalPnl: w.stats?.totalPnl,
       resolved,
       score: w.score || 0,
       wins: w.stats?.wins,
@@ -80,13 +84,16 @@ console.log(`Keeping: ${kept.length}`);
 console.log(`Evicting: ${evictions.length}\n`);
 
 if (evictions.length > 0) {
-  console.log('Worst 25 (by trade PnL):');
+  console.log('Worst 25 (by directional PnL):');
   for (const e of evictions.slice(0, 25)) {
     const wr = e.winRate != null ? (e.winRate * 100).toFixed(0) + '%' : '—';
-    const econNote = e.economicPnl != null && e.economicPnl > 0 && e.pnl < 0
-      ? `  (econPnl=$${e.economicPnl.toFixed(0)} from rebates)`
+    const totalDelta = e.totalPnl != null && Math.abs(e.totalPnl - e.pnl) > 100
+      ? `  (totalPnl=$${e.totalPnl.toFixed(0)} incl. MERGE)`
       : '';
-    console.log(`  ${e.addr.slice(0, 12)}…  pnl=$${e.pnl.toFixed(0).padStart(8)}  ${e.wins||0}W/${e.losses||0}L  WR=${wr}  score=${e.score.toFixed(1)}${econNote}`);
+    const econNote = e.economicPnl != null && e.economicPnl > 0 && e.pnl < 0
+      ? `  (econPnl=$${e.economicPnl.toFixed(0)} incl. rebates)`
+      : '';
+    console.log(`  ${e.addr.slice(0, 12)}…  dirPnl=$${e.pnl.toFixed(0).padStart(8)}  ${e.wins||0}W/${e.losses||0}L  WR=${wr}  score=${e.score.toFixed(1)}${totalDelta}${econNote}`);
   }
   if (evictions.length > 25) console.log(`  … +${evictions.length - 25} more`);
 }
