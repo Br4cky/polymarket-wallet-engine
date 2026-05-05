@@ -1,12 +1,12 @@
 {
-  "scanCount": 375,
-  "lastRun": "2026-05-05T06:25:21.440Z",
-  "lastDiscovery": 375,
-  "lastFastLoop": "2026-05-05T06:30:38.640Z",
-  "walletPoolVersion": 145,
+  "scanCount": 376,
+  "lastRun": "2026-05-05T10:09:54.552Z",
+  "lastDiscovery": 376,
+  "lastFastLoop": "2026-05-05T10:16:12.951Z",
+  "walletPoolVersion": 146,
   "cursor": null,
   "totalPositionsScanned": 0,
-  "stuckCursorCount": 1,
+  "stuckCursorCount": 2,
   "lastId": "",
   "totalScanned": 13653000,
   "scanIndex": 82,
@@ -31,6 +31,6 @@
     "unusedFields": [
       "avgPrice"
     ],
-    "introspectedAt": "2026-05-05T06:25:25.350Z"
+    "introspectedAt": "2026-05-05T10:09:58.722Z"
   }
 }
