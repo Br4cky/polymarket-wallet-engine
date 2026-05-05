@@ -118,19 +118,27 @@ for (const [addr, w] of allActive) {
     }
   }
 
-  // 2.5. Resolve any markets this wallet trades that aren't yet in the
-  // global lookup. This is what enables holdRatio to be computed
-  // accurately for esports / weather / sub-minute crypto wallets — the
-  // categories Gamma doesn't index. CLOB fallback fires automatically
-  // when Gamma returns empty for a tokenId, provided we pass tokenToCid.
+  // 2.5. Resolve any markets this wallet trades whose closure status we
+  // can't trust. Two shapes of stale data hide here:
+  //   - tokens never resolved (not in marketLookup at all)
+  //   - tokens resolved against stale Gamma data with marketClosed:false,
+  //     where Gamma either had old data or never indexed the market and
+  //     we wrote a stub. These slipped past the CLOB fallback because it
+  //     only fires when a token isn't in lookup.
+  // Mirror the production ensureMarketsResolved gate exactly: anything not
+  // confirmed closed gets re-resolved. CLOB fallback fires automatically
+  // for niche markets when Gamma returns empty.
   const tokenToCid = new Map();
   const unresolvedTokens = new Set();
   for (const ev of events) {
     if (ev.asset && ev.conditionId && !tokenToCid.has(ev.asset)) {
       tokenToCid.set(ev.asset, ev.conditionId);
     }
-    if (ev.asset && !marketLookup.has(ev.asset)) {
-      unresolvedTokens.add(ev.asset);
+    if (ev.asset) {
+      const existing = marketLookup.get(ev.asset);
+      if (!existing || existing.marketClosed !== true) {
+        unresolvedTokens.add(ev.asset);
+      }
     }
   }
   if (unresolvedTokens.size > 0) {
