@@ -738,8 +738,42 @@ async function resolveMarkets(tokenIds, opts) {
   const CONCURRENCY = 5; // parallel requests — conservative to avoid 429s
   let queried = 0;
   let errors = 0;
-  let clobResolutions = 0; // diagnostic: how many tokens fell back to CLOB
+  let clobResolutions = 0;       // diagnostic: full CLOB-only resolutions
+  let clobClosureOverrides = 0;  // diagnostic: Gamma succeeded but CLOB corrected closure
   let delay = 100; // adaptive delay in ms — increases on 429, decreases on success
+
+  /**
+   * Fetch closure-side fields from CLOB. Returns null on any failure.
+   * Used as the authoritative source for `marketClosed` / `winningOutcome`
+   * / `endDate` whenever a conditionId is known — Gamma is unreliable on
+   * these because it's a denormalised marketing surface that can lag the
+   * trading layer's actual state. CLOB is the trading layer.
+   */
+  async function fetchClobClosure(conditionId) {
+    try {
+      const res = await fetch(`https://clob.polymarket.com/markets/${conditionId}`);
+      if (!res.ok) return null;
+      const market = await res.json();
+      if (!market || !market.condition_id) return null;
+      const marketClosed = market.closed === true;
+      const acceptingOrders = market.accepting_orders === true || market.acceptingOrders === true;
+      const endDate = market.end_date_iso || market.endDate || null;
+      let winningOutcome = null;
+      if (Array.isArray(market.tokens)) {
+        for (const tok of market.tokens) {
+          if (tok.winner === true) { winningOutcome = tok.outcome || null; break; }
+        }
+        if (!winningOutcome && marketClosed) {
+          for (const tok of market.tokens) {
+            if (parseFloat(tok.price || 0) >= 0.95) { winningOutcome = tok.outcome || null; break; }
+          }
+        }
+      }
+      return { marketClosed, acceptingOrders, endDate, winningOutcome, tokens: market.tokens || [] };
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * CLOB fallback: when Gamma has no record of a market (niche markets
@@ -1007,6 +1041,40 @@ async function resolveMarkets(tokenIds, opts) {
               outcome: 'Unknown',
             });
           }
+
+          // CLOB closure cross-check. Gamma is a denormalised surface that
+          // lags the trading layer — its `closed` / `winningOutcome` /
+          // `endDate` fields can be stale even when the rest of the
+          // metadata is fresh. CLOB is the trading layer and authoritative
+          // for closure. When we have the conditionId, always verify
+          // closure-side fields against CLOB and override Gamma's answer.
+          // Gamma keeps the metadata (title, slug, category, volume) it's
+          // genuinely the right source for. Validated 2026-05-04: this
+          // closes the residual ~13% pool-PnL gap left after the staleness
+          // re-resolve fix; high-volume wallets had hundreds of markets
+          // where Gamma's `closed:false` was wrong and CLOB had `true`.
+          const cidForCheck = market.condition_id || (tokenToCid && tokenToCid.get(tokenId));
+          if (cidForCheck) {
+            const clob = await fetchClobClosure(cidForCheck);
+            if (clob) {
+              const overrideClosure = clob.marketClosed === true && commonFields.marketClosed !== true;
+              const overrideOutcome = clob.winningOutcome && commonFields.winningOutcome !== clob.winningOutcome;
+              if (overrideClosure || overrideOutcome) {
+                clobClosureOverrides++;
+                // Apply CLOB's truth to every lookup entry that came out
+                // of this Gamma response. The metadata fields (title,
+                // category, volume, etc) keep Gamma's values.
+                for (const [tid, entry] of lookup.entries()) {
+                  if (entry.groupId === cidForCheck) {
+                    if (overrideClosure) entry.marketClosed = true;
+                    if (overrideOutcome) entry.winningOutcome = clob.winningOutcome;
+                    if (clob.endDate && !entry.endDate) entry.endDate = clob.endDate;
+                    if (clob.acceptingOrders === false) entry.acceptingOrders = false;
+                  }
+                }
+              }
+            }
+          }
         } else if (tokenToCid && tokenToCid.has(tokenId)) {
           // Gamma returned an empty array — niche market not in their
           // index. Try CLOB by conditionId. Validated against esports
@@ -1035,7 +1103,8 @@ async function resolveMarkets(tokenIds, opts) {
 
     if (queried % 500 === 0 || queried >= ids.length) {
       const clobNote = clobResolutions > 0 ? ` (${clobResolutions} via CLOB)` : '';
-      console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved${clobNote}, ${errors} errors, delay=${delay}ms`);
+      const overrideNote = clobClosureOverrides > 0 ? `, ${clobClosureOverrides} CLOB closure-overrides` : '';
+      console.log(`    Gamma progress: ${queried}/${ids.length} queried, ${lookup.size} resolved${clobNote}${overrideNote}, ${errors} errors, delay=${delay}ms`);
     }
 
     // Checkpoint save every 5000 tokens to preserve progress
