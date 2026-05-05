@@ -263,7 +263,14 @@ function renderWalletPool() {
   if (!data.analytics) return;
   const lb = data.analytics.leaderboard || [];
 
-  const totalPnl = lb.reduce((s, w) => s + (w.stats?.totalPnl || 0), 0);
+  // Pool total PnL — prefer directionalPnl (trade-only, matches Polymarket
+  // profile). Falls back to totalPnl for wallets whose stats predate the
+  // directionalPnl field. directionalPnl excludes MERGE-derived revenue
+  // (MM-style YES+NO arbitrage closes that don't transfer to followers).
+  const totalPnl = lb.reduce((s, w) => {
+    const dp = w.stats?.directionalPnl;
+    return s + (typeof dp === 'number' ? dp : (w.stats?.totalPnl || 0));
+  }, 0);
   const avgScore = lb.length > 0 ? lb.reduce((s, w) => s + (w.score || 0), 0) / lb.length : 0;
   const totalWins = lb.reduce((s, w) => s + (w.stats?.wins || 0), 0);
   const totalResolved = lb.reduce((s, w) => s + (w.stats?.resolved || 0), 0);
@@ -289,7 +296,12 @@ function renderWalletPool() {
   const evEl = document.getElementById('wp-would-evict');
   if (evEl) evEl.textContent = `${wouldEvictCount} flagged`;
 
-  // Three PnL numbers with different meanings:
+  // Four PnL numbers with different meanings:
+  //   directionalPnl — Trade PnL with MERGE-derived synthetic SELLs
+  //                  excluded. Matches what the wallet's Polymarket
+  //                  profile shows. The right number for "did following
+  //                  this wallet's BUYs make money?" — MERGE / rebate
+  //                  income belongs to the wallet, not to a follower.
   //   onChainPnl   — Goldsky realizedPnl. Only counts positions explicitly
   //                  redeemed/sold on-chain. Zero for unredeemed winners.
   //   samplePnl    — Analyzer PnL from /activity events (3000-event cap).
@@ -302,6 +314,11 @@ function renderWalletPool() {
     score: typeof w.score === 'number' ? w.score : null,
     address: w.address || '',
     winRate: w.stats?.wr || 0,
+    // Directional PnL: prefer it (matches profile). Fall back to totalPnl
+    // for wallets whose stats predate the directionalPnl field.
+    directionalPnl: typeof w.stats?.directionalPnl === 'number'
+      ? w.stats.directionalPnl
+      : (w.stats?.totalPnl || 0),
     onChainPnl: w.stats?.totalPnl || 0,                 // Goldsky realized
     samplePnl: w.stats?.samplePnl || 0,                  // analyzer 3000-event sample
     effectivePnl: w.stats?.effectivePnl
@@ -377,7 +394,8 @@ function renderWalletPool() {
       return `<span title="Capital deployed on resolved single-side bets, from /activity event log">${fmtDollars(v)}</span>`;
     }},
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
-    { field: 'effectivePnl', label: 'PnL (effective)', render: v => `<span class="${pnlClass(v)}" title="max(on-chain realized, analyzer sample) — what scoring actually uses">${fmtDollars(v)}</span>` },
+    { field: 'directionalPnl', label: 'PnL', render: v => `<span class="${pnlClass(v)}" title="Trade PnL excluding MERGE-derived income (matches Polymarket profile). The right number for follower-replicable returns — MERGE/rebate income belongs to the wallet, not transferable to a follower.">${fmtDollars(v)}</span>` },
+    { field: 'effectivePnl', label: 'PnL (scoring)', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="max(on-chain realized, analyzer sample with MERGE+rebate income). What V2 scoring actually uses. Often higher than the trade-only PnL on the left.">${fmtDollars(v)}</span>` },
     { field: 'onChainPnl', label: 'On-chain', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold. $0 for unredeemed winners.">${fmtDollars(v)}</span>` },
     { field: 'samplePnl', label: 'Sample', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="Analyzer PnL from /activity events (3000-event cap). Handles unredeemed winners but truncates deep history.">${fmtDollars(v)}</span>` },
     { field: 'statsSpanDays', render: (v, row) => {
@@ -974,7 +992,11 @@ function renderHandpicked() {
       address: w.address,
       addedAt: w.addedAt,
       notes: w.notes || '—',
-      walletPnl: w.stats?.totalPnl ?? null,
+      // Prefer directionalPnl (matches Polymarket profile, excludes MERGE
+       // income). Falls back to totalPnl for stats predating directionalPnl.
+       walletPnl: typeof w.stats?.directionalPnl === 'number'
+         ? w.stats.directionalPnl
+         : (w.stats?.totalPnl ?? null),
       walletWR: w.stats?.winRate ?? null,
       walletROI: w.stats?.singleSideROI ?? null,
       walletResolved: w.stats?.resolvedMarkets ?? null,
