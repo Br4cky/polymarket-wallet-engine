@@ -19,12 +19,19 @@
  *
  * Signal type: 'handpicked'
  *
- * Gates applied (technical only — user has already vetted the wallet):
- *   - already_active: don't double-emit per (wallet, market) pair
+ * Gates applied (structural only — user has already vetted the wallet):
+ *   - already_active:  anti-dup per (wallet, market) pair
+ *   - market_closed:   don't emit signals on settled markets — a signal
+ *                      with currentPrice=1 or 0 is recording a wallet's
+ *                      historical trade on a resolved market and isn't
+ *                      actionable for a follower. Includes the stale-
+ *                      Gamma case (acceptingOrders=false). Wallet's
+ *                      historical performance is still captured via the
+ *                      wallet-stats pipeline.
  *
  * Gates NOT applied (deliberately):
  *   - categoryAlignment / category whitelist
- *   - market_closed / resolves_too_soon — emit on every BUY regardless
+ *   - resolves_too_soon — emit on short-window markets (LCK / fast crypto)
  *   - drawdown / stale-follower premium
  *   - V2 score floor
  *   - no_price — emit anyway with currentPrice=0; repair flow back-fills
@@ -90,14 +97,30 @@ export function processHandpickedSignals(recentTrades, handpickedList, signals, 
       }
 
       // No quality/timing gates on handpicked — user has already vetted
-      // the wallet. We emit on EVERY new BUY, even on closed markets,
-      // short-window markets, and markets without current price.
-      // Repair flow later back-fills resolution + price for incomplete
-      // data. The only gate we keep below is already_active — pure
-      // technical anti-dup, has nothing to do with quality.
+      // the wallet. The only gates kept are STRUCTURAL:
+      //   - already_active: anti-dup per (wallet, market) pair
+      //   - market_closed:  don't emit on settled markets. A signal with
+      //                     currentPrice=1 (or 0) is recording a trade on
+      //                     a market that has resolved — not actionable
+      //                     for a follower. We still capture the wallet's
+      //                     historical performance via the wallet stats
+      //                     pipeline, just don't pollute the live signal
+      //                     feed with un-followable noise. Includes the
+      //                     stale-Gamma case (acceptingOrders === false
+      //                     but marketClosed not yet set).
       const tokenId = trade.asset || '';
       const mi = tokenId ? marketLookup.get(tokenId) : null;
       const currentPrice = mi ? +(mi.currentPrice || 0).toFixed(4) : 0;
+
+      // Skip emission on settled / no-longer-trading markets.
+      const marketSettled = mi && (
+        mi.marketClosed === true ||
+        mi.acceptingOrders === false
+      );
+      if (marketSettled) {
+        kills.market_closed++;
+        continue;
+      }
 
       // Open a new handpicked signal
       const entryPrice = parseFloat(trade.price) || currentPrice;
