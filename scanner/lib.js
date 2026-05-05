@@ -1042,19 +1042,31 @@ async function resolveMarkets(tokenIds, opts) {
             });
           }
 
-          // CLOB closure cross-check. Gamma is a denormalised surface that
-          // lags the trading layer — its `closed` / `winningOutcome` /
-          // `endDate` fields can be stale even when the rest of the
-          // metadata is fresh. CLOB is the trading layer and authoritative
-          // for closure. When we have the conditionId, always verify
-          // closure-side fields against CLOB and override Gamma's answer.
-          // Gamma keeps the metadata (title, slug, category, volume) it's
-          // genuinely the right source for. Validated 2026-05-04: this
-          // closes the residual ~13% pool-PnL gap left after the staleness
-          // re-resolve fix; high-volume wallets had hundreds of markets
-          // where Gamma's `closed:false` was wrong and CLOB had `true`.
+          // CLOB closure cross-check — but ONLY when Gamma's response
+          // looks suspect on closure. Gamma is the denormalised marketing
+          // surface and can lag the trading layer's `closed` flag, but
+          // for genuinely-active markets it's perfectly correct. Calling
+          // CLOB on every Gamma success doubled the rescore runtime to
+          // ~4 hours; the targeted version below only fires on the case
+          // we actually need to fix.
+          //
+          // Suspect signals (any one is enough to verify):
+          //   - Gamma says closed:false but accepting_orders:false
+          //     → market stopped trading but Gamma hasn't updated closed
+          //   - Gamma says closed:false but endDate is in the past
+          //     → market should have settled by now
+          //
+          // Genuinely-active markets (accepting_orders:true OR endDate
+          // in the future) skip the cross-check — Gamma is right about
+          // those by definition.
           const cidForCheck = market.condition_id || (tokenToCid && tokenToCid.get(tokenId));
-          if (cidForCheck) {
+          const endMs = commonFields.endDate ? new Date(commonFields.endDate).getTime() : 0;
+          const endPast = endMs > 0 && endMs < Date.now();
+          const looksSuspect = !commonFields.marketClosed && (
+            commonFields.acceptingOrders === false ||
+            endPast
+          );
+          if (cidForCheck && looksSuspect) {
             const clob = await fetchClobClosure(cidForCheck);
             if (clob) {
               const overrideClosure = clob.marketClosed === true && commonFields.marketClosed !== true;
