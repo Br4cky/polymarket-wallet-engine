@@ -26,6 +26,18 @@ jobs:
       - name: Run Scanner
         run: node scanner/scan.js
 
+      # Sweep the pool for wallets that fail structural eviction gates.
+      # The discovery gates (negative_trade_pnl, flipper, etc.) only fire
+      # at admission; existing pool members can drift into negative PnL
+      # over time without re-tripping a gate. Run the eviction scripts
+      # every scan so the gate logic stays applied retroactively. Without
+      # this, manual evictions get reverted next cron because the scan
+      # commit overwrites the wallets.json.gz with un-evicted state.
+      - name: Apply post-scan eviction gates
+        run: |
+          node scripts/evict-negative-pnl.mjs
+          node scripts/evict-mm-stragglers.mjs
+
       - name: Commit Results
         if: always()
         run: |
