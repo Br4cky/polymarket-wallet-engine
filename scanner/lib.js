@@ -697,6 +697,104 @@ function computeScore(stats, lastActiveTimestamp) {
 // ============================================================================
 
 /**
+ * Compute directionalPnl/directionalROI/directionalCapital from a wallet's
+ * raw /activity events using the CLOB-direct algorithm — i.e. the EXACT
+ * logic diff-wallet-vs-profile.mjs uses to match Polymarket profiles.
+ *
+ * This BYPASSES analyzeTradeHistory's per-market PnL math. analyzeTradeHistory
+ * is great for the 50+ stats it computes (avgEntryPrice, sellRatio,
+ * holdRatio, exitStyle, sample/economic PnL etc.) but its directionalPnl
+ * has shown subtle disagreements with the diff on edge cases (REDEEM
+ * vs SELL handling, multi-outcome positions, MERGE accounting). Rather
+ * than chase those disagreements one by one, we just trust the diff:
+ * compute directional PnL/ROI directly from CLOB-resolved events here,
+ * and let the rescore overwrite the analyzer's directional fields with
+ * these values.
+ *
+ * Mirrors diff-wallet-vs-profile.mjs's per-market logic line-for-line:
+ *   - cost = sum of buy.size * buy.price
+ *   - sells revenue = sum of (TRADE side=SELL).size * .price
+ *   - redeem revenue = sum of REDEEM.usdcSize
+ *   - if sells+redeems close ≥95% of buys → realised: pnl = (sells_rev + redeem_usdc) - cost
+ *   - else if CLOB says market closed AND wallet's outcome matches winning →
+ *     synthetic_win: pnl = (sells_rev + redeem_usdc + unredeemed * 1.0) - cost
+ *   - else if CLOB says market closed but wallet's outcome doesn't match →
+ *     synthetic_loss: pnl = (sells_rev + redeem_usdc) - cost  (typically -cost)
+ *   - else → still open, excluded
+ *
+ * @param {Array} events - /activity events from fetchAllActivity
+ * @param {Map<conditionId, market>} clobLookup - CLOB lookup keyed by conditionId
+ * @returns {object}  { directionalPnl, directionalROI, directionalCapital,
+ *                      wins, losses, openCount, marketCount }
+ */
+function computeDirectionalPnLFromCLOB(events, clobLookup) {
+  // Group events by conditionId — same shape as the diff
+  const ledger = new Map();
+  for (const e of events) {
+    const cid = e.conditionId;
+    if (!cid) continue;
+    if (!ledger.has(cid)) {
+      ledger.set(cid, { buys: [], sells: [], redeems: [], outcome: e.outcome || '' });
+    }
+    const m = ledger.get(cid);
+    if (e.type === 'TRADE' && e.side === 'BUY') m.buys.push(e);
+    else if (e.type === 'TRADE' && e.side === 'SELL') m.sells.push(e);
+    else if (e.type === 'REDEEM') m.redeems.push(e);
+  }
+
+  let directionalPnl = 0;
+  let directionalCapital = 0;
+  let wins = 0, losses = 0, openCount = 0;
+
+  for (const [cid, m] of ledger) {
+    const totalBought = m.buys.reduce((s, t) => s + t.size * t.price, 0);
+    const totalSold = m.sells.reduce((s, t) => s + t.size * t.price, 0);
+    const totalBuySize = m.buys.reduce((s, t) => s + t.size, 0);
+    const totalSellSize = m.sells.reduce((s, t) => s + t.size, 0);
+    const redeemSize = m.redeems.reduce((s, t) => s + (t.size || 0), 0);
+    const redeemUsdc = m.redeems.reduce((s, t) => s + (t.usdcSize || t.payout || 0), 0);
+    if (totalBuySize === 0) continue;
+
+    const closedShares = totalSellSize + redeemSize;
+    const sellsClose = closedShares >= totalBuySize * 0.95;
+    const g = clobLookup.get(cid) || {};
+
+    let pnl, resolved = false, won = null;
+    if (sellsClose) {
+      pnl = (totalSold + redeemUsdc) - totalBought;
+      resolved = true;
+      won = pnl > 0;
+    } else if (g.closed && g.winningOutcome) {
+      const walletWon = String(m.outcome || '').toLowerCase().trim() === String(g.winningOutcome).toLowerCase().trim();
+      const unredeemed = Math.max(0, totalBuySize - totalSellSize - redeemSize);
+      pnl = (totalSold + redeemUsdc + (walletWon ? unredeemed * 1.0 : 0)) - totalBought;
+      resolved = true;
+      won = walletWon;
+    } else {
+      openCount++;
+      continue;
+    }
+
+    directionalPnl += pnl;
+    directionalCapital += totalBought;
+    if (won) wins++;
+    else losses++;
+  }
+
+  return {
+    directionalPnl: +directionalPnl.toFixed(2),
+    directionalCapital: +directionalCapital.toFixed(2),
+    directionalROI: directionalCapital > 0
+      ? +(directionalPnl / directionalCapital).toFixed(4)
+      : null,
+    wins,
+    losses,
+    openCount,
+    marketCount: ledger.size,
+  };
+}
+
+/**
  * Build a per-wallet marketLookup directly from CLOB (the trading layer).
  *
  * Use this — not resolveMarkets — when correctness matters more than
@@ -765,6 +863,8 @@ async function buildLookupFromCLOB(conditionIds, opts = {}) {
       title: m.question || `Market ${cid.slice(0, 8)}…`,
       slug: m.market_slug || '',
       groupId: m.condition_id,
+      conditionId: m.condition_id,
+      closed: marketClosed,        // alias for diff-style consumers
       marketClosed,
       marketActive,
       acceptingOrders,
@@ -772,6 +872,10 @@ async function buildLookupFromCLOB(conditionIds, opts = {}) {
       winningOutcome,
       _resolvedVia: 'clob_direct',
     };
+
+    // Also key by conditionId so consumers using diff-style algorithm
+    // (computeDirectionalPnLFromCLOB) can look up by cid directly.
+    lookup.set(cid, commonFields);
 
     if (Array.isArray(m.tokens)) {
       for (const tok of m.tokens) {
@@ -3055,6 +3159,7 @@ export {
   fetchPositions,
   resolveMarkets,
   buildLookupFromCLOB,
+  computeDirectionalPnLFromCLOB,
   refreshSignalMarkets,
   matchesWinningOutcome,
   initPaperTrading,

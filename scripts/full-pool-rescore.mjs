@@ -30,11 +30,14 @@ import {
   analyzeTradeHistory,
   computeWalletScore,
 } from '../scanner/dataApi.js';
-// CLOB-direct market resolution. Replaces resolveMarkets (Gamma+wide-gate
-// CLOB cross-check) with a fresh-per-wallet CLOB-only build. Same logic
-// as diff-wallet-vs-profile.mjs uses to match Polymarket profiles
-// exactly. The dashboard PnL after this rescore matches the diff.
-import { buildLookupFromCLOB } from '../scanner/lib.js';
+// CLOB-direct market resolution + diff-style PnL/ROI computation.
+// buildLookupFromCLOB:                 fresh CLOB lookup per wallet
+// computeDirectionalPnLFromCLOB:       compute directionalPnl/ROI using
+//                                      EXACTLY the diff-wallet-vs-profile
+//                                      algorithm. Used to OVERRIDE the
+//                                      analyzer's directional fields so
+//                                      the dashboard matches profiles.
+import { buildLookupFromCLOB, computeDirectionalPnLFromCLOB } from '../scanner/lib.js';
 import { aggregatePositions } from '../scanner/positionLedger.js';
 import {
   buildAttributionMap,
@@ -138,9 +141,24 @@ for (const [addr, w] of allActive) {
   // discovery) benefit from the freshly-resolved markets too.
   for (const [tid, m] of freshLookup) marketLookup.set(tid, m);
 
-  // 3. Run analyzeTradeHistory with the fresh per-wallet lookup. This
-  // produces the same numbers as diff-wallet-vs-profile.mjs.
+  // 3. Run analyzeTradeHistory for everything except directional PnL/ROI.
+  // analyzeTradeHistory computes 50+ stats (avgEntryPrice, sellRatio,
+  // holdRatio, exitStyle, etc.) that we still need. But its directional
+  // fields disagree with the diff on edge cases — investigated 2026-05-06
+  // and couldn't reconcile within reasonable effort. We just override
+  // them with diff-style values from CLOB events directly (next step).
   const stats = analyzeTradeHistory(events, { marketLookup: freshLookup });
+
+  // 3b. Override directional fields with diff-style computation.
+  // This is the canonical truth — same logic the diff script uses to
+  // match Polymarket profiles. Whatever analyzeTradeHistory thinks PnL
+  // is, the diff value wins.
+  if (stats) {
+    const direct = computeDirectionalPnLFromCLOB(events, freshLookup);
+    stats.directionalPnl = direct.directionalPnl;
+    stats.directionalROI = direct.directionalROI;
+    stats.directionalCapital = direct.directionalCapital;
+  }
   if (!stats) {
     results.no_events.push({ addr });
     await sleep(RATE_MS);

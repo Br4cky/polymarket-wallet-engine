@@ -22,6 +22,7 @@ import {
   discoverEntities,
   resolveMarkets,
   buildLookupFromCLOB,
+  computeDirectionalPnLFromCLOB,
   refreshSignalMarkets,
   loadJSON,
   saveJSON,
@@ -1053,6 +1054,19 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
       for (const [tid, m] of freshLookup) marketLookup.set(tid, m);
 
       const stats = analyzeTradeHistory(events, { marketLookup: freshLookup });
+
+      // Override directional fields with diff-style computation from
+      // CLOB events directly. analyzeTradeHistory's directional values
+      // had edge-case disagreements with the diff that we couldn't
+      // reconcile; we just trust the diff. Other 50+ stats from
+      // analyzeTradeHistory (avgEntryPrice, holdRatio, exitStyle,
+      // attribution inputs) are still needed and unaffected.
+      if (stats) {
+        const direct = computeDirectionalPnLFromCLOB(events, freshLookup);
+        stats.directionalPnl = direct.directionalPnl;
+        stats.directionalROI = direct.directionalROI;
+        stats.directionalCapital = direct.directionalCapital;
+      }
       if (!stats) {
         discoveryKills.no_stats++;
         processed++;
