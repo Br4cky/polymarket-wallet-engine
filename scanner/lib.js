@@ -745,6 +745,9 @@ function computeDirectionalPnLFromCLOB(events, clobLookup) {
   let directionalPnl = 0;
   let directionalCapital = 0;
   let wins = 0, losses = 0, openCount = 0;
+  // Track per-market PnL for distribution analysis (lottery-winner detection,
+  // median per-trade outcome, top-N concentration). Resolved markets only.
+  const perMarketPnL = [];
 
   for (const [cid, m] of ledger) {
     const totalBought = m.buys.reduce((s, t) => s + t.size * t.price, 0);
@@ -777,9 +780,38 @@ function computeDirectionalPnLFromCLOB(events, clobLookup) {
 
     directionalPnl += pnl;
     directionalCapital += totalBought;
+    perMarketPnL.push(pnl);
     if (won) wins++;
     else losses++;
   }
+
+  // ── Lottery-winner / robustness metrics ──────────────────────────
+  // Detect wallets whose PnL is dominated by 1-3 outlier wins. Common
+  // shape: high totalROI / decent WR but the engine can't replicate the
+  // outliers — the wallet's "edge" was effectively luck on a couple of
+  // long-shot binaries. Followers copying their BUYs experience the
+  // bulk distribution, not the outliers.
+  //
+  //   pnlExTop3:           directionalPnl with the 3 biggest wins removed.
+  //                        If negative, follower expectation is negative.
+  //   top3ConcentrationShare: top 3 wins' share of total positive PnL.
+  //                        > 0.7 means lottery-driven.
+  //   medianTradePnL:      median per-resolved-market PnL. Robust to
+  //                        outliers — the typical trade outcome.
+  const winPnls = perMarketPnL.filter(p => p > 0).sort((a, b) => b - a);
+  const top1 = winPnls[0] || 0;
+  const top3Sum = winPnls.slice(0, 3).reduce((s, p) => s + p, 0);
+  const totalWinsPnl = winPnls.reduce((s, p) => s + p, 0);
+  const pnlExTop1 = directionalPnl - top1;
+  const pnlExTop3 = directionalPnl - top3Sum;
+  const top1ConcentrationShare = totalWinsPnl > 0 ? top1 / totalWinsPnl : 0;
+  const top3ConcentrationShare = totalWinsPnl > 0 ? top3Sum / totalWinsPnl : 0;
+  const sortedPnL = [...perMarketPnL].sort((a, b) => a - b);
+  const medianTradePnL = sortedPnL.length > 0
+    ? (sortedPnL.length % 2 === 1
+      ? sortedPnL[Math.floor(sortedPnL.length / 2)]
+      : (sortedPnL[sortedPnL.length / 2 - 1] + sortedPnL[sortedPnL.length / 2]) / 2)
+    : 0;
 
   return {
     directionalPnl: +directionalPnl.toFixed(2),
@@ -791,6 +823,12 @@ function computeDirectionalPnLFromCLOB(events, clobLookup) {
     losses,
     openCount,
     marketCount: ledger.size,
+    // Robustness / lottery-winner metrics
+    pnlExTop1: +pnlExTop1.toFixed(2),
+    pnlExTop3: +pnlExTop3.toFixed(2),
+    top1ConcentrationShare: +top1ConcentrationShare.toFixed(3),
+    top3ConcentrationShare: +top3ConcentrationShare.toFixed(3),
+    medianTradePnL: +medianTradePnL.toFixed(2),
   };
 }
 

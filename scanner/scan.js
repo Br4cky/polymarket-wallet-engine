@@ -132,6 +132,22 @@ const CONFIG = {
   // economic PnL was propped up by rebate income.
   MIN_TRADE_PNL: 0,
 
+  // Lottery-winner gate. Wallets whose PnL is dominated by 1-3 outlier
+  // wins are not replicable: a follower copying the wallet's BUY pattern
+  // experiences the bulk distribution, not the outlier wins. The
+  // canonical "looks great because of one $50k bet that happened to hit"
+  // shape. Admission rejects wallets whose PnL goes negative when their
+  // top 3 wins are excluded — meaning their consistent edge across the
+  // remaining trades is non-existent.
+  // Validated against the diff data: most flagged wallets here had top-3
+  // concentration > 80% — they made money exclusively on the tails.
+  // Set 0 to disable.
+  MIN_PNL_EX_TOP3: 0,
+  MIN_PNL_EX_TOP3_SAMPLE: 20,    // need ≥20 resolved markets to apply
+  // Concentration cap — even if pnlExTop3 is positive, reject if more
+  // than this fraction of all wins comes from the top 3. 0.85 = lottery.
+  MAX_TOP3_CONCENTRATION: 0.85,
+
   // ── Eviction rules ──────────────────────────────────────────────────────
   //   'off'    — do nothing
   //   'shadow' — log what would be evicted, don't remove
@@ -941,6 +957,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
     entry_price_too_high: 0,       // avgEntryPrice > MAX_WALLET_AVG_ENTRY_PRICE
     flipper: 0,                    // holdRatioCapital < MIN_HOLD_RATIO (sells before resolution)
     negative_trade_pnl: 0,         // stats.totalPnl < MIN_TRADE_PNL (rebate-only / loser)
+    lottery_winner: 0,             // pnlExTop3 < 0 OR top3ConcentrationShare > 0.85 (1-3 outliers carry all the PnL)
     mean_picker_decided: 0,        // isMeanPickerShape from positions
     decided_capital_too_low: 0,    // decidedCapital < threshold
     decided_roi_too_low: 0,        // decidedROI < threshold
@@ -1066,6 +1083,12 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         stats.directionalPnl = direct.directionalPnl;
         stats.directionalROI = direct.directionalROI;
         stats.directionalCapital = direct.directionalCapital;
+        // Robustness / lottery-winner metrics
+        stats.pnlExTop1 = direct.pnlExTop1;
+        stats.pnlExTop3 = direct.pnlExTop3;
+        stats.top1ConcentrationShare = direct.top1ConcentrationShare;
+        stats.top3ConcentrationShare = direct.top3ConcentrationShare;
+        stats.medianTradePnL = direct.medianTradePnL;
       }
       if (!stats) {
         discoveryKills.no_stats++;
@@ -1149,6 +1172,26 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
           (stats.resolvedMarkets || 0) >= 10 &&
           dirPnl < CONFIG.MIN_TRADE_PNL) {
         discoveryKills.negative_trade_pnl++;
+        processed++;
+        continue;
+      }
+
+      // Lottery-winner gate. Reject wallets whose PnL is dominated by
+      // 1-3 outlier wins — their bulk distribution doesn't make money
+      // and a follower can't replicate the outliers. Two conditions,
+      // either fires:
+      //   (a) pnlExTop3 < 0 — without their top 3 wins they're net
+      //       negative, meaning the rest of their trading is bleeding
+      //   (b) top3ConcentrationShare > 0.85 — top 3 wins account for
+      //       > 85% of all positive PnL, almost no consistent edge
+      // Requires ≥20 resolved markets so we have enough sample to make
+      // the call. Smaller samples are too noisy to distinguish lottery
+      // from skill.
+      if (CONFIG.MIN_PNL_EX_TOP3 != null &&
+          (stats.resolvedMarkets || 0) >= CONFIG.MIN_PNL_EX_TOP3_SAMPLE &&
+          ((typeof stats.pnlExTop3 === 'number' && stats.pnlExTop3 < CONFIG.MIN_PNL_EX_TOP3) ||
+           (typeof stats.top3ConcentrationShare === 'number' && stats.top3ConcentrationShare > CONFIG.MAX_TOP3_CONCENTRATION))) {
+        discoveryKills.lottery_winner++;
         processed++;
         continue;
       }
@@ -2089,6 +2132,12 @@ async function fastLoop(state, walletPool, marketLookup) {
       directionalPnl: w.stats?.directionalPnl ?? null,
       directionalCapital: w.stats?.directionalCapital ?? null,
       directionalROI: w.stats?.directionalROI ?? null,
+      // Robustness / lottery-winner metrics
+      pnlExTop1: w.stats?.pnlExTop1 ?? null,
+      pnlExTop3: w.stats?.pnlExTop3 ?? null,
+      top1ConcentrationShare: w.stats?.top1ConcentrationShare ?? null,
+      top3ConcentrationShare: w.stats?.top3ConcentrationShare ?? null,
+      medianTradePnL: w.stats?.medianTradePnL ?? null,
       // mergeUsdcTotal kept for diagnostic — shows how much of the
       // legacy totalPnl was MERGE-derived income.
       mergeUsdcTotal: w.stats?.mergeUsdcTotal ?? 0,

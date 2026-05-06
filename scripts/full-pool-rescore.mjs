@@ -158,6 +158,14 @@ for (const [addr, w] of allActive) {
     stats.directionalPnl = direct.directionalPnl;
     stats.directionalROI = direct.directionalROI;
     stats.directionalCapital = direct.directionalCapital;
+    // Robustness / lottery-winner metrics — surfaced for admission gate
+    // and dashboard display so we can spot wallets whose edge is
+    // dominated by 1-3 outlier wins.
+    stats.pnlExTop1 = direct.pnlExTop1;
+    stats.pnlExTop3 = direct.pnlExTop3;
+    stats.top1ConcentrationShare = direct.top1ConcentrationShare;
+    stats.top3ConcentrationShare = direct.top3ConcentrationShare;
+    stats.medianTradePnL = direct.medianTradePnL;
   }
   if (!stats) {
     results.no_events.push({ addr });
