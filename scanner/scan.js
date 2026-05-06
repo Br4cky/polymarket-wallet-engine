@@ -98,6 +98,16 @@ const CONFIG = {
   // Flip off only for debugging — scorer returns null without this data.
   ENABLE_DECIDED_METRICS: true,
 
+  // ── Goldsky cursor scan ─────────────────────────────────────────────────
+  // The Polymarket subgraph migrated (sgd2684 → sgd4477) and the new SQL
+  // plan times out on `block_range @> $1 AND id > $2` for the cursor
+  // pagination we used to use for wallet discovery. Every scan was
+  // burning 4-8 minutes on this known-failing path before the timeout
+  // killed it and we fell through to leaderboard discovery (which works).
+  // Disabled until/unless Goldsky's index is fixed. Leaderboard discovery
+  // alone now provides candidates — see discoverFromPolymarketLeaderboard.
+  DISCOVERY_USE_GOLDSKY: false,
+
   // ── Dormancy / activity ─────────────────────────────────────────────────
   // Single unified dormancy cutoff. A wallet that hasn't traded in this
   // many days is evicted from the pool. Applied at both discovery-gate
@@ -700,6 +710,21 @@ async function discoverFromPolymarketLeaderboard() {
 async function discoverWallets(state, existingPool, marketLookup = null, attributionMap = null) {
   console.log('\n🔍 WALLET DISCOVERY — Finding and qualifying new wallets...');
 
+  // Skip Goldsky entirely when disabled. The subgraph's cursor scan
+  // times out on every page request since the sgd4477 migration; running
+  // it just costs us 4-8 minutes per scan to discover nothing. Set up
+  // the variables the rest of the function expects and jump straight to
+  // leaderboard discovery.
+  let entityName, fields, walletSummaries, walletPositions;
+
+  if (!CONFIG.DISCOVERY_USE_GOLDSKY) {
+    console.log('  Goldsky cursor scan disabled (DISCOVERY_USE_GOLDSKY=false). Using Polymarket leaderboard only.');
+    entityName = null;
+    fields = null;
+    walletSummaries = new Map();
+    walletPositions = CONFIG.ENABLE_DECIDED_METRICS ? new Map() : null;
+  } else {
+
   // Step 1: Discover entities and fields dynamically (handles schema differences)
   console.log('  Discovering Goldsky schema...');
   let discovered;
@@ -715,7 +740,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
     return existingPool;
   }
 
-  const { entity: entityName, fields } = discovered[0];
+  ({ entity: entityName, fields } = discovered[0]);
   console.log(`  Using entity: ${entityName} (user=${fields.user}, pnl=${fields.pnl}, token=${fields.token})`);
 
   // Persist the full schema field list to state so we can see what additional
@@ -767,11 +792,11 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
     state.stuckCursorCount = 0;
   }
   console.log(`  Fetching wallet positions from Goldsky...${resumeCursor ? ' (resuming from cursor)' : ' (starting fresh)'}`);
-  const walletSummaries = new Map(); // address → { totalPnl, positionCount, totalBought }
-  // Per-position detail for decided-metrics (V2 scoring). Populated during the
-  // cursor scan so we never need per-wallet Goldsky queries (which timeout
-  // because the subgraph has no index on the user field).
-  const walletPositions = CONFIG.ENABLE_DECIDED_METRICS ? new Map() : null; // address → position[]
+  // walletSummaries / walletPositions declared at function top so the
+  // leaderboard branch can skip Goldsky entirely. Reassigning here so
+  // the cursor-scan branch starts with empty containers.
+  walletSummaries = new Map();
+  walletPositions = CONFIG.ENABLE_DECIDED_METRICS ? new Map() : null;
 
   let cursor = resumeCursor;
   const cursorAtStart = cursor;
@@ -890,6 +915,7 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
   }
   state.lastId = cursor;
   console.log(`  Found ${walletSummaries.size.toLocaleString()} wallets from ${totalFetched.toLocaleString()} positions${wrapped ? ' (reached end, will restart next cycle)' : ''}${bucketAdvancesThisCycle > 0 ? ` [${bucketAdvancesThisCycle} bucket advances]` : ''}`);
+  } // end if (CONFIG.DISCOVERY_USE_GOLDSKY)
 
   // Step 2b: Polymarket leaderboard fallback. When Goldsky returns 0
   // (subgraph migration/timeout) or returns thin results, supplement
