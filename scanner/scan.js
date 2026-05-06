@@ -633,46 +633,35 @@ async function discoverFromPolymarketLeaderboard() {
     'User-Agent': 'Mozilla/5.0 (compatible; PolymarketSignalEngine/1.0)',
   };
 
-  // Pull from multiple windows + orderings + categories to maximize unique
-  // candidate count. PNL ordering catches profitable traders; VOL ordering
-  // catches high-volume wallets we might otherwise miss. More queries = more
-  // overlap with diminishing returns, but each scan only needs ~50-100 new
-  // candidates to feed the gates so even 10-20% novelty per query is fine.
+  // Strategy: go DEEP on `overall` rather than guessing at category names.
+  // The `overall` leaderboard contains every wallet across every category,
+  // ranked by PnL or VOL. Pushing offsets to 5000 (or until the endpoint
+  // returns empty) captures the long tail of every category in one pass
+  // — no need for an enumerated category list (which we'd have to hardcode
+  // and would inevitably go stale as Polymarket adds tags).
   //
-  // Cost: ~1-2s per query (network + JSON parse). Going from 7 → ~25 queries
-  // adds ~20-40s per scan — acceptable on a 2h cron cycle.
+  // 8 queries × up to 50 pages × 100 results = up to 40,000 candidate slots.
+  // Realistic novelty after dedup: probably 2,000-5,000 unique wallets if
+  // Polymarket actually has that depth on their leaderboard.
   //
-  // Categories list is best-effort. Endpoint returns 200/[] for non-existent
-  // categories so unknown ones simply skip past quietly.
-  const ALL_CATEGORIES = [
-    'overall',     // sum of everything
-    'sports',
-    'politics',
-    'crypto',
-    'business',
-    'climate',
-    'entertainment',
-    'mentions',
-    'breaking',
-    'esports',
-  ];
+  // Cost: 50 pages × ~150ms = ~7.5s per query × 8 = ~60s per scan.
+  // Acceptable on a 2h cron cycle.
+  //
+  // Per-category queries kept ONLY for the three categories I've directly
+  // confirmed exist (sports / politics / crypto), with a modest offset cap
+  // so we don't waste budget on categories that probably overlap heavily
+  // with overall anyway.
   const queries = [];
-  // Overall — pull deep across multiple time windows and both orderings
+  // Overall — go deep across all 4 time windows and both orderings.
   for (const tp of ['day', 'week', 'month', 'all']) {
     for (const ob of ['PNL', 'VOL']) {
-      queries.push({ timePeriod: tp, orderBy: ob, category: 'overall', maxOffset: 1000 });
+      queries.push({ timePeriod: tp, orderBy: ob, category: 'overall', maxOffset: 5000 });
     }
   }
-  // Per-category — month window catches the recently-active specialists.
-  // PNL only here (VOL per-category is mostly the same wallets as overall-VOL).
-  for (const cat of ALL_CATEGORIES) {
-    if (cat === 'overall') continue;
-    queries.push({ timePeriod: 'month', orderBy: 'PNL', category: cat, maxOffset: 300 });
-  }
-  // Plus a small all-time per-category PNL pull to surface long-term specialists
-  for (const cat of ALL_CATEGORIES) {
-    if (cat === 'overall') continue;
-    queries.push({ timePeriod: 'all', orderBy: 'PNL', category: cat, maxOffset: 200 });
+  // Confirmed per-category passes — small offset to catch any niche
+  // specialists overall might have buried beyond depth=5000.
+  for (const cat of ['sports', 'politics', 'crypto']) {
+    queries.push({ timePeriod: 'month', orderBy: 'PNL', category: cat, maxOffset: 500 });
   }
 
   console.log('  Fetching leaderboards from Polymarket data-api...');
