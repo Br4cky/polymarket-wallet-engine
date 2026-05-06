@@ -30,7 +30,11 @@ import {
   analyzeTradeHistory,
   computeWalletScore,
 } from '../scanner/dataApi.js';
-import { resolveMarkets } from '../scanner/lib.js';
+// CLOB-direct market resolution. Replaces resolveMarkets (Gamma+wide-gate
+// CLOB cross-check) with a fresh-per-wallet CLOB-only build. Same logic
+// as diff-wallet-vs-profile.mjs uses to match Polymarket profiles
+// exactly. The dashboard PnL after this rescore matches the diff.
+import { buildLookupFromCLOB } from '../scanner/lib.js';
 import { aggregatePositions } from '../scanner/positionLedger.js';
 import {
   buildAttributionMap,
@@ -118,40 +122,25 @@ for (const [addr, w] of allActive) {
     }
   }
 
-  // 2.5. Resolve any markets this wallet trades whose closure status we
-  // can't trust. Two shapes of stale data hide here:
-  //   - tokens never resolved (not in marketLookup at all)
-  //   - tokens resolved against stale Gamma data with marketClosed:false,
-  //     where Gamma either had old data or never indexed the market and
-  //     we wrote a stub. These slipped past the CLOB fallback because it
-  //     only fires when a token isn't in lookup.
-  // Mirror the production ensureMarketsResolved gate exactly: anything not
-  // confirmed closed gets re-resolved. CLOB fallback fires automatically
-  // for niche markets when Gamma returns empty.
-  const tokenToCid = new Map();
-  const unresolvedTokens = new Set();
-  for (const ev of events) {
-    if (ev.asset && ev.conditionId && !tokenToCid.has(ev.asset)) {
-      tokenToCid.set(ev.asset, ev.conditionId);
-    }
-    if (ev.asset) {
-      const existing = marketLookup.get(ev.asset);
-      if (!existing || existing.marketClosed !== true) {
-        unresolvedTokens.add(ev.asset);
-      }
-    }
-  }
-  if (unresolvedTokens.size > 0) {
-    try {
-      const resolved = await resolveMarkets(unresolvedTokens, { tokenToCid });
-      for (const [tid, m] of resolved) marketLookup.set(tid, m);
-    } catch (e) {
-      // Non-fatal — analyzer falls back to whatever's already in marketLookup
-    }
-  }
+  // 2.5. Build a FRESH marketLookup from CLOB for every conditionId in
+  // this wallet's events. This is the same approach diff-wallet-vs-profile
+  // uses to match Polymarket profiles exactly. We discard the persisted
+  // markets.json.gz lookup for the analyzer call — that lookup has
+  // accumulated stale Gamma entries (some saying marketClosed:false on
+  // settled markets, some with wrong winningOutcome) that have been the
+  // root cause of every PnL discrepancy. Cost: ~1-5 sec per wallet for
+  // CLOB calls, ~10-15 min total for the full pool. Trade-off accepted:
+  // dashboard numbers now equal what each wallet's Polymarket profile
+  // shows, full stop.
+  const conditionIds = new Set(events.map(ev => ev.conditionId).filter(Boolean));
+  const freshLookup = await buildLookupFromCLOB(conditionIds);
+  // Fold into the global lookup so other code paths (signal processing,
+  // discovery) benefit from the freshly-resolved markets too.
+  for (const [tid, m] of freshLookup) marketLookup.set(tid, m);
 
-  // 3. Run analyzeTradeHistory → fresh stats (now with full marketLookup)
-  const stats = analyzeTradeHistory(events, { marketLookup });
+  // 3. Run analyzeTradeHistory with the fresh per-wallet lookup. This
+  // produces the same numbers as diff-wallet-vs-profile.mjs.
+  const stats = analyzeTradeHistory(events, { marketLookup: freshLookup });
   if (!stats) {
     results.no_events.push({ addr });
     await sleep(RATE_MS);

@@ -697,6 +697,106 @@ function computeScore(stats, lastActiveTimestamp) {
 // ============================================================================
 
 /**
+ * Build a per-wallet marketLookup directly from CLOB (the trading layer).
+ *
+ * Use this — not resolveMarkets — when correctness matters more than
+ * speed. resolveMarkets relies on the persisted lookup and only re-checks
+ * tokens flagged as not-closed; it can miss markets cached as closed:true
+ * with wrong winningOutcome, and trusts Gamma's metadata. CLOB is the
+ * source of truth for closure / winningOutcome / endDate.
+ *
+ * Pattern matches diff-wallet-vs-profile.mjs: query CLOB once per
+ * conditionId, parse closure + winning outcome from the canonical
+ * trading-layer response, build a fresh tokenId-keyed lookup.
+ *
+ * Used by full-pool-rescore.mjs and scan.js per-wallet rescore so the
+ * dashboard's PnL/ROI numbers match each wallet's Polymarket profile.
+ *
+ * @param {Set<string>|Iterable<string>} conditionIds - Condition IDs to resolve
+ * @param {object} [opts]
+ * @param {number} [opts.concurrency=5]   - Parallel CLOB requests
+ * @param {number} [opts.batchDelayMs=60] - Sleep between batches
+ * @returns {Promise<Map<tokenId, market>>}
+ */
+async function buildLookupFromCLOB(conditionIds, opts = {}) {
+  const CONCURRENCY = opts.concurrency || 5;
+  const BATCH_DELAY = opts.batchDelayMs ?? 60;
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const lookup = new Map();
+  const cids = Array.from(conditionIds);
+
+  async function fetchOne(cid, attempt = 0) {
+    try {
+      const res = await fetch(`https://clob.polymarket.com/markets/${cid}`);
+      if (res.status === 429 || res.status >= 500) {
+        if (attempt < 3) { await sleep(500 * (attempt + 1)); return fetchOne(cid, attempt + 1); }
+        return null;
+      }
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      if (attempt < 2) { await sleep(500); return fetchOne(cid, attempt + 1); }
+      return null;
+    }
+  }
+
+  async function processOne(cid) {
+    const m = await fetchOne(cid);
+    if (!m || !m.condition_id) return;
+
+    const marketClosed = m.closed === true;
+    const marketActive = m.active === true;
+    const acceptingOrders = m.accepting_orders === true || m.acceptingOrders === true;
+    const endDate = m.end_date_iso || m.endDate || null;
+
+    let winningOutcome = null;
+    if (Array.isArray(m.tokens)) {
+      for (const tok of m.tokens) {
+        if (tok.winner === true) { winningOutcome = tok.outcome || null; break; }
+      }
+      if (!winningOutcome && marketClosed) {
+        for (const tok of m.tokens) {
+          if (parseFloat(tok.price || 0) >= 0.95) { winningOutcome = tok.outcome || null; break; }
+        }
+      }
+    }
+
+    const commonFields = {
+      title: m.question || `Market ${cid.slice(0, 8)}…`,
+      slug: m.market_slug || '',
+      groupId: m.condition_id,
+      marketClosed,
+      marketActive,
+      acceptingOrders,
+      endDate,
+      winningOutcome,
+      _resolvedVia: 'clob_direct',
+    };
+
+    if (Array.isArray(m.tokens)) {
+      for (const tok of m.tokens) {
+        const tid = tok.token_id || tok.tokenId;
+        if (tid) {
+          lookup.set(tid, {
+            ...commonFields,
+            outcome: tok.outcome || 'Unknown',
+            currentPrice: parseFloat(tok.price || 0),
+          });
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < cids.length; i += CONCURRENCY) {
+    const batch = cids.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(processOne));
+    if (BATCH_DELAY > 0) await sleep(BATCH_DELAY);
+  }
+
+  return lookup;
+}
+
+/**
  * Resolve market data from Gamma API, with CLOB fallback for niche markets.
  *
  * Gamma indexes the marketing/discovery surface but excludes niche markets
@@ -1042,30 +1142,25 @@ async function resolveMarkets(tokenIds, opts) {
             });
           }
 
-          // CLOB closure cross-check — but ONLY when Gamma's response
-          // looks suspect on closure. Gamma is the denormalised marketing
-          // surface and can lag the trading layer's `closed` flag, but
-          // for genuinely-active markets it's perfectly correct. Calling
-          // CLOB on every Gamma success doubled the rescore runtime to
-          // ~4 hours; the targeted version below only fires on the case
-          // we actually need to fix.
+          // CLOB closure cross-check — fire on every closed:false response
+          // where we know the conditionId. Earlier narrow version only
+          // fired when Gamma showed `accepting_orders: false` OR endDate
+          // past, which missed cases where Gamma's lag was total — both
+          // fields still saying "active" on markets CLOB had already
+          // settled. Dashboard PnL was leaking ~$2k/wallet on heavy-volume
+          // sports bettors because hundreds of $35 losing positions stayed
+          // bucketed as "open" and never contributed to the loss tally.
           //
-          // Suspect signals (any one is enough to verify):
-          //   - Gamma says closed:false but accepting_orders:false
-          //     → market stopped trading but Gamma hasn't updated closed
-          //   - Gamma says closed:false but endDate is in the past
-          //     → market should have settled by now
-          //
-          // Genuinely-active markets (accepting_orders:true OR endDate
-          // in the future) skip the cross-check — Gamma is right about
-          // those by definition.
+          // The runtime concern that drove the narrowing is bounded here:
+          // resolveMarkets is only called with tokens that aren't already
+          // confirmed closed in the persisted lookup. For genuinely-active
+          // markets the extra CLOB call confirms what Gamma says (small
+          // redundancy). For settled-but-Gamma-stale markets it corrects.
+          // Net cost: 1 extra CLOB call per Gamma success in this path,
+          // which adds ~5-10 min to the full-pool rescore but eliminates
+          // the leak.
           const cidForCheck = market.condition_id || (tokenToCid && tokenToCid.get(tokenId));
-          const endMs = commonFields.endDate ? new Date(commonFields.endDate).getTime() : 0;
-          const endPast = endMs > 0 && endMs < Date.now();
-          const looksSuspect = !commonFields.marketClosed && (
-            commonFields.acceptingOrders === false ||
-            endPast
-          );
+          const looksSuspect = !commonFields.marketClosed;
           if (cidForCheck && looksSuspect) {
             const clob = await fetchClobClosure(cidForCheck);
             if (clob) {
@@ -2959,6 +3054,7 @@ export {
   discoverEntities,
   fetchPositions,
   resolveMarkets,
+  buildLookupFromCLOB,
   refreshSignalMarkets,
   matchesWinningOutcome,
   initPaperTrading,

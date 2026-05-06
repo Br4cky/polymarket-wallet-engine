@@ -21,6 +21,7 @@ import {
   introspectEntity,
   discoverEntities,
   resolveMarkets,
+  buildLookupFromCLOB,
   refreshSignalMarkets,
   loadJSON,
   saveJSON,
@@ -1036,21 +1037,22 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         continue;
       }
 
-      // Refresh marketLookup for THIS wallet's tokens before analysis. The
-      // global lookup carries stale Gamma entries (marketClosed:false on
-      // markets that have actually settled), and using it as-is at
-      // admission inflates PnL — losing positions stay bucketed as "open"
-      // and don't contribute to the loss tally. That's how we ended up
-      // admitting 73 wallets with negative real PnL on inflated stats.
-      // ensureMarketsResolved re-resolves any token whose entry isn't
-      // confirmed closed, and resolveMarkets now does CLOB closure-
-      // override for any market Gamma has wrong.
-      // Cost: only fires for wallets past the cooldown above (typically
-      // 50-200 wallets per scan, not the full candidate set), and bounded
-      // by per-wallet MAX_RESOLVE_PER_WALLET cap inside ensureMarketsResolved.
-      await ensureMarketsResolved(events, marketLookup);
+      // Build a FRESH marketLookup from CLOB for every conditionId in
+      // this wallet's events. Replaces the previous ensureMarketsResolved
+      // path that trusted the persisted lookup for closed-cached entries.
+      // Same approach diff-wallet-vs-profile.mjs uses to match Polymarket
+      // profiles. The dashboard PnL/ROI now equals what each wallet's
+      // profile shows — no manual diff needed to verify.
+      // Cost: ~1-5 sec per wallet for CLOB calls. Only fires for wallets
+      // past cooldown (~⅓ of pool with 6h cooldown). Adds ~5-10 min to
+      // a typical scan; well worth eliminating the staleness leak.
+      const conditionIds = new Set(events.map(ev => ev.conditionId).filter(Boolean));
+      const freshLookup = await buildLookupFromCLOB(conditionIds);
+      // Fold into the global lookup so other paths (signal processing,
+      // discovery) benefit from the freshly-resolved markets too.
+      for (const [tid, m] of freshLookup) marketLookup.set(tid, m);
 
-      const stats = analyzeTradeHistory(events, { marketLookup });
+      const stats = analyzeTradeHistory(events, { marketLookup: freshLookup });
       if (!stats) {
         discoveryKills.no_stats++;
         processed++;
