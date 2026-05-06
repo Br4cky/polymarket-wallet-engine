@@ -263,10 +263,10 @@ function renderWalletPool() {
   if (!data.analytics) return;
   const lb = data.analytics.leaderboard || [];
 
-  // Pool total PnL — prefer directionalPnl (trade-only, matches Polymarket
-  // profile). Falls back to totalPnl for wallets whose stats predate the
-  // directionalPnl field. directionalPnl excludes MERGE-derived revenue
-  // (MM-style YES+NO arbitrage closes that don't transfer to followers).
+  // Pool total PnL — sum of directionalPnl across the pool (trade-only,
+  // MERGE-excluded, matches Polymarket profile). Wallets predating the
+  // directionalPnl field fall back to totalPnl; the per-wallet display
+  // tags those rows with a tooltip until they're rescored.
   const totalPnl = lb.reduce((s, w) => {
     const dp = w.stats?.directionalPnl;
     return s + (typeof dp === 'number' ? dp : (w.stats?.totalPnl || 0));
@@ -314,13 +314,22 @@ function renderWalletPool() {
     score: typeof w.score === 'number' ? w.score : null,
     address: w.address || '',
     winRate: w.stats?.wr || 0,
-    // Directional PnL: prefer it (matches profile). Fall back to totalPnl
-    // for wallets whose stats predate the directionalPnl field.
+    // Directional metrics: the canonical follower-replicable PnL/ROI/capital.
+    // Matches Polymarket profile. Falls back to legacy fields for wallets
+    // whose stats predate the directionalPnl/directionalROI fields.
     directionalPnl: typeof w.stats?.directionalPnl === 'number'
       ? w.stats.directionalPnl
-      : (w.stats?.totalPnl || 0),
-    onChainPnl: w.stats?.totalPnl || 0,                 // Goldsky realized
-    samplePnl: w.stats?.samplePnl || 0,                  // analyzer 3000-event sample
+      : null,
+    directionalROI: typeof w.stats?.directionalROI === 'number'
+      ? w.stats.directionalROI
+      : null,
+    directionalCapital: typeof w.stats?.directionalCapital === 'number'
+      ? w.stats.directionalCapital
+      : null,
+    mergeUsdcTotal: w.stats?.mergeUsdcTotal || 0,
+    // Legacy fallback fields — only used when directional* is null.
+    onChainPnl: w.stats?.totalPnl || 0,
+    samplePnl: w.stats?.samplePnl || 0,
     effectivePnl: w.stats?.effectivePnl
       || Math.max(w.stats?.totalPnl || 0, w.stats?.samplePnl || 0),
     decidedROI: w.stats?.decidedROI ?? null,
@@ -341,11 +350,16 @@ function renderWalletPool() {
     consistency: w.stats?.weeklyConsistency || 0,
   }));
 
+  // Wallet table — single PnL column (directionalPnl) and single ROI
+  // column (directionalROI). Both match what the wallet's Polymarket
+  // profile shows. The legacy fields (singleSideROI, decidedROI,
+  // effectivePnl, samplePnl, onChainPnl) are kept in the leaderboard
+  // payload for diagnostic transparency but are no longer surfaced as
+  // their own columns — they appear only in tooltips on the canonical
+  // numbers when there's a meaningful divergence worth flagging.
   createSortableTable('wallet-table', [
     { field: 'rank', render: v => String(v) },
     { field: 'score', label: 'Score', render: (v, row) => {
-      // Primary score (decidedROI-weighted + MM/alpha penalties).
-      // null when the wallet hasn't been scored yet — dim placeholder.
       if (v == null) return '<span style="opacity:0.35" title="Not yet scored">—</span>';
       const badge = `<span class="badge ${scoreClass(v)}">${v.toFixed(1)}</span>`;
       const flag = row && row.wouldEvict
@@ -356,48 +370,36 @@ function renderWalletPool() {
       return `${badge}${flag}`;
     }},
     { field: 'address', render: v => `<span class="address-link" onclick="openPolymarketProfile('${v}')">${truncAddr(v)}</span>` },
-    { field: 'singleSideROI', label: 'ROI', render: (v, row) => {
-      // 2026-04-30 audit revealed that the Polymarket /positions API is
-      // biased toward worthless leftovers — winners get redeemed/sold
-      // and disappear from the current-positions snapshot, while losses
-      // stay around as worthless shares. This made decidedROI compute
-      // -100% for ~73% of pool wallets even when they were genuinely
-      // profitable on the trade level (singleSideROI from the full
-      // /activity event log showed +85% on the same wallets).
-      //
-      // Fix: display singleSideROI (from full event history) as primary.
-      // It accurately reflects per-trade ROI on resolved bets. Fall back
-      // to decidedROI only when singleSide is unavailable. Show
-      // decidedROI as a tooltip detail for diagnostic transparency.
-      if (v == null) {
-        if (row && row.decidedROI != null) {
-          const cls = roiClass(row.decidedROI);
-          const pct = (row.decidedROI * 100).toFixed(1) + '%';
-          return `<span class="badge ${cls}" style="opacity:0.7" title="Showing decidedROI (positions-ledger ROI). singleSideROI not available. Note: decidedROI can be biased toward losses for active traders due to /positions API snapshot behavior.">${pct}*</span>`;
-        }
-        return '<span style="opacity:0.35">—</span>';
-      }
-      const cls = roiClass(v);
-      const pct = (v * 100).toFixed(1) + '%';
-      const decidedDetail = row && row.decidedROI != null
-        ? ` (decidedROI snapshot: ${(row.decidedROI * 100).toFixed(1)}% — may be biased toward losses)`
-        : '';
-      return `<span class="badge ${cls}" title="Per-trade ROI on resolved single-side bets, computed from full /activity event log.${decidedDetail}">${pct}</span>`;
+    { field: 'directionalROI', label: 'ROI', render: (v, row) => {
+      // Single ROI metric. directionalROI = directionalPnl /
+      // directionalCapital, both over resolved markets, MERGE income
+      // excluded. Matches the wallet's Polymarket profile lifetime ROI.
+      // Falls back to singleSideROI for stats predating directionalROI.
+      const useV = (typeof v === 'number') ? v : (row && row.singleSideROI);
+      if (typeof useV !== 'number') return '<span style="opacity:0.35">—</span>';
+      const cls = roiClass(useV);
+      const pct = (useV * 100).toFixed(1) + '%';
+      const fallbackNote = (typeof v !== 'number') ? ' (fallback: singleSideROI — wallet not yet rescored under directionalROI)' : '';
+      return `<span class="badge ${cls}" title="Lifetime ROI on resolved positions, MERGE/rebate income excluded — matches Polymarket profile.${fallbackNote}">${pct}</span>`;
     }},
-    { field: 'singleSideCapital', label: 'Capital', render: (v, row) => {
-      if (v == null) {
-        if (row && row.decidedCapital != null) {
-          return `<span style="opacity:0.7" title="Showing decidedCapital fallback">${fmtDollars(row.decidedCapital)}*</span>`;
-        }
-        return '<span style="opacity:0.35">—</span>';
-      }
-      return `<span title="Capital deployed on resolved single-side bets, from /activity event log">${fmtDollars(v)}</span>`;
+    { field: 'directionalCapital', label: 'Capital', render: (v, row) => {
+      const useV = (typeof v === 'number') ? v : (row && row.singleSideCapital);
+      if (typeof useV !== 'number') return '<span style="opacity:0.35">—</span>';
+      return `<span title="Capital deployed on resolved positions">${fmtDollars(useV)}</span>`;
     }},
     { field: 'winRate', render: v => ((v || 0) * 100).toFixed(1) + '%' },
-    { field: 'directionalPnl', label: 'PnL', render: v => `<span class="${pnlClass(v)}" title="Trade PnL excluding MERGE-derived income (matches Polymarket profile). The right number for follower-replicable returns — MERGE/rebate income belongs to the wallet, not transferable to a follower.">${fmtDollars(v)}</span>` },
-    { field: 'effectivePnl', label: 'PnL (scoring)', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="max(on-chain realized, analyzer sample with MERGE+rebate income). What V2 scoring actually uses. Often higher than the trade-only PnL on the left.">${fmtDollars(v)}</span>` },
-    { field: 'onChainPnl', label: 'On-chain', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="Goldsky realizedPnl — only counts positions the wallet explicitly redeemed or sold. $0 for unredeemed winners.">${fmtDollars(v)}</span>` },
-    { field: 'samplePnl', label: 'Sample', render: v => `<span class="${pnlClass(v)}" style="opacity:0.7" title="Analyzer PnL from /activity events (3000-event cap). Handles unredeemed winners but truncates deep history.">${fmtDollars(v)}</span>` },
+    { field: 'directionalPnl', label: 'PnL', render: (v, row) => {
+      // Single PnL metric. Trade PnL with MERGE-derived income excluded.
+      // Matches the wallet's Polymarket profile lifetime PnL.
+      // Falls back to totalPnl for stats predating directionalPnl.
+      const useV = (typeof v === 'number') ? v : (row && row.onChainPnl);
+      if (typeof useV !== 'number') return '<span style="opacity:0.35">—</span>';
+      const fallbackNote = (typeof v !== 'number') ? ' (fallback: totalPnl — wallet not yet rescored)' : '';
+      const mergeNote = (row && typeof row.mergeUsdcTotal === 'number' && row.mergeUsdcTotal > 100)
+        ? ` MERGE income excluded: $${row.mergeUsdcTotal.toFixed(0)}.`
+        : '';
+      return `<span class="${pnlClass(useV)}" title="Lifetime trade PnL — matches Polymarket profile.${fallbackNote}${mergeNote}">${fmtDollars(useV)}</span>`;
+    }},
     { field: 'statsSpanDays', render: (v, row) => {
       if (!v) return '<span style="opacity:0.4">-</span>';
       const badge = row && row.tradesTruncated
@@ -998,7 +1000,12 @@ function renderHandpicked() {
          ? w.stats.directionalPnl
          : (w.stats?.totalPnl ?? null),
       walletWR: w.stats?.winRate ?? null,
-      walletROI: w.stats?.singleSideROI ?? null,
+      // Wallet ROI: prefer directionalROI (matches Polymarket profile,
+      // MERGE income excluded). Falls back to singleSideROI for stats
+      // predating directionalROI.
+      walletROI: typeof w.stats?.directionalROI === 'number'
+        ? w.stats.directionalROI
+        : (w.stats?.singleSideROI ?? null),
       walletResolved: w.stats?.resolvedMarkets ?? null,
       sigsActive: sigStats.active,
       sigsResolved: resolvedSigs,

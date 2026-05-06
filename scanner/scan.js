@@ -968,7 +968,13 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
     //     where lastTradeTs is stale or missing, and forces a periodic
     //     refresh so truly inactive wallets still hit the MAX_INACTIVE_DAYS
     //     eviction check on the re-score path.
-    const DISCOVERY_RESCORE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+    // Hard rescore cooldown — was 24h, now 6h. Lower cooldown means
+    // every cron cycle re-analyses ~1/3 of the pool instead of ~1/12,
+    // so after a code change to the analyzer the pool converges to
+    // fresh stats in ~6h instead of ~24h. Trade-off is a few extra
+    // minutes of /activity calls per scan; well worth eliminating the
+    // "stale cached stats vs new code" gap that's bitten us repeatedly.
+    const DISCOVERY_RESCORE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
     const DISCOVERY_RESCORE_MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
     if (pool[address] && pool[address].lastScored) {
       const lastScoredMs = new Date(pool[address].lastScored).getTime();
@@ -2059,6 +2065,17 @@ async function fastLoop(state, walletPool, marketLookup) {
       singleSideCapital: w.stats?.singleSideCapital ?? null,
       singleSideHitRate: w.stats?.singleSideHitRate ?? null,
       singleSideResolved: w.stats?.singleSideResolved ?? null,
+      // Canonical follower-signal numbers — match the wallet's Polymarket
+      // profile. directionalPnl excludes MERGE-derived income (MM-style
+      // YES+NO arbitrage closes that don't transfer to a follower copying
+      // a BUY). directionalROI = directionalPnl / capital on resolved
+      // markets. Dashboard's primary PnL/ROI columns read these.
+      directionalPnl: w.stats?.directionalPnl ?? null,
+      directionalCapital: w.stats?.directionalCapital ?? null,
+      directionalROI: w.stats?.directionalROI ?? null,
+      // mergeUsdcTotal kept for diagnostic — shows how much of the
+      // legacy totalPnl was MERGE-derived income.
+      mergeUsdcTotal: w.stats?.mergeUsdcTotal ?? 0,
     },
   }));
 

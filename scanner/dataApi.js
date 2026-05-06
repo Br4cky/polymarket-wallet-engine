@@ -638,14 +638,16 @@ function analyzeTradeHistory(events, opts = {}) {
   let holderCapital = 0;
   let flipperCapital = 0;
 
-  // Directional PnL: trade PnL EXCLUDING merge-derived synthetic SELLs.
-  // For follower-signal scoring this is the right number — MERGE income
-  // is wallet-side arbitrage (combining YES+NO → USDC) that a follower
-  // copying just the BUY cannot replicate. Same class as rewards/rebates:
-  // belongs to the wallet, doesn't transfer. Used by the admission gate
-  // and eviction script in scan.js. `totalPnl` keeps its current
-  // include-merges meaning for dashboard / legacy consumers.
+  // Directional PnL + capital: trade PnL EXCLUDING merge-derived synthetic
+  // SELLs, and the capital deployed on those positions. For follower-signal
+  // scoring these are the right numbers — MERGE income is wallet-side
+  // arbitrage (combining YES+NO → USDC) that a follower copying just the
+  // BUY cannot replicate. directionalROI = directionalPnl / directionalCapital
+  // gives a single ROI metric that matches what each wallet's Polymarket
+  // profile shows. `totalPnl` / `singleSideROI` retain their meanings for
+  // legacy consumers but are no longer the canonical numbers.
   let directionalPnl = 0;
+  let directionalCapital = 0;
 
   for (const [cid, mt] of marketTrades) {
     const totalBought = mt.buys.reduce((sum, t) => sum + (t.size * t.price), 0);
@@ -735,15 +737,19 @@ function analyzeTradeHistory(events, opts = {}) {
       resolvedMarkets++;
       totalPnl += pnl;
 
-      // Directional PnL: subtract any MERGE-derived "revenue" from this
-      // market's totalSold before computing the follower-replicable PnL.
-      // A MERGE pairs N YES + N NO shares back into N USDC — closes the
-      // position from the wallet's perspective but isn't a directional
-      // outcome a follower could copy.
+      // Directional PnL + capital: subtract any MERGE-derived "revenue"
+      // from this market's totalSold before computing the follower-
+      // replicable PnL. A MERGE pairs N YES + N NO shares back into N
+      // USDC — closes the position from the wallet's perspective but
+      // isn't a directional outcome a follower could copy.
+      // Capital tracks the cost basis on resolved markets only, so
+      // directionalROI = directionalPnl / directionalCapital is comparable
+      // scope (both over resolved positions).
       const mergeRevenueOnThisMarket = mt.sells
         .filter(s => s._fromMerge)
         .reduce((sum, s) => sum + s.size * s.price, 0);
       directionalPnl += pnl - mergeRevenueOnThisMarket;
+      directionalCapital += totalBought;
 
       if (pnl > 0) {
         wins++;
@@ -1063,12 +1069,17 @@ function analyzeTradeHistory(events, opts = {}) {
     holdRatioCapital,                   // capital-weighted: holder $ / classified $
     classifiedPositions: classifiedCount,
 
-    // Directional PnL — totalPnl with MERGE-derived synthetic SELL revenue
-    // subtracted out. The right input for follower-signal admission gates
-    // and eviction scripts. MERGE-only "profitable" wallets (MM-style
-    // arbitrageurs) score negatively here, which matches what they
-    // contribute to a follower copying their BUYs.
+    // Directional PnL + capital + ROI — the canonical numbers for follower
+    // signals. directionalPnl = totalPnl with MERGE-derived synthetic SELL
+    // revenue subtracted. directionalCapital = cost basis on resolved
+    // markets. directionalROI = pnl / capital. These match the lifetime
+    // PnL and ROI shown on the wallet's Polymarket profile and are what
+    // dashboard / admission gates / eviction / scoring should use.
     directionalPnl: +directionalPnl.toFixed(2),
+    directionalCapital: +directionalCapital.toFixed(2),
+    directionalROI: directionalCapital > 0
+      ? +(directionalPnl / directionalCapital).toFixed(4)
+      : null,
     worthlessLosses,                    // WR fix: losers closed via marketLookup
 
     // ── Event-type breakdown (Stage 0 — MM classifier + true economic PnL) ──
