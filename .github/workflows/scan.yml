@@ -37,6 +37,7 @@ jobs:
         run: |
           node scripts/evict-negative-pnl.mjs
           node scripts/evict-mm-stragglers.mjs
+          node scripts/evict-lottery-winners.mjs
 
       - name: Commit Results
         if: always()

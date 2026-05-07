@@ -327,6 +327,13 @@ function renderWalletPool() {
       ? w.stats.directionalCapital
       : null,
     mergeUsdcTotal: w.stats?.mergeUsdcTotal || 0,
+    // Robustness / lottery-winner metrics — surface concentration so we
+    // can spot wallets whose PnL is one-or-three-trade luck. Higher is
+    // worse. Gate at 0.85 evicts these but useful to see all values.
+    top3ConcentrationShare: typeof w.stats?.top3ConcentrationShare === 'number'
+      ? w.stats.top3ConcentrationShare : null,
+    pnlExTop3: typeof w.stats?.pnlExTop3 === 'number' ? w.stats.pnlExTop3 : null,
+    medianTradePnL: typeof w.stats?.medianTradePnL === 'number' ? w.stats.medianTradePnL : null,
     // Legacy fallback fields — only used when directional* is null.
     onChainPnl: w.stats?.totalPnl || 0,
     samplePnl: w.stats?.samplePnl || 0,
@@ -399,6 +406,20 @@ function renderWalletPool() {
         ? ` MERGE income excluded: $${row.mergeUsdcTotal.toFixed(0)}.`
         : '';
       return `<span class="${pnlClass(useV)}" title="Lifetime trade PnL — matches Polymarket profile.${fallbackNote}${mergeNote}">${fmtDollars(useV)}</span>`;
+    }},
+    { field: 'top3ConcentrationShare', label: 'Top3%', render: (v, row) => {
+      // Concentration: what fraction of all win-PnL came from this
+      // wallet's top 3 outlier wins. > 85% triggers lottery-winner
+      // eviction. Color-coded: red = lottery-driven, green = consistent.
+      if (typeof v !== 'number') return '<span style="opacity:0.35" title="Not yet rescored under analyzer with concentration metrics">—</span>';
+      const pct = Math.round(v * 100);
+      let style = '';
+      if (v > 0.85) style = 'class="text-negative"';
+      else if (v > 0.70) style = 'style="color:#fdcb6e"';
+      else if (v <= 0.50) style = 'class="text-positive"';
+      const pnlEx3 = row && typeof row.pnlExTop3 === 'number' ? `$${row.pnlExTop3.toFixed(0)}` : '—';
+      const median = row && typeof row.medianTradePnL === 'number' ? `$${row.medianTradePnL.toFixed(2)}` : '—';
+      return `<span ${style} title="Top 3 wins' share of all positive PnL. >85% = lottery-driven (auto-evicted). PnL excluding top 3 wins: ${pnlEx3}. Median per-trade PnL: ${median}.">${pct}%</span>`;
     }},
     { field: 'statsSpanDays', render: (v, row) => {
       if (!v) return '<span style="opacity:0.4">-</span>';
