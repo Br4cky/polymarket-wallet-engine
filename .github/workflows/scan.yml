@@ -38,6 +38,10 @@ jobs:
           node scripts/evict-negative-pnl.mjs
           node scripts/evict-mm-stragglers.mjs
           node scripts/evict-lottery-winners.mjs
+          # Strip evicted wallets from analytics.json.gz so dashboard's pool
+          # count reflects the post-eviction state (not the pre-eviction
+          # snapshot scan.js wrote at the top of the workflow).
+          node scripts/sync-analytics-pool.mjs
 
       - name: Commit Results
         if: always()
