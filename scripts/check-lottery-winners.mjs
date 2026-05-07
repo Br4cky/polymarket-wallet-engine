@@ -23,6 +23,7 @@ const WALLETS_PATH = path.join(ROOT, 'data/wallets.json.gz');
 
 const MIN_RESOLVED_SAMPLE = 20;
 const MAX_PNL_EX_TOP3 = 0;
+const MIN_TOP3_FOR_AND = 0.50;
 const MAX_TOP3_CONCENTRATION = 0.85;
 
 const walletsData = JSON.parse(zlib.gunzipSync(fs.readFileSync(WALLETS_PATH)).toString());
@@ -75,12 +76,16 @@ for (const [addr, w] of candidates) {
     else pnlEx3Buckets['1k+']++;
   }
 
-  const failsPnlEx3 = typeof pnlEx3 === 'number' && pnlEx3 < MAX_PNL_EX_TOP3;
-  const failsConc = typeof conc3 === 'number' && conc3 > MAX_TOP3_CONCENTRATION;
+  // Two-tier check (matches scan.js + evict-lottery-winners.mjs):
+  //   AND: pnlExTop3 < 0 AND top3 > 50%
+  //   OR (extreme): top3 > 85% alone
+  const failsAnd = typeof pnlEx3 === 'number' && pnlEx3 < MAX_PNL_EX_TOP3
+    && typeof conc3 === 'number' && conc3 > MIN_TOP3_FOR_AND;
+  const failsExtreme = typeof conc3 === 'number' && conc3 > MAX_TOP3_CONCENTRATION;
 
-  if (failsPnlEx3) failingPnlEx3++;
-  if (failsConc) failingConcentration++;
-  if (failsPnlEx3 || failsConc) {
+  if (failsAnd) failingPnlEx3++;
+  if (failsExtreme) failingConcentration++;
+  if (failsAnd || failsExtreme) {
     failingEither++;
     flagged.push({
       addr, score: w.score || 0,
@@ -104,9 +109,9 @@ console.log(`  Missing metrics (not yet rescored): ${missingMetrics}`);
 console.log(`  Eligible for the gate:              ${withMetrics}`);
 console.log();
 console.log(`  Of ${withMetrics} eligible:`);
-console.log(`    fails pnlExTop3 < 0:              ${failingPnlEx3}`);
-console.log(`    fails top3 > 85%:                 ${failingConcentration}`);
-console.log(`    fails either (would evict):       ${failingEither}`);
+console.log(`    fails AND-tier (pnlEx3<0 & top3>50%):  ${failingPnlEx3}`);
+console.log(`    fails extreme tier (top3>85%):         ${failingConcentration}`);
+console.log(`    fails either (would evict):            ${failingEither}`);
 console.log();
 console.log('  Concentration distribution:');
 for (const [bucket, n] of Object.entries(concentrationBuckets)) {

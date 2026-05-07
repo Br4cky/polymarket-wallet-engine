@@ -34,8 +34,9 @@ const WALLETS_PATH = path.join(ROOT, 'data/wallets.json.gz');
 const DRY = process.argv.includes('--dry');
 
 const MIN_RESOLVED_SAMPLE = 20;
-const MAX_PNL_EX_TOP3 = 0;             // require pnl ex-top-3 to be ≥ 0
-const MAX_TOP3_CONCENTRATION = 0.85;   // require top-3 share ≤ 85%
+const MAX_PNL_EX_TOP3 = 0;                  // pnl ex-top-3 must be ≥ 0
+const MIN_TOP3_FOR_AND = 0.50;              // AND-gate: concentration must also be >50%
+const MAX_TOP3_CONCENTRATION = 0.85;        // OR-gate: extreme concentration alone evicts
 
 const walletsData = JSON.parse(zlib.gunzipSync(fs.readFileSync(WALLETS_PATH)).toString());
 const pool = walletsData.pool || walletsData;
@@ -63,9 +64,13 @@ for (const [addr, w] of candidates) {
     skipped.missing_metrics++;
     continue;
   }
-  const failsPnlEx3 = typeof pnlEx3 === 'number' && pnlEx3 < MAX_PNL_EX_TOP3;
-  const failsConcentration = typeof conc3 === 'number' && conc3 > MAX_TOP3_CONCENTRATION;
-  if (failsPnlEx3 || failsConcentration) {
+  // Two-tier check, mirrors scan.js:
+  //   AND: pnlExTop3 < 0 AND top3 > 0.50  → concentrated outliers carrying the wallet
+  //   OR (extreme): top3 > 0.85 alone     → near-total dependence on top 3
+  const failsAnd = typeof pnlEx3 === 'number' && pnlEx3 < MAX_PNL_EX_TOP3
+    && typeof conc3 === 'number' && conc3 > MIN_TOP3_FOR_AND;
+  const failsExtreme = typeof conc3 === 'number' && conc3 > MAX_TOP3_CONCENTRATION;
+  if (failsAnd || failsExtreme) {
     evictions.push({
       addr,
       score: w.score || 0,
@@ -76,8 +81,8 @@ for (const [addr, w] of candidates) {
       medianTradePnL: s.medianTradePnL,
       resolved,
       reason: [
-        failsPnlEx3 ? `pnlExTop3=${pnlEx3?.toFixed(0)}` : null,
-        failsConcentration ? `top3Share=${(conc3 * 100).toFixed(0)}%` : null,
+        failsAnd ? `pnlExTop3=${pnlEx3?.toFixed(0)} AND top3=${(conc3 * 100).toFixed(0)}%>50%` : null,
+        failsExtreme && !failsAnd ? `top3Share=${(conc3 * 100).toFixed(0)}%>85%` : null,
       ].filter(Boolean).join(', '),
     });
   } else {

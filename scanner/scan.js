@@ -154,8 +154,19 @@ const CONFIG = {
   // Set 0 to disable.
   MIN_PNL_EX_TOP3: 0,
   MIN_PNL_EX_TOP3_SAMPLE: 20,    // need ≥20 resolved markets to apply
-  // Concentration cap — even if pnlExTop3 is positive, reject if more
-  // than this fraction of all wins comes from the top 3. 0.85 = lottery.
+  // Concentration thresholds. Two-tier check:
+  //   1. Primary (AND): require BOTH pnlExTop3 < 0 AND top3 > MIN_TOP3
+  //      to fire the lottery gate. Catches wallets whose top-3 wins are
+  //      dominant (>50% of gross wins) AND whose remaining trades net
+  //      negative. This is the "1-2 super large wins, rest not great"
+  //      pattern.
+  //   2. Bypass (OR): top3 > MAX_TOP3 fires regardless of pnlExTop3.
+  //      Catches the extreme-concentration wallets (top3 = 99% of all
+  //      wins) even if their bulk happens to be just-positive.
+  // Validated 2026-05-06 against the pool: under-the-old OR logic 93/157
+  // wallets failed; tightened AND drops to ~30-40 truly lottery-dominated
+  // wallets, sparing mediocre-but-consistent traders.
+  MIN_TOP3_CONCENTRATION_FOR_AND: 0.50,
   MAX_TOP3_CONCENTRATION: 0.85,
 
   // ── Eviction rules ──────────────────────────────────────────────────────
@@ -1218,24 +1229,26 @@ async function discoverWallets(state, existingPool, marketLookup = null, attribu
         continue;
       }
 
-      // Lottery-winner gate. Reject wallets whose PnL is dominated by
-      // 1-3 outlier wins — their bulk distribution doesn't make money
-      // and a follower can't replicate the outliers. Two conditions,
-      // either fires:
-      //   (a) pnlExTop3 < 0 — without their top 3 wins they're net
-      //       negative, meaning the rest of their trading is bleeding
-      //   (b) top3ConcentrationShare > 0.85 — top 3 wins account for
-      //       > 85% of all positive PnL, almost no consistent edge
-      // Requires ≥20 resolved markets so we have enough sample to make
-      // the call. Smaller samples are too noisy to distinguish lottery
-      // from skill.
-      if (CONFIG.MIN_PNL_EX_TOP3 != null &&
-          (stats.resolvedMarkets || 0) >= CONFIG.MIN_PNL_EX_TOP3_SAMPLE &&
-          ((typeof stats.pnlExTop3 === 'number' && stats.pnlExTop3 < CONFIG.MIN_PNL_EX_TOP3) ||
-           (typeof stats.top3ConcentrationShare === 'number' && stats.top3ConcentrationShare > CONFIG.MAX_TOP3_CONCENTRATION))) {
-        discoveryKills.lottery_winner++;
-        processed++;
-        continue;
+      // Lottery-winner gate. Two-tier:
+      //   AND-tier: pnlExTop3 < 0 AND top3ConcentrationShare > 0.50
+      //     — wallet net-loses without top 3 AND those top 3 are >50%
+      //       of gross wins. The "few outliers carry the wallet" shape.
+      //   OR-tier: top3ConcentrationShare > 0.85
+      //     — extreme concentration. Fires regardless of pnlExTop3
+      //       sign, catches edge cases where bulk is technically
+      //       positive but ~all winnings still came from 3 trades.
+      // Requires ≥20 resolved markets sample.
+      if ((stats.resolvedMarkets || 0) >= CONFIG.MIN_PNL_EX_TOP3_SAMPLE) {
+        const pnlEx3 = stats.pnlExTop3;
+        const conc3 = stats.top3ConcentrationShare;
+        const failsAnd = typeof pnlEx3 === 'number' && pnlEx3 < CONFIG.MIN_PNL_EX_TOP3
+          && typeof conc3 === 'number' && conc3 > CONFIG.MIN_TOP3_CONCENTRATION_FOR_AND;
+        const failsExtreme = typeof conc3 === 'number' && conc3 > CONFIG.MAX_TOP3_CONCENTRATION;
+        if (failsAnd || failsExtreme) {
+          discoveryKills.lottery_winner++;
+          processed++;
+          continue;
+        }
       }
 
       // ── Discovery gates on position-centric metrics ─────────────────────
